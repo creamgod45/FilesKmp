@@ -10,6 +10,15 @@ Sources
   (the installed version): every file these numbers come from is identical or only gained newer settings.
 - The appinstaller only points at the download (version 4.0.28.0); the installed 4.3.0.0 was studied.
 
+## Confirmed in the installed program's machine code (Files.exe 4.3.0.0)
+| Rule | Value | Function / data |
+|---|---|---|
+| Sidebar width setting is read, clamped and written back: `width = min(max(Get("SidebarWidth", 255), 180), 500)` | default 255.0, min 180.0, max 500.0 | function 0x1401e4c80; doubles at 0x14255a7f0 / 0x14255a800 / 0x14255a810 |
+| That clamp runs whenever the "SidebarWidth" setting changes | — | property-changed handler 0x14049c110 (compares the name with the string object at 0x142b952e0) |
+Method: string literals are frozen objects 12 bytes before their characters; cross-references to the object
+address lead to the code that uses each setting. Other defaults below come from the source code, which was
+checked against the same release (v4.3).
+
 ## Window and layout
 | Value | Number | Source |
 |---|---|---|
@@ -40,6 +49,87 @@ Sources
 | Columns: Name / Date modified / Type / Size | 240 / 200 / 140 / 100 | src:Services/Settings/LayoutSettingsService.cs:128-294 |
 | Default sort | Name, ascending, folders first | LayoutSettingsService.cs:28-64 |
 | Default layout | Adaptive (rebuild opens Details; Adaptive not built) | LayoutSettingsService.cs:22 |
+
+## Home page look (person's screenshots of the original + widget XAML)
+| Value | Number | Source |
+|---|---|---|
+| Quick access grid | min 100 wide, 72 tall, max 6 per row, stretched to fill, 8 spacing, 32 px icon, pin icon top-right | src:UserControls/Widgets/QuickAccessWidget.xaml:16-23,60-61 |
+| Drives grid | 240 × 72, not stretched, 8 spacing, 32 px icon, "剩餘 {0}，共 {1}" | src:DrivesWidget.xaml:18-22; Strings/zh-Hant DriveFreeSpaceAndCapacity |
+| Tags grid | min 220 wide, 260 tall, max 6 per row, stretched | src:FileTagsWidget.xaml:30-35 |
+| Default tags | Home #0072BD, Work #D95319, Photos #EDB120, Important #77AC30 | src:Services/Settings/FileTagsSettingsService.cs:28-34 |
+| No command toolbar on Home | — | person's screenshot |
+| Sidebar sections | 首頁, 已釘選, 磁碟機, 雲端硬碟 (iCloud Drive, iCloud Photos), 網路, WSL (wsl -l), 標籤, 設定 at the bottom | person's screenshot; src:SidebarViewModel.cs:91-98 |
+| Size units | KiB / MiB / GiB / TiB | person's screenshot |
+| Light colours | window #EFEDED, file area #F8F7F7, cards #FDFDFD | measured from the screenshot (the original's Mica follows the wallpaper, so this is an approximation) |
+
+## Tags, settings and extra features (round 3)
+| Feature | Rule | Source |
+|---|---|---|
+| Default tags | Home #0072BD, Work #D95319, Photos #EDB120, Important #77AC30; unknown tag colour #9ea3a1 | src:FileTagsSettingsService.cs:28-34,83 |
+| Tagging | right-click → Edit tags (tick on/off, make new tag with a colour); stored by path in %APPDATA%\FilesKmp; renames/moves in the app carry tags along | original stores by file ID in a database (FileTagsDatabase.cs) — rebuild uses paths |
+| Tag column | 140 wide, shown by default in Details | src:LayoutSettingsService.cs:128-294 |
+| Tag views | sidebar tag or Home "···" lists every file with that tag | src:SidebarViewModel tag section; FileTagsWidget |
+| Settings | General (continue session, open folders in new tab, Home widgets), Appearance (theme, toolbar, status bar, sidebar width 180–500), Layout (default layout, sort), Files & folders (hidden items, extensions, checkboxes, ask before delete), Tags (add/rename/recolour/delete), About; saved at once to %APPDATA%\FilesKmp\settings.properties | defaults from src:*SettingsService.cs as listed below |
+| Dual pane | Ctrl+Shift+S; each pane has its own history and selection; the active one has an accent outline | src:Actions ToggleDualPane (Ctrl+Shift+S) |
+| Deep search | Enter in the search box searches the folder and every subfolder; results stream in; stops at 5000 (estimated) | original uses Windows Search; rebuild walks folders |
+| Zip | Compress to ZIP / Extract here (never writes outside the target folder) | original: context menu Compress / Extract (7-Zip) |
+| Pin / unpin | uses Windows' own Quick access verbs (pintohome / unpinfromhome), like the original | src:QuickAccessService |
+| Preview | details pane draws pictures (< 40 MB, estimated) and the first 40 lines of text files | original preview pane |
+| Reopen last tabs | on by default (ContinueLastSessionOnStartUp) | src:GeneralSettingsService.cs:28 |
+| Shortcuts added | Ctrl+Shift+S dual pane, Ctrl+, settings | src:Actions HotKeys |
+
+## Thumbnails (round 4)
+| Rule | Value | Source |
+|---|---|---|
+| Show thumbnails | on by default; switch in Settings → Files & folders and in the Layout menu | src:FoldersSettingsService.cs:124 (ShowThumbnails = true) |
+| Where they come from | Windows shell thumbnail (IShellItemImageFactory, "thumbnail only"), the same image Explorer shows — videos get a frame, photos keep their rotation; if Windows has none, the file icon stays | original asks the shell too (FileThumbnailHelper / IconService) |
+| Sizes | 96 px for small views, 256 px for grid, cards and the details pane | 256 = ShellIconSizes.Jumbo (Constants.cs); 96 estimated |
+| Corner radius | 2 | src:App.xaml:23-24 |
+| Loading | 2 background helpers, newest request first, requests for rows scrolled away are dropped; cached in memory (400) and on disk (%LOCALAPPDATA%\FilesKmp\thumbs, keyed by path + size + date) | rebuild's own (estimated values) |
+| Fallback | if the shell helper can't start, PNG/JPG/GIF/BMP/WebP are shrunk directly | rebuild's own |
+
+## Panes, personalization, folder sizes, dates, checkboxes (round 5)
+| Rule | Value | Source |
+|---|---|---|
+| Split pane vertically / horizontally | opens a second pane at the current folder; Vertical = side by side, Horizontal = one above the other | src:Actions/Navigation/SplitPaneVertically/HorizontallyAction.cs:40; ShellPanesPage.xaml.cs:302-345 |
+| Default arrangement | Vertical | src:GeneralSettingsService.cs:420-422 |
+| Arrange panes / close active pane / focus other pane | menu items in the 窗格 button; divider between panes 8 px, draggable 20–80 % | src:ArrangePanes*Action.cs, CloseActivePaneAction.cs, FocusOtherPane.cs |
+| Backdrop | Solid / Mica / Mica Alt (default) / Acrylic / Thin acrylic — drawn as the blurred desktop wallpaper under the theme colour at 86 / 74 / 62 / 48 % cover (estimated) | src:AppearanceSettingsService.cs:93-95; BackdropMaterialType.cs |
+| Background colour | 20 swatches, each tint at alpha 0x32 (Default = transparent) | src:Data/Factories/AppThemeResourcesFactory.cs:8-110 |
+| Background image | file, fit UniformToFill (default) / Uniform / Fill / None, opacity 100 % default, centred | src:AppearanceSettingsService.cs:100-130 |
+| Translucent surfaces | tab #B3FFFFFF, file area #C0FCFCFC, cards #B3FFFFFF (light) | src:App.xaml:120-155 |
+| Folder size | "檢視大小" link (ItemSizeNotCalculated) adds the folder up on click; "Calculate folder sizes" (off by default) does it for every folder shown, 2 at a time | src:ListedItem.cs:283; FoldersSettingsService.cs:112 |
+| Selection size in status bar | files plus measured folders | — |
+| Dates | ≥ 7 days: long date ("D", e.g. 2026年7月6日 星期一); ≥ 2 days "N 天前"; ≥ 1 day "1 天前"; then hours, minutes, seconds; < 1 s "剛剛" | src:Services/DateTimeFormatter/ApplicationDateTimeFormatter.cs:24-46 |
+| Type of folders | 資料夾 / Folder | person's screenshot |
+| Tag column | right after Name, titled 檔案標籤 | person's screenshot |
+| Checkboxes | shown on hover and on selected items; ticking one adds/removes only that item; header box selects all / clears; a plain click selects only that item and the click no longer reaches the list background (that was clearing the selection) | src:FoldersSettingsService.cs:154; verified with a simulated-click test (4/4) |
+
+## Customizable toolbar (round 6, from the person's 32 screenshots + source)
+| Rule | Value | Source |
+|---|---|---|
+| Open 自訂工具列 | Settings → 外觀 → 自訂工具列按鈕; right-click empty toolbar → 自訂工具列; right-click a button → 自訂工具列 / 取消釘選 (removes it at once) | src:AppearancePage.xaml:278-298; Toolbar.xaml:71-75; Toolbar.xaml.cs:465-487 |
+| Window | 760 × 560; 選擇欲自訂的工具列模式 (240-wide picker); 可用選項 tree + 搜尋; 新增選項 list with 操作 / 圖示 / 文字標籤 / ×; preview strip; 重設為預設值 · 儲存 (only after a change) · 取消 | src:ToolbarCustomizationDialog.cs:17-67; ToolbarCustomizationPage.xaml |
+| Adding / ordering | drag from the tree into the list (drop marker shows where), drag the ⠿ handle to reorder; rebuild also offers a "+" on each tree row | src:ToolbarCustomizationPage.xaml.cs:166-204 |
+| Tree order | 分隔線 first, then categories and commands in plain character order | src:ToolbarItemDescriptor.cs:76-88 |
+| Search | case-insensitive substring of the full label, flat list | src:ToolbarCustomizationViewModel.cs:86-92,127-140 |
+| Per item | 圖示 (disabled if the command has no icon), 文字標籤; both off = hidden but kept | src:ToolbarItemSettingsEntry.cs:9-30; Toolbar.xaml.cs:206,267,299 |
+| Contexts | 通用工具列 always; 壓縮檔案 / 批次檔案 / PowerShell 檔案 / 圖片檔 / 多媒體檔案 when the selection matches, each after a separator; 其他內容 when none match | src:ToolbarSections.cs:11-21,59-64; Toolbar.xaml.cs:150-191 |
+| Defaults | 通用工具列: 新增 … (icon+label), 分隔線, 剪下, 複製, 貼上, 重新命名, 刪除, 內容 (icon only); 壓縮檔案: 解壓縮 …; 批次檔案: 在記事本中編輯; PowerShell 檔案: 以 PowerShell 執行; 圖片檔: 設為背景 …; 多媒體檔案: 播放 | src:ToolbarSections.cs:23-57 (分享 left out: Windows share sheet not available here) |
+| Separators | none at the start/end, no doubles | src:Toolbar.xaml.cs:444-463 |
+| Overflow | buttons that don't fit go into a "…" menu | src:Toolbar.xaml:82 |
+| Storage | %APPDATA%\FilesKmp\toolbar.txt (context, command, icon, label per line); unknown contexts → 其他內容, unknown commands dropped | src:AppearanceSettingsService.cs:177-181; ToolbarSections.cs:124-131 |
+| Commands available | about 90 across 主題, 介面, 分割畫面, 執行, 壓縮, 媒體, 導覽, 影像, 排序, 新增, 檔案操作, 版面配置, 視窗, 選取, 開啟 — only ones this app can run (Git, 7z, install font/driver/certificate, run as admin, Start menu, recycle-bin and grouping commands are not included) | ToolbarModel.kt |
+| Verified | simulated drag of 剪下 to the end + 儲存 saved the new order | --test-toolbar-drag |
+
+## Background picture rotation (round 6, person's request)
+| Rule | Value |
+|---|---|
+| Pictures | a list (add files, or every picture in a folder); "使用" picks the current one |
+| 切換方式 | 固定一張 / 定時切換 (every N minutes, default 10, 1–1440) / 每次開啟時切換 |
+| 隨機順序 | optional shuffle (never the same picture twice in a row) |
+| 依資料夾顯示背景 | folder → picture rules, optionally including subfolders; the most specific folder wins; Home, tag and search views use the normal picture |
+| Toolbar | 下一張背景圖片 command (主題); 設定為應用程式背景 on pictures adds them to the list |
 
 ## Behaviour defaults
 | Setting | Default | Source |

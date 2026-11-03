@@ -25,6 +25,10 @@ object M {
     const val OMNIBAR_HEIGHT = 38
     const val OMNIBAR_RADIUS = 19
 
+    // Customize toolbar window (ToolbarCustomizationDialog.cs:17-67)
+    const val TOOLBAR_DIALOG_W = 760
+    const val TOOLBAR_DIALOG_H = 560
+
     // Command toolbar card
     const val CARD_RADIUS = 8
     const val TOOLBAR_HEIGHT = 48        // estimated (WinUI CommandBar compact height + padding)
@@ -64,8 +68,17 @@ object M {
     const val COL_DATE_MODIFIED = 200
     const val COL_TYPE = 140
     const val COL_SIZE = 100
+    const val COL_TAG = 140                  // LayoutSettingsService.cs:128-294 (Tag column, shown by default)
 
-    // Home widgets
+    // Home widgets (UniformGridLayout settings in the widget XAML files)
+    const val WIDGET_SPACING = 8f
+    const val QA_MIN_W = 100            // QuickAccessWidget.xaml:16-23
+    const val QA_H = 72
+    const val QA_MAX_COLS = 6
+    const val QA_ICON = 32
+    const val TAG_MIN_W = 220           // FileTagsWidget.xaml:30-35
+    const val TAG_H = 260
+    const val TAG_MAX_COLS = 6
     const val DRIVE_TILE_MIN_W = 240
     const val DRIVE_TILE_MIN_H = 72
     const val DRIVE_ICON = 32
@@ -75,6 +88,18 @@ object M {
     const val DRIVE_QUERY_TIMEOUT_MS = 1500L
     const val SHELL_QUERY_TIMEOUT_MS = 6000L
     const val RECENT_FILES_LIMIT = 50
+    // Thumbnails (shell thumbnails like Explorer; ShowThumbnails on by default: FoldersSettingsService.cs:124)
+    const val THUMB_SMALL = 96            // px requested for small views (estimated)
+    const val THUMB_LARGE = 256           // px for grid / cards / preview (Constants.cs ShellIconSizes.Jumbo = 256)
+    const val THUMB_RADIUS = 2            // App.xaml:23-24 thumbnail corner radius
+    const val THUMB_WORKERS = 2           // helper processes (estimated)
+    const val THUMB_MEMORY_ITEMS = 400    // thumbnails kept in memory (estimated)
+    const val BG_DEFAULT_INTERVAL_MIN = 10 // background picture timer (estimated)
+    const val MICA_BLUR = 18f             // blur on the 320-px wallpaper copy (estimated)
+    const val FOLDER_SIZE_WORKERS = 2     // folders measured at once (estimated)
+    const val PREVIEW_MAX_BYTES = 40L * 1024 * 1024   // pictures larger than this aren't decoded for preview (estimated)
+    const val SEARCH_LIMIT = 5000          // deep search stops after this many results (estimated)
+    const val TAG_WIDGET_FILES = 8         // files listed per tag card on Home (estimated)
 
     // Copy engine (rebuild's own, FastCopy-style)
     const val COPY_BUFFER_BYTES = 8 * 1024 * 1024

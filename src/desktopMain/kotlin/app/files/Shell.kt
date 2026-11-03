@@ -23,6 +23,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -76,7 +77,7 @@ fun TabStrip(s: AppState) {
             ) {
                 Hover(Modifier.fillMaxSize(), onClick = { s.tabIndex = i }, shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp), enabled = !sel) {
                     Row(Modifier.fillMaxSize().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (t.isHome) Icons.Outlined.Home else Icons.Filled.Folder, null, Modifier.size(16.dp), tint = if (t.isHome) p.text else p.folder)
+                        Icon(if (t.isHome) Icons.Filled.Home else Icons.Filled.Folder, null, Modifier.size(16.dp), tint = if (t.isHome) Color(0xFFF7630C) else p.folder)
                         Spacer(Modifier.width(10.dp))
                         T(t.title, Modifier.weight(1f), size = 12.sp)
                         IconBtn(Icons.Outlined.Close, "Close tab", { s.closeTab(i) }, width = 28.dp, height = 24.dp, iconSize = 12.dp)
@@ -152,11 +153,16 @@ fun Omnibar(s: AppState, modifier: Modifier) {
             LaunchedEffect(Unit) { fr.requestFocus() }
             Icon(Icons.Outlined.Search, null, Modifier.padding(start = 12.dp).size(16.dp), tint = p.textSecondary)
             Box(Modifier.weight(1f).padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
-                if (s.searchText.isEmpty()) T("Search for files and folders...", color = p.textTertiary)
+                if (s.searchText.isEmpty()) T(S.searchPlaceholder + "  ·  " + S.searchSubfolders, color = p.textTertiary)
                 BasicTextField(
                     s.searchText, { s.searchText = it }, singleLine = true,
                     textStyle = TextStyle(color = p.text, fontSize = 14.sp), cursorBrush = SolidColor(p.text),
-                    modifier = Modifier.fillMaxWidth().focusRequester(fr).onFocusChanged { s.textFocus = it.isFocused },
+                    modifier = Modifier.fillMaxWidth().focusRequester(fr).onFocusChanged { s.textFocus = it.isFocused }
+                        .onPreviewKeyEvent {
+                            if (it.type == KeyEventType.KeyDown && it.key == Key.Enter) { s.searchDeep(s.searchText); true }
+                            else if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { searching = false; s.searchText = ""; true }
+                            else false
+                        },
                 )
             }
             IconBtn(Icons.Outlined.Close, "Close search", { searching = false; s.searchText = "" }, width = 34.dp, height = 34.dp, iconSize = 14.dp)
@@ -168,9 +174,12 @@ fun Omnibar(s: AppState, modifier: Modifier) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Hover(Modifier.height(34.dp).width(40.dp), onClick = { s.navigate(HOME) }, shape = RoundedCornerShape(17.dp)) {
-                    Icon(Icons.Outlined.Home, "Home", Modifier.size(16.dp).align(Alignment.Center), tint = p.text)
+                    Icon(Icons.Filled.Home, S.home, Modifier.size(16.dp).align(Alignment.Center), tint = Color(0xFFF7630C))
                 }
-                if (!t.isHome) {
+                if (t.isVirtual && !t.isHome) {
+                    Icon(Icons.Outlined.ChevronRight, null, Modifier.size(14.dp), tint = p.textSecondary)
+                    Hover(Modifier.height(30.dp), onClick = {}) { T(t.title, Modifier.align(Alignment.Center).padding(horizontal = 8.dp)) }
+                } else if (!t.isHome) {
                     val crumbs = Fs.breadcrumbs(t.location)
                     val scroll = rememberScrollState()
                     LaunchedEffect(t.location) { scroll.scrollTo(scroll.maxValue) }
@@ -184,12 +193,12 @@ fun Omnibar(s: AppState, modifier: Modifier) {
                     }
                 } else {
                     Icon(Icons.Outlined.ChevronRight, null, Modifier.size(14.dp), tint = p.textSecondary)
-                    Hover(Modifier.height(30.dp), onClick = {}) { T("Home", Modifier.align(Alignment.Center).padding(horizontal = 8.dp)) }
+                    Hover(Modifier.height(30.dp), onClick = {}) { T(S.home, Modifier.align(Alignment.Center).padding(horizontal = 8.dp)) }
                 }
                 Spacer(Modifier.weight(1f))
             }
-            if (!t.isHome) {
-                IconBtn(Icons.Outlined.Search, "Search (Ctrl+F)", { searching = true }, width = 34.dp, height = 34.dp, iconSize = 16.dp)
+            if (!t.isHome && !t.isTag) {
+                IconBtn(Icons.Outlined.Search, S.search + " (Ctrl+F)", { searching = true }, width = 34.dp, height = 34.dp, iconSize = 16.dp)
             }
         }
     }
@@ -203,7 +212,7 @@ suspend fun androidx.compose.ui.input.pointer.PointerInputScope.detectTapGesture
 
 @Composable
 fun PathEditor(s: AppState) {
-    val start = if (s.tab.isHome) "Home" else s.tab.location
+    val start = if (s.tab.isVirtual) S.home else s.tab.location
     EditBox(
         initial = start,
         selectStem = false,
@@ -211,7 +220,7 @@ fun PathEditor(s: AppState) {
             s.editingPath = false
             val v = text.trim().trim('"')
             when {
-                v.equals("Home", true) || v.isEmpty() -> if (!s.tab.isHome) s.navigate(HOME)
+                v.equals("Home", true) || v == S.home || v.isEmpty() -> if (!s.tab.isHome) s.navigate(HOME)
                 v == start -> {}
                 File(v).exists() -> s.navigate(File(v).absolutePath)
                 else -> s.toast = "Can't find \"$v\". Check the spelling and try again."
@@ -244,6 +253,7 @@ fun CommandToolbar(s: AppState) {
     val t = s.tab
     val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
     val hasSel = t.selection.isNotEmpty() && !t.isHome
+    val zipSelected = t.selection.any { it.endsWith(".zip", true) }
     var newOpen by remember { mutableStateOf(false) }
     var selOpen by remember { mutableStateOf(false) }
     var sortOpen by remember { mutableStateOf(false) }
@@ -252,44 +262,30 @@ fun CommandToolbar(s: AppState) {
         Modifier.fillMaxWidth().height(M.TOOLBAR_HEIGHT.dp).clip(shape).background(p.toolbar, shape).border(1.dp, p.cardStroke, shape).padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box {
-            ToolButton(Icons.Outlined.AddCircleOutline, "New", { newOpen = true }, enabled = !t.isHome, chevron = true)
-            Flyout(newOpen, { newOpen = false }) {
-                FlyoutItem("Folder", Icons.Filled.Folder, "Ctrl+Shift+N", iconTint = p.folder) { newOpen = false; s.newFolder() }
-                FlyoutItem("Text document", Icons.Outlined.Description, "") { newOpen = false; s.newFile() }
-            }
-        }
-        Spacer(Modifier.width(4.dp)); VDivider(); Spacer(Modifier.width(4.dp))
-        IconBtn(Icons.Outlined.ContentCut, "Cut (Ctrl+X)", { s.copy(cut = true) }, enabled = hasSel, width = 40.dp, height = 36.dp)
-        IconBtn(Icons.Outlined.ContentCopy, "Copy (Ctrl+C)", { s.copy() }, enabled = hasSel, width = 40.dp, height = 36.dp)
-        IconBtn(Icons.Outlined.ContentPaste, "Paste (Ctrl+V)", { s.paste() }, enabled = s.clipboard != null && !t.isHome, width = 40.dp, height = 36.dp)
-        IconBtn(Icons.Outlined.DriveFileRenameOutline, "Rename (F2)", { s.startRename() }, enabled = t.selection.size == 1 && !t.isHome, width = 40.dp, height = 36.dp)
-        IconBtn(Icons.Outlined.Link, "Copy path (Ctrl+Shift+C)", { s.copyPath() }, enabled = !t.isHome, width = 40.dp, height = 36.dp)
-        IconBtn(Icons.Outlined.Delete, "Delete (Delete)", { s.requestDelete() }, enabled = hasSel, width = 40.dp, height = 36.dp)
-        IconBtn(Icons.Outlined.Info, "Properties (Alt+Enter)", { s.infoPaneOpen = true }, enabled = hasSel, width = 40.dp, height = 36.dp)
-        Spacer(Modifier.weight(1f))
+        // Left part: the customizable toolbar (自訂工具列).
+        CustomToolbar(s, Modifier.weight(1f))
         if (!t.isHome) {
             Box {
                 IconBtn(Icons.Outlined.Checklist, "Selection options", { selOpen = true }, width = 46.dp, height = 36.dp)
                 Flyout(selOpen, { selOpen = false }) {
-                    FlyoutItem("Select all", Icons.Outlined.SelectAll, "Ctrl+A") { selOpen = false; s.selectAll() }
-                    FlyoutItem("Invert selection", Icons.Outlined.FlipToBack, "") { selOpen = false; s.invertSelection() }
-                    FlyoutItem("Clear selection", Icons.Outlined.Deselect, "") { selOpen = false; s.clearSelection() }
+                    FlyoutItem(S.selectAll, Icons.Outlined.SelectAll, "Ctrl+A") { selOpen = false; s.selectAll() }
+                    FlyoutItem(S.invertSelection, Icons.Outlined.FlipToBack, "") { selOpen = false; s.invertSelection() }
+                    FlyoutItem(S.clearSelection, Icons.Outlined.Deselect, "") { selOpen = false; s.clearSelection() }
                 }
             }
             Box {
-                ToolButton(Icons.Outlined.Sort, "Sort", { sortOpen = true })
+                ToolButton(Icons.Outlined.Sort, S.sort, { sortOpen = true })
                 Flyout(sortOpen, { sortOpen = false }) {
                     SortBy.entries.forEach { sb ->
-                        FlyoutItem(sb.label, if (s.sortBy == sb) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortBy = sb }
+                        FlyoutItem(sb.text, if (s.sortBy == sb) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortBy = sb }
                     }
                     FlyoutSeparator()
-                    FlyoutItem("Ascending", if (s.sortAscending) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortAscending = true }
-                    FlyoutItem("Descending", if (!s.sortAscending) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortAscending = false }
+                    FlyoutItem(S.ascending, if (s.sortAscending) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortAscending = true }
+                    FlyoutItem(S.descending, if (!s.sortAscending) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortAscending = false }
                 }
             }
             Box {
-                ToolButton(layoutIcon(s.layout), "Layout", { layoutOpen = true })
+                ToolButton(layoutIcon(s.layout), S.layout, { layoutOpen = true })
                 Flyout(layoutOpen, { layoutOpen = false }) {
                     Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         LayoutMode.entries.forEach { lm ->
@@ -297,18 +293,37 @@ fun CommandToolbar(s: AppState) {
                                 Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                                     Icon(layoutIcon(lm), lm.label, Modifier.size(28.dp), tint = if (s.layout == lm) p.accent else p.text)
                                     Spacer(Modifier.height(6.dp))
-                                    T(lm.label, size = 12.sp)
+                                    T(lm.text, size = 12.sp)
                                 }
                             }
                         }
                     }
                     FlyoutSeparator()
-                    FlyoutItem("Show hidden items", if (s.showHidden) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "Ctrl+H") { s.showHidden = !s.showHidden }
-                    FlyoutItem("Show file extensions", if (s.showExtensions) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showExtensions = !s.showExtensions }
+                    FlyoutItem(S.showHidden, if (s.showHidden) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "Ctrl+H") { s.showHidden = !s.showHidden }
+                    FlyoutItem(S.fileExtensions, if (s.showExtensions) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showExtensions = !s.showExtensions }
+                    FlyoutItem(S.showThumbnails, if (s.showThumbnails) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showThumbnails = !s.showThumbnails }
                 }
             }
         }
-        IconBtn(Icons.Outlined.VerticalSplit, "Details pane (Ctrl+Alt+I)", { s.infoPaneOpen = !s.infoPaneOpen }, selected = s.infoPaneOpen, width = 40.dp, height = 36.dp)
+        Box {
+            var panesOpen by remember { mutableStateOf(false) }
+            val ct = s.currentTab
+            IconBtn(
+                if (ct.right != null && ct.arrangement == PaneArrangement.Horizontal) Icons.Outlined.Splitscreen else Icons.Outlined.VerticalSplit,
+                S.panes, { panesOpen = true }, selected = ct.right != null, width = 40.dp, height = 36.dp,
+            )
+            Flyout(panesOpen, { panesOpen = false }) {
+                FlyoutItem(S.splitVertical, Icons.Outlined.VerticalSplit, "Ctrl+Shift+S") { panesOpen = false; s.splitPane(PaneArrangement.Vertical) }
+                FlyoutItem(S.splitHorizontal, Icons.Outlined.Splitscreen, "") { panesOpen = false; s.splitPane(PaneArrangement.Horizontal) }
+                FlyoutSeparator()
+                FlyoutItem(S.arrangeVertical, if (ct.right != null && ct.arrangement == PaneArrangement.Vertical) Icons.Outlined.Check else null, "", enabled = ct.right != null) { panesOpen = false; s.arrangePanes(PaneArrangement.Vertical) }
+                FlyoutItem(S.arrangeHorizontal, if (ct.right != null && ct.arrangement == PaneArrangement.Horizontal) Icons.Outlined.Check else null, "", enabled = ct.right != null) { panesOpen = false; s.arrangePanes(PaneArrangement.Horizontal) }
+                FlyoutSeparator()
+                FlyoutItem(S.focusOtherPane, Icons.Outlined.SwapHoriz, "", enabled = ct.right != null) { panesOpen = false; s.focusOtherPane() }
+                FlyoutItem(S.closePane, Icons.Outlined.Close, "", enabled = ct.right != null) { panesOpen = false; s.closeActivePane() }
+            }
+        }
+        IconBtn(Icons.Outlined.ViewSidebar, S.details + " (Ctrl+Alt+I)", { s.infoPaneOpen = !s.infoPaneOpen }, selected = s.infoPaneOpen, width = 40.dp, height = 36.dp)
     }
 }
 
@@ -367,40 +382,84 @@ fun FlyoutSeparator() {
 @Composable
 fun Sidebar(s: AppState, modifier: Modifier) {
     val p = LocalPalette.current
-    var pinnedOpen by remember { mutableStateOf(true) }     // expanded by default
-    var drivesOpen by remember { mutableStateOf(true) }     // expanded by default
-    var networkOpen by remember { mutableStateOf(false) }   // collapsed by default
+    // Expanded by default: Pinned, Drives, Cloud Drives. The rebuild also opens Network, WSL and
+    // Tags so they show like the person's own setup (original defaults: collapsed).
+    var pinnedOpen by remember { mutableStateOf(true) }
+    var drivesOpen by remember { mutableStateOf(true) }
+    var cloudOpen by remember { mutableStateOf(true) }
+    var networkOpen by remember { mutableStateOf(true) }
+    var wslOpen by remember { mutableStateOf(true) }
+    var tagsOpen by remember { mutableStateOf(true) }
     val loc = s.tab.location
-    Column(modifier.fillMaxHeight().background(p.layer)) {
+    Column(modifier.fillMaxHeight()) {
         LazyColumn(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-            item { SidebarRow("Home", Icons.Outlined.Home, null, loc == HOME, 0) { s.navigate(HOME) } }
-            item { SidebarSection("Pinned", pinnedOpen) { pinnedOpen = !pinnedOpen } }
+            item {
+                SidebarRow(S.home, 0, loc == HOME, onClick = { s.navigate(HOME) }) {
+                    Icon(Icons.Filled.Home, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFFF7630C))
+                }
+            }
+            item { Spacer(Modifier.height(6.dp)) }
+            item { SidebarSection(S.pinned, "pinned", pinnedOpen) { pinnedOpen = !pinnedOpen } }
             if (pinnedOpen) items(s.pinned) { f ->
-                SidebarRow(f.name, knownFolderIcon(f), p.folder.takeIf { knownFolderIcon(f) == Icons.Filled.Folder }, loc == f.path, 1,
-                    menu = { listOf(MenuEntry("Open in new tab", Icons.Outlined.Tab) { s.newTab(f.path) }, MenuEntry("Copy path", Icons.Outlined.Link) { copyText(f.path) }) }) { s.navigate(f.path) }
+                SidebarRow(f.name, 1, loc == f.path,
+                    menu = { listOf(
+                        MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(f.path) },
+                        MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(f.path) },
+                        MenuEntry(S.unpinFromSidebar, Icons.Outlined.PushPin, separatorBefore = true) { s.unpin(f.path) },
+                    ) },
+                    onClick = { s.navigate(f.path) }) { KnownFolderGlyph(knownKind(f), M.SIDEBAR_ICON.dp) }
             }
-            item { SidebarSection("Drives", drivesOpen) { drivesOpen = !drivesOpen } }
+            item { SidebarSection(S.drives, "drives", drivesOpen) { drivesOpen = !drivesOpen } }
             if (drivesOpen) items(s.drives) { d ->
-                SidebarRow(d.title, Icons.Outlined.Storage, null, loc.equals(d.root, true), 1,
-                    menu = { listOf(MenuEntry("Open in new tab", Icons.Outlined.Tab) { s.newTab(d.root) }) }) { s.navigate(d.root) }
+                SidebarRow(d.title, 1, loc.equals(d.root, true), chevron = true,
+                    menu = { listOf(MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(d.root) }) },
+                    onClick = { s.navigate(d.root) }) { DriveGlyph(driveKind(d), M.SIDEBAR_ICON.dp) }
             }
-            item { SidebarSection("Network", networkOpen) { networkOpen = !networkOpen } }
+            if (s.cloud.isNotEmpty()) {
+                item { SidebarSection(S.cloudDrives, "cloud", cloudOpen) { cloudOpen = !cloudOpen } }
+                if (cloudOpen) items(s.cloud) { c ->
+                    SidebarRow(c.name, 1, loc == c.path, chevron = !c.name.contains("Photos"), onClick = { s.navigate(c.path) }) {
+                        if (c.name.contains("Photos")) Icon(Icons.Filled.LocalFlorist, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFFF29B38))
+                        else Icon(Icons.Filled.Cloud, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFF2F95F0))
+                    }
+                }
+            }
+            item { SidebarSection(S.network, "network", networkOpen) { networkOpen = !networkOpen } }
             if (networkOpen) item {
-                val nets = s.drives.filter { it.root.startsWith("\\\\") }
-                if (nets.isEmpty()) T("No network locations", Modifier.padding(start = 44.dp, top = 6.dp, bottom = 6.dp), size = 12.sp, color = p.textSecondary)
+                SidebarRow(S.network, 1, false, onClick = { Fs.open("shell:NetworkPlacesFolder") }) {
+                    Icon(Icons.Filled.Computer, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFF2B88D8))
+                }
+            }
+            if (s.wsl.isNotEmpty()) {
+                item { SidebarSection(S.wsl, "wsl", wslOpen) { wslOpen = !wslOpen } }
+                if (wslOpen) items(s.wsl) { d ->
+                    val path = "\\\\wsl.localhost\\$d"
+                    SidebarRow(d, 1, loc == path, onClick = { s.navigate(path) }) {
+                        if (d.contains("ubuntu", true)) Icon(Icons.Filled.TripOrigin, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFFE95420))
+                        else Icon(Icons.Filled.Terminal, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFF2B2B2B))
+                    }
+                }
+            }
+            item { SidebarSection(S.tags, "tags", tagsOpen) { tagsOpen = !tagsOpen } }
+            if (tagsOpen) items(s.tagStore.defs, key = { it.name }) { t ->
+                SidebarRow(t.name, 1, loc == "$TAG_PREFIX${t.name}", onClick = { s.navigate("$TAG_PREFIX${t.name}") }) {
+                    Icon(Icons.Filled.LocalOffer, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(t.color))
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(1.dp).background(p.divider))
+        Box(Modifier.padding(4.dp)) {
+            SidebarRow(S.settings, 0, s.settingsOpen, onClick = { s.settingsOpen = true }) {
+                Icon(Icons.Outlined.Settings, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = p.text)
             }
         }
     }
 }
 
-fun knownFolderIcon(f: PinnedFolder) = when {
-    f.path.endsWith("\\Desktop", true) || f.name in setOf("Desktop", "桌面") -> Icons.Outlined.DesktopWindows
-    f.path.endsWith("\\Downloads", true) || f.name in setOf("Downloads", "下載") -> Icons.Outlined.Download
-    f.name in setOf("Documents", "文件") -> Icons.Outlined.Description
-    f.name in setOf("Pictures", "圖片") -> Icons.Outlined.Image
-    f.name in setOf("Music", "音樂") -> Icons.Outlined.MusicNote
-    f.name in setOf("Videos", "影片") -> Icons.Outlined.Movie
-    else -> Icons.Filled.Folder
+fun driveKind(d: DriveInfo): DriveKind = when {
+    d.isSystem -> DriveKind.System
+    CopyEngine.isUsb(d.root) -> DriveKind.Usb
+    else -> DriveKind.Hdd
 }
 
 fun copyText(text: String) {
@@ -408,11 +467,14 @@ fun copyText(text: String) {
 }
 
 @Composable
-fun SidebarSection(title: String, open: Boolean, onToggle: () -> Unit) {
+fun SidebarSection(title: String, iconKey: String, open: Boolean, onToggle: () -> Unit) {
     val p = LocalPalette.current
+    val (icon, tint) = sectionIcon(iconKey)
     Hover(Modifier.fillMaxWidth().height(M.SIDEBAR_ROW.dp).padding(vertical = 2.dp), onClick = onToggle) {
         Row(Modifier.fillMaxSize().padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(if (open) Icons.Outlined.ExpandMore else Icons.Outlined.ChevronRight, null, Modifier.size(16.dp), tint = p.textSecondary)
+            Icon(if (open) Icons.Outlined.ExpandMore else Icons.Outlined.ChevronRight, null, Modifier.size(14.dp), tint = p.textSecondary)
+            Spacer(Modifier.width(8.dp))
+            Icon(icon, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = tint)
             Spacer(Modifier.width(8.dp))
             T(title, size = 14.sp, weight = FontWeight.SemiBold)
         }
@@ -422,21 +484,25 @@ fun SidebarSection(title: String, open: Boolean, onToggle: () -> Unit) {
 @Composable
 fun SidebarRow(
     label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    tint: Color?,
-    selected: Boolean,
     indent: Int,
+    selected: Boolean,
+    chevron: Boolean = false,
     menu: (() -> List<MenuEntry>)? = null,
     onClick: () -> Unit,
+    icon: @Composable () -> Unit,
 ) {
     val p = LocalPalette.current
     val m = Modifier.fillMaxWidth().height(M.SIDEBAR_ROW.dp).padding(vertical = 2.dp)
     Box(if (menu != null) m.contextMenu(entries = menu) else m) {
-        Hover(Modifier.fillMaxSize().then(if (selected) Modifier.border(1.dp, p.controlStroke, RoundedCornerShape(4.dp)) else Modifier), onClick = onClick, selected = selected, selectedColor = p.control.copy(alpha = if (p.dark) 0.1f else 1f)) {
+        Hover(Modifier.fillMaxSize(), onClick = onClick, selected = selected, selectedColor = p.hover) {
             Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(M.SIDEBAR_INDICATOR_W.dp).height(M.SIDEBAR_INDICATOR_H.dp).clip(RoundedCornerShape(2.dp)).background(if (selected) p.accent else Color.Transparent))
-                Spacer(Modifier.width((10 + indent * 20).dp))
-                Icon(icon, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = tint ?: p.text)
+                Spacer(Modifier.width((3 + indent * 14).dp))
+                Box(Modifier.width(16.dp)) {
+                    if (chevron) Icon(Icons.Outlined.ChevronRight, null, Modifier.size(14.dp), tint = p.textSecondary)
+                }
+                Spacer(Modifier.width(6.dp))
+                Box(Modifier.size(M.SIDEBAR_ICON.dp)) { icon() }
                 Spacer(Modifier.width(12.dp))
                 T(label, Modifier.weight(1f), size = 14.sp)
             }
@@ -456,9 +522,8 @@ fun Splitter(onDrag: (Float) -> Unit) {
 // ====================================================================== status bar
 
 @Composable
-fun StatusBar(s: AppState, items: List<FileItem>) {
+fun StatusBar(s: AppState, items: List<FileItem>, t: TabState = s.tab) {
     val p = LocalPalette.current
-    val t = s.tab
     val selected = items.filter { it.path in t.selection }
     Column {
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.divider))
@@ -468,14 +533,15 @@ fun StatusBar(s: AppState, items: List<FileItem>) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (t.isHome) {
-                T("${s.pinned.size + s.drives.size + s.recent.size} items", size = 12.sp, color = p.textSecondary)
+                T(S.items(s.pinned.size + s.drives.size + s.recent.size), size = 12.sp, color = p.textSecondary)
             } else {
-                T("${items.size} ${if (items.size == 1) "item" else "items"}", size = 12.sp, color = p.textSecondary)
+                T(S.items(items.size), size = 12.sp, color = p.textSecondary)
                 if (selected.isNotEmpty()) {
                     VDivider()
-                    T("${selected.size} ${if (selected.size == 1) "item" else "items"} selected", size = 12.sp, color = p.textSecondary)
-                    val bytes = selected.filter { !it.isDir }.sumOf { it.size }
-                    if (selected.any { !it.isDir }) {
+                    T(S.selected(selected.size), size = 12.sp, color = p.textSecondary)
+                    // Files plus any folders whose size has been worked out.
+                    val bytes = selected.sumOf { s.sizeOf(it) ?: 0L }
+                    if (selected.any { s.sizeOf(it) != null }) {
                         VDivider()
                         T(Fs.sizeText(bytes), size = 12.sp, color = p.textSecondary)
                     }

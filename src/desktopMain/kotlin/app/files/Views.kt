@@ -21,6 +21,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -34,58 +36,47 @@ fun HomePage(s: AppState) {
     val p = LocalPalette.current
     var qaOpen by remember { mutableStateOf(true) }
     var drivesOpen by remember { mutableStateOf(true) }
-    var netOpen by remember { mutableStateOf(false) }     // collapsed by default in the original
+    var tagsOpen by remember { mutableStateOf(true) }
     var recentOpen by remember { mutableStateOf(true) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
-        item {
-            Widget("Quick access", qaOpen, { qaOpen = !qaOpen }) {
+    var netOpen by remember { mutableStateOf(false) }   // collapsed by default in the original
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
+        if (s.showQuickAccessWidget) item {
+            Widget(S.quickAccess, qaOpen, { qaOpen = !qaOpen }) {
                 if (!s.pinnedLoaded) LoadingRow()
-                else FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    s.pinned.forEach { f ->
-                        Box(Modifier.contextMenu {
-                            listOf(
-                                MenuEntry("Open in new tab", Icons.Outlined.Tab) { s.newTab(f.path) },
-                                MenuEntry("Open in terminal", Icons.Outlined.Terminal) { Fs.openInTerminal(f.path) },
-                                MenuEntry("Copy path", Icons.Outlined.Link) { copyText(f.path) },
-                            )
-                        }) {
-                            Hover(Modifier.size(width = 128.dp, height = 96.dp), onClick = { s.navigate(f.path) }) {
-                                Column(Modifier.fillMaxSize().padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                                    val ic = knownFolderIcon(f)
-                                    Box {
-                                        Icon(Icons.Filled.Folder, null, Modifier.size(40.dp), tint = p.folder)
-                                        if (ic != Icons.Filled.Folder) Icon(ic, null, Modifier.size(16.dp).align(Alignment.Center).offset(y = 2.dp), tint = Color(0xFF7A5A12))
-                                    }
-                                    Spacer(Modifier.height(6.dp))
-                                    T(f.name, size = 12.sp, weight = FontWeight.Normal)
-                                }
-                            }
-                        }
-                    }
+                else UniformGrid(M.QA_MIN_W, M.QA_H, M.QA_MAX_COLS, stretch = true, count = s.pinned.size) { i, w ->
+                    QuickAccessCard(s, s.pinned[i], w)
                 }
             }
         }
-        item {
-            Widget("Drives", drivesOpen, { drivesOpen = !drivesOpen }) {
+        if (s.showDrivesWidget) item {
+            Widget(S.drives, drivesOpen, { drivesOpen = !drivesOpen }) {
                 if (!s.drivesLoaded) LoadingRow()
-                else FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    s.drives.forEach { d -> DriveTile(s, d) }
+                else UniformGrid(M.DRIVE_TILE_MIN_W, M.DRIVE_TILE_MIN_H, Int.MAX_VALUE, stretch = false, count = s.drives.size) { i, _ ->
+                    DriveTile(s, s.drives[i])
                 }
             }
         }
-        item {
-            Widget("Network locations", netOpen, { netOpen = !netOpen }) {
-                T("No network locations. Mapped network drives show up here.", size = 12.sp, color = p.textSecondary)
+        if (s.showNetworkWidget) item {
+            Widget(S.networkLocations, netOpen, { netOpen = !netOpen }) {
+                T(S.noNetwork, Modifier.padding(8.dp), size = 12.sp, color = p.textSecondary)
             }
         }
-        item {
-            Widget("Recent files", recentOpen, { recentOpen = !recentOpen }) {
+        if (s.showTagsWidget) item {
+            Widget(S.tags, tagsOpen, { tagsOpen = !tagsOpen }) {
+                val defs = s.tagStore.defs
+                UniformGrid(M.TAG_MIN_W, M.TAG_H, M.TAG_MAX_COLS, stretch = true, count = defs.size) { i, w ->
+                    TagCard(s, defs[i], w)
+                }
+            }
+        }
+        if (s.showRecentWidget) item {
+            Widget(S.recentFiles, recentOpen, { recentOpen = !recentOpen }) {
                 when {
                     !s.recentLoaded -> LoadingRow()
                     s.recent.isEmpty() -> Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Outlined.History, null, Modifier.size(32.dp), tint = p.textTertiary)
                         Spacer(Modifier.height(8.dp))
-                        T("Files you've previously accessed will show up here", color = p.textSecondary)
+                        T(S.recentEmpty, color = p.textSecondary)
                     }
                     else -> Column {
                         s.recent.forEach { r ->
@@ -105,23 +96,78 @@ fun HomePage(s: AppState) {
     }
 }
 
+/** Card surface used by the Home widgets (CardBackgroundFillColorDefault + CardStroke, radius 4). */
+@Composable
+fun HomeCard(modifier: Modifier, onClick: (() -> Unit)?, content: @Composable BoxScope.() -> Unit) {
+    val p = LocalPalette.current
+    val shape = RoundedCornerShape(M.CONTROL_RADIUS.dp)
+    Box(modifier.clip(shape).background(p.card, shape).border(1.dp, p.cardStroke, shape)) {
+        Hover(Modifier.matchParentSize(), onClick = onClick, shape = shape) {}
+        content()
+    }
+}
+
+/**
+ * WinUI UniformGridLayout as the original uses it: columns = as many min-width items as fit
+ * (8 px spacing), capped at maxCols; with stretch every item widens to fill its column.
+ */
+@Composable
+fun UniformGrid(minW: Int, itemH: Int, maxCols: Int, stretch: Boolean, count: Int, item: @Composable (Int, androidx.compose.ui.unit.Dp) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val spacing = M.WIDGET_SPACING
+        val avail = maxWidth.value
+        val cols = (((avail + spacing) / (minW + spacing)).toInt()).coerceIn(1, maxCols)
+        val w = if (stretch) (avail - spacing * (cols - 1)) / cols else minW.toFloat()
+        Column(verticalArrangement = Arrangement.spacedBy(spacing.dp)) {
+            for (row in 0 until (count + cols - 1) / cols) {
+                Row(horizontalArrangement = Arrangement.spacedBy(spacing.dp)) {
+                    for (c in 0 until cols) {
+                        val i = row * cols + c
+                        if (i < count) Box(Modifier.width(w.dp).height(itemH.dp)) { item(i, w.dp) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun QuickAccessCard(s: AppState, f: PinnedFolder, width: androidx.compose.ui.unit.Dp) {
+    val p = LocalPalette.current
+    Box(Modifier.contextMenu {
+        listOf(
+            MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(f.path) },
+            MenuEntry(S.openInTerminal, Icons.Outlined.Terminal) { Fs.openInTerminal(f.path) },
+            MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(f.path) },
+        )
+    }) {
+        HomeCard(Modifier.size(width, M.QA_H.dp), onClick = { s.navigate(f.path) }) {
+            Column(Modifier.fillMaxSize().padding(top = 12.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceBetween) {
+                KnownFolderGlyph(knownKind(f), M.QA_ICON.dp)
+                T(f.name, size = 14.sp)
+            }
+            Icon(Icons.Outlined.PushPin, null, Modifier.align(Alignment.TopEnd).padding(6.dp).size(14.dp), tint = p.textSecondary)
+        }
+    }
+}
+
 @Composable
 fun LoadingRow() {
-    T("Loading…", Modifier.padding(8.dp), size = 12.sp, color = LocalPalette.current.textSecondary)
+    T(S.loading, Modifier.padding(8.dp), size = 12.sp, color = LocalPalette.current.textSecondary)
 }
 
 @Composable
 fun Widget(title: String, open: Boolean, onToggle: () -> Unit, content: @Composable () -> Unit) {
     val p = LocalPalette.current
-    Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-        Hover(Modifier.height(36.dp), onClick = onToggle) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+        Hover(Modifier.height(32.dp), onClick = onToggle) {
             Row(Modifier.fillMaxHeight().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (open) Icons.Outlined.ExpandMore else Icons.Outlined.ChevronRight, null, Modifier.size(16.dp), tint = p.textSecondary)
-                Spacer(Modifier.width(8.dp))
-                T(title, size = 14.sp, weight = FontWeight.SemiBold)
+                Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, Modifier.size(14.dp), tint = p.textSecondary)
+                Spacer(Modifier.width(12.dp))
+                T(title, size = 12.sp, weight = FontWeight.SemiBold)
             }
         }
-        if (open) Box(Modifier.padding(start = 8.dp, top = 4.dp)) { content() }
+        if (open) Box(Modifier.padding(top = 4.dp)) { content() }
     }
 }
 
@@ -131,27 +177,56 @@ fun DriveTile(s: AppState, d: DriveInfo) {
     val low = d.usedFraction * 100 >= M.LOW_SPACE_PERCENT
     Box(Modifier.contextMenu {
         listOf(
-            MenuEntry("Open in new tab", Icons.Outlined.Tab) { s.newTab(d.root) },
-            MenuEntry("Open in terminal", Icons.Outlined.Terminal) { Fs.openInTerminal(d.root) },
+            MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(d.root) },
+            MenuEntry(S.openInTerminal, Icons.Outlined.Terminal) { Fs.openInTerminal(d.root) },
         )
     }) {
-        Hover(
-            Modifier.widthIn(min = M.DRIVE_TILE_MIN_W.dp).width(260.dp).heightIn(min = M.DRIVE_TILE_MIN_H.dp)
-                .border(1.dp, p.cardStroke, RoundedCornerShape(M.CONTROL_RADIUS.dp)),
-            onClick = { s.navigate(d.root) },
-        ) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Storage, null, Modifier.size(M.DRIVE_ICON.dp), tint = p.textSecondary)
-                Spacer(Modifier.width(12.dp))
+        HomeCard(Modifier.width(M.DRIVE_TILE_MIN_W.dp).height(M.DRIVE_TILE_MIN_H.dp), onClick = { s.navigate(d.root) }) {
+            Row(Modifier.fillMaxSize().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                DriveGlyph(driveKind(d), M.DRIVE_ICON.dp)
+                Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    T(d.title, weight = FontWeight.Normal)
+                    T(d.title)
                     Spacer(Modifier.height(6.dp))
                     if (d.ready) {
                         ProgressBar(d.usedFraction, Modifier.fillMaxWidth(), color = if (low) p.danger else p.accent)
-                        Spacer(Modifier.height(4.dp))
-                        T("${Fs.sizeText(d.free)} free of ${Fs.sizeText(d.total)}", size = 12.sp, color = p.textSecondary)
+                        Spacer(Modifier.height(6.dp))
+                        T(S.freeOf(Fs.sizeText(d.free), Fs.sizeText(d.total)), size = 12.sp, color = p.textSecondary)
                     } else {
-                        T("Not responding — skipped so Home stays fast", size = 12.sp, color = p.textSecondary)
+                        T(S.notResponding, size = 12.sp, color = p.textSecondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One tag on Home: its newest tagged files (click to open), "···" opens the whole tag view. */
+@Composable
+fun TagCard(s: AppState, t: TagDef, width: androidx.compose.ui.unit.Dp) {
+    val p = LocalPalette.current
+    val files = s.tagStore.filesWith(t.name)
+    HomeCard(Modifier.size(width, M.TAG_H.dp), onClick = null) {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().height(38.dp).padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.LocalOffer, null, Modifier.size(16.dp), tint = Color(t.color))
+                Spacer(Modifier.width(8.dp))
+                T(t.name, Modifier.weight(1f), size = 14.sp, weight = FontWeight.SemiBold)
+                IconBtn(Icons.Filled.MoreHoriz, S.openTag, { s.navigate("$TAG_PREFIX${t.name}") }, width = 30.dp, height = 28.dp)
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(p.divider))
+            if (files.isEmpty()) {
+                T(S.noTagged, Modifier.padding(12.dp), size = 12.sp, color = p.textTertiary, maxLines = 4)
+            } else Column(Modifier.padding(4.dp)) {
+                files.take(M.TAG_WIDGET_FILES).forEach { path ->
+                    val name = Fs.displayName(path)
+                    val isDir = java.io.File(path).isDirectory
+                    Hover(Modifier.fillMaxWidth().height(32.dp), onClick = { if (isDir) s.navigate(path) else Fs.open(path) }) {
+                        Row(Modifier.fillMaxSize().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (isDir) FolderGlyph(16.dp) else Icon(iconForExt(name.substringAfterLast('.', "").lowercase()), null, Modifier.size(16.dp), tint = p.textSecondary)
+                            Spacer(Modifier.width(8.dp))
+                            T(name, size = 13.sp)
+                        }
                     }
                 }
             }
@@ -164,26 +239,40 @@ fun DriveTile(s: AppState, d: DriveInfo) {
 @Composable
 fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
     val p = LocalPalette.current
+    // "Calculate folder sizes" on (off by default, FoldersSettingsService.cs:112): size every folder shown.
+    LaunchedEffect(t.raw, s.calculateFolderSizes) {
+        if (s.calculateFolderSizes) items.filter { it.isDir && s.folderSizes[it.path] == null }.forEach { s.calcFolderSize(it.path) }
+    }
     val emptyMenu = {
-        listOf(
-            MenuEntry("New folder", Icons.Filled.Folder, "Ctrl+Shift+N") { s.newFolder() },
-            MenuEntry("New text document", Icons.Outlined.Description) { s.newFile() },
-            MenuEntry("Paste", Icons.Outlined.ContentPaste, "Ctrl+V", enabled = s.clipboard != null, separatorBefore = true) { s.paste() },
-            MenuEntry("Select all", Icons.Outlined.SelectAll, "Ctrl+A") { s.selectAll() },
-            MenuEntry("Refresh", Icons.Outlined.Refresh, "F5", separatorBefore = true) { s.refresh() },
-            MenuEntry("Open in terminal", Icons.Outlined.Terminal, "Ctrl+`") { Fs.openInTerminal(t.location) },
-            MenuEntry("Copy path", Icons.Outlined.Link, "Ctrl+Shift+C") { copyText(t.location) },
+        if (t.isVirtual) listOf(
+            MenuEntry(S.selectAll, Icons.Outlined.SelectAll, "Ctrl+A") { s.selectAll() },
+            MenuEntry(S.refresh, Icons.Outlined.Refresh, "F5") { s.refresh() },
+        ) else listOf(
+            MenuEntry(S.newFolder, Icons.Filled.Folder, "Ctrl+Shift+N") { s.newFolder() },
+            MenuEntry(S.textDocument, Icons.Outlined.Description) { s.newFile() },
+            MenuEntry(S.paste, Icons.Outlined.ContentPaste, "Ctrl+V", enabled = s.clipboard != null, separatorBefore = true) { s.paste() },
+            MenuEntry(S.selectAll, Icons.Outlined.SelectAll, "Ctrl+A") { s.selectAll() },
+            MenuEntry(S.refresh, Icons.Outlined.Refresh, "F5", separatorBefore = true) { s.refresh() },
+            MenuEntry(S.pinToSidebar, Icons.Outlined.PushPin) { s.pin(t.location) },
+            MenuEntry(S.openInTerminal, Icons.Outlined.Terminal, "Ctrl+`") { Fs.openInTerminal(t.location) },
+            MenuEntry(S.copyPath, Icons.Outlined.Link, "Ctrl+Shift+C") { copyText(t.location) },
         )
     }
     Box(
         Modifier.fillMaxSize()
-            .contextMenu(onOpen = { t.selection = emptySet() }, entries = emptyMenu)
-            .pointerInput(t) { detectTapGestures2 { t.selection = emptySet(); t.renaming = null } }
+            .contextMenu(onOpen = { s.activate(t); t.selection = emptySet() }, entries = emptyMenu)
+            .pointerInput(t) { detectTapGestures2 { s.activate(t); t.selection = emptySet(); t.renaming = null } }
     ) {
         when {
             t.error != null -> CenterNote(t.error!!)
-            t.loading && items.isEmpty() -> CenterNote("Loading…")
-            items.isEmpty() -> CenterNote(if (s.searchText.isNotBlank()) "No items match your search." else "This folder is empty.")
+            t.loading && items.isEmpty() -> CenterNote(if (t.isSearch) S.searching else S.loading)
+            items.isEmpty() -> CenterNote(
+                when {
+                    t.isTag -> S.noTagged
+                    t.isSearch || s.searchText.isNotBlank() -> S.noResults
+                    else -> S.emptyFolder
+                }
+            )
             else -> when (s.layout) {
                 LayoutMode.Details -> DetailsLayout(s, t, items)
                 LayoutMode.List -> ListLayout(s, t, items)
@@ -203,17 +292,24 @@ fun CenterNote(text: String) {
 
 fun itemMenu(s: AppState, item: FileItem): List<MenuEntry> {
     val multi = s.tab.selection.size > 1
-    return listOf(
-        MenuEntry("Open", Icons.Outlined.OpenInNew, "Enter") { s.openSelected() },
-        MenuEntry("Open in new tab", Icons.Outlined.Tab, enabled = item.isDir) { s.newTab(item.path) },
-        MenuEntry("Open in terminal", Icons.Outlined.Terminal, enabled = item.isDir) { Fs.openInTerminal(item.path) },
-        MenuEntry("Cut", Icons.Outlined.ContentCut, "Ctrl+X", separatorBefore = true) { s.copy(cut = true) },
-        MenuEntry("Copy", Icons.Outlined.ContentCopy, "Ctrl+C") { s.copy() },
-        MenuEntry("Paste", Icons.Outlined.ContentPaste, "Ctrl+V", enabled = s.clipboard != null) { s.paste() },
-        MenuEntry("Copy path", Icons.Outlined.Link, "Ctrl+Shift+C") { s.copyPath() },
-        MenuEntry("Rename", Icons.Outlined.DriveFileRenameOutline, "F2", enabled = !multi, separatorBefore = true) { s.startRename() },
-        MenuEntry("Delete", Icons.Outlined.Delete, "Delete") { s.requestDelete() },
-        MenuEntry("Properties", Icons.Outlined.Info, "Alt+Enter", separatorBefore = true) { s.infoPaneOpen = true },
+    val isZip = item.ext == "zip"
+    val pinned = s.pinned.any { it.path.equals(item.path, true) }
+    return listOfNotNull(
+        MenuEntry(S.open, Icons.Outlined.OpenInNew, "Enter") { s.openSelected() },
+        MenuEntry(S.openInNewTab, Icons.Outlined.Tab, enabled = item.isDir) { s.newTab(item.path) },
+        MenuEntry(S.openInTerminal, Icons.Outlined.Terminal, enabled = item.isDir) { Fs.openInTerminal(item.path) },
+        if (item.isDir) (if (pinned) MenuEntry(S.unpinFromSidebar, Icons.Outlined.PushPin) { s.unpin(item.path) }
+            else MenuEntry(S.pinToSidebar, Icons.Outlined.PushPin) { s.pin(item.path) }) else null,
+        MenuEntry(S.cut, Icons.Outlined.ContentCut, "Ctrl+X", separatorBefore = true) { s.copy(cut = true) },
+        MenuEntry(S.copy, Icons.Outlined.ContentCopy, "Ctrl+C") { s.copy() },
+        MenuEntry(S.paste, Icons.Outlined.ContentPaste, "Ctrl+V", enabled = s.clipboard != null && s.canCreateHere) { s.paste() },
+        MenuEntry(S.copyPath, Icons.Outlined.Link, "Ctrl+Shift+C") { s.copyPath() },
+        MenuEntry(S.editTags, Icons.Outlined.LocalOffer, separatorBefore = true) { s.editTags() },
+        MenuEntry(S.compress, Icons.Outlined.FolderZip) { s.compressSelected() },
+        if (isZip) MenuEntry(S.extract, Icons.Outlined.Unarchive) { s.extractSelected() } else null,
+        MenuEntry(S.rename, Icons.Outlined.DriveFileRenameOutline, "F2", enabled = !multi, separatorBefore = true) { s.startRename() },
+        MenuEntry(S.delete, Icons.Outlined.Delete, "Delete") { s.requestDelete() },
+        MenuEntry(S.properties, Icons.Outlined.Info, "Alt+Enter", separatorBefore = true) { s.infoPaneOpen = true },
     )
 }
 
@@ -223,12 +319,16 @@ fun ItemBox(s: AppState, t: TabState, item: FileItem, items: List<FileItem>, mod
     val p = LocalPalette.current
     val selected = item.path in t.selection
     val cut = s.clipboard?.let { it.cut && item.path in it.paths } == true
+    val hoverSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val hovered by hoverSrc.collectIsHoveredAsState()
+    CompositionLocalProvider(LocalRow provides RowCtx(s, t, item, hovered)) {
     Box(
         modifier
-            .contextMenu(onOpen = { if (item.path !in t.selection) { t.selection = setOf(item.path); t.anchor = item.path } }) { itemMenu(s, item) }
+            .hoverable(hoverSrc)
+            .contextMenu(onOpen = { s.activate(t); if (item.path !in t.selection) { t.selection = setOf(item.path); t.anchor = item.path } }) { itemMenu(s, item) }
             .itemPointer(
-                onPress = { ctrl, shift -> s.click(item, ctrl, shift, items) },
-                onDouble = { if (item.isDir) s.navigate(item.path) else Fs.open(item.path) },
+                onPress = { ctrl, shift -> s.activate(t); s.click(item, ctrl, shift, items) },
+                onDouble = { if (item.isDir) s.openFolder(item.path) else Fs.open(item.path) },
             )
     ) {
         Hover(Modifier.matchParentSize(), selected = selected, selectedColor = p.selected) {}
@@ -236,7 +336,11 @@ fun ItemBox(s: AppState, t: TabState, item: FileItem, items: List<FileItem>, mod
         // Items that were cut are drawn faded until pasted.
         Box(Modifier.matchParentSize().alpha(if (cut) 0.5f else 1f)) { content(selected) }
     }
+    }
 }
+
+class RowCtx(val s: AppState, val t: TabState, val item: FileItem, val hovered: Boolean)
+val LocalRow = staticCompositionLocalOf<RowCtx?> { null }
 
 @Composable
 fun NameCell(s: AppState, t: TabState, item: FileItem, modifier: Modifier) {
@@ -257,12 +361,15 @@ fun DetailsLayout(s: AppState, t: TabState, items: List<FileItem>) {
     Column(Modifier.fillMaxSize()) {
         // Header (40)
         Row(Modifier.fillMaxWidth().height(M.DETAILS_HEADER.dp).padding(start = 12.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.width(icon + 30.dp))
-            HeaderCell(s, "Name", SortBy.Name, Modifier.width(nameW.dp))
+            Spacer(Modifier.width(4.dp))
+            if (s.showCheckboxes) SelectAllBox(s, t, items) else Spacer(Modifier.width(20.dp))
+            Spacer(Modifier.width(icon + 6.dp))
+            HeaderCell(s, S.name, SortBy.Name, Modifier.width(nameW.dp))
             Box(Modifier.width(6.dp).fillMaxHeight()) { Splitter { nameW = (nameW + it / 1.25f).coerceIn(120f, 800f) } }
-            HeaderCell(s, "Date modified", SortBy.DateModified, Modifier.width(M.COL_DATE_MODIFIED.dp))
-            HeaderCell(s, "Type", SortBy.Type, Modifier.width(M.COL_TYPE.dp))
-            HeaderCell(s, "Size", SortBy.Size, Modifier.width(M.COL_SIZE.dp))
+            T(S.fileTag, Modifier.width(M.COL_TAG.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
+            HeaderCell(s, S.dateModified, SortBy.DateModified, Modifier.width(M.COL_DATE_MODIFIED.dp))
+            HeaderCell(s, S.type, SortBy.Type, Modifier.width(M.COL_TYPE.dp))
+            HeaderCell(s, S.size, SortBy.Size, Modifier.width(M.COL_SIZE.dp))
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.divider))
         ScrollList(state, Modifier.weight(1f)) {
@@ -275,9 +382,10 @@ fun DetailsLayout(s: AppState, t: TabState, items: List<FileItem>) {
                             FileIcon(item, icon)
                             Spacer(Modifier.width(10.dp))
                             NameCell(s, t, item, Modifier.width((nameW - 6).dp))
+                            TagPills(s.tagStore.tagsOf(item.path), Modifier.width(M.COL_TAG.dp).padding(start = 12.dp))
                             T(Fs.dateText(item.modified), Modifier.width(M.COL_DATE_MODIFIED.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
                             T(item.typeName, Modifier.width(M.COL_TYPE.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
-                            T(if (item.isDir) "" else Fs.sizeText(item.size), Modifier.width(M.COL_SIZE.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
+                            SizeCell(s, item, Modifier.width(M.COL_SIZE.dp).padding(start = 12.dp))
                         }
                     }
                 }
@@ -286,12 +394,79 @@ fun DetailsLayout(s: AppState, t: TabState, items: List<FileItem>) {
     }
 }
 
+/**
+ * Size column. Files show their size; folders show the total once worked out, otherwise a
+ * "檢視大小" link (ItemSizeNotCalculated in the original) that adds the folder up on click.
+ */
+@Composable
+fun SizeCell(s: AppState, item: FileItem, modifier: Modifier) {
+    val p = LocalPalette.current
+    if (!item.isDir) {
+        T(Fs.sizeText(item.size), modifier, size = 13.sp, color = p.textSecondary)
+        return
+    }
+    val known = s.folderSizes[item.path]
+    when {
+        known != null -> T(Fs.sizeText(known), modifier, size = 13.sp, color = p.textSecondary)
+        s.folderSizing[item.path] == true -> T(S.calculating, modifier, size = 13.sp, color = p.textTertiary)
+        else -> Box(modifier) {
+            T(
+                S.viewSize,
+                Modifier.clip(RoundedCornerShape(3.dp)).clickable { s.calcFolderSize(item.path) }.padding(horizontal = 2.dp),
+                size = 13.sp, color = p.accentText,
+            )
+        }
+    }
+}
+
 @Composable
 fun CheckMark(selected: Boolean) {
-    // ShowCheckboxesWhenSelectingItems = true: a checkbox appears on selected items.
+    // ShowCheckboxesWhenSelectingItems (on by default): a checkbox shows on hover and on selected items.
+    // Clicking it adds or removes only this item — it never clears the rest of the selection,
+    // unlike a plain click on the row, which selects just that row.
     val p = LocalPalette.current
-    Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
-        if (selected) Icon(Icons.Filled.CheckBox, null, Modifier.size(18.dp), tint = p.accent)
+    val row = LocalRow.current
+    val show = row != null && row.s.showCheckboxes && (selected || row.hovered)
+    Box(
+        Modifier.size(20.dp).then(
+            if (row != null && row.s.showCheckboxes) Modifier.pointerInput(row.item.path) {
+                awaitPointerEventScope {
+                    var ours = false
+                    while (true) {
+                        val e = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Main)
+                        if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Press && e.buttons.isPrimaryPressed) {
+                            e.changes.forEach { it.consume() }
+                            ours = true
+                            row.s.activate(row.t)
+                            row.s.toggleSelect(row.item)
+                        } else if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Release && ours) {
+                            e.changes.forEach { it.consume() }   // keep the click from reaching the row or the list background
+                            ours = false
+                        }
+                    }
+                }
+            } else Modifier
+        ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (show) Icon(
+            if (selected) Icons.Filled.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, null, Modifier.size(18.dp),
+            tint = if (selected) p.accent else p.textSecondary,
+        )
+    }
+}
+
+/** Header checkbox: select every item, or clear the selection when all are selected. */
+@Composable
+fun SelectAllBox(s: AppState, t: TabState, items: List<FileItem>) {
+    val p = LocalPalette.current
+    val all = items.isNotEmpty() && items.all { it.path in t.selection }
+    val some = !all && items.any { it.path in t.selection }
+    Box(Modifier.size(20.dp).clip(RoundedCornerShape(3.dp)).clickable { s.activate(t); t.selection = if (all) emptySet() else items.map { it.path }.toSet() }, contentAlignment = Alignment.Center) {
+        Icon(
+            when { all -> Icons.Filled.CheckBox; some -> Icons.Filled.IndeterminateCheckBox; else -> Icons.Outlined.CheckBoxOutlineBlank },
+            null, Modifier.size(18.dp), tint = if (all || some) p.accent else p.textSecondary,
+        )
     }
 }
 
@@ -394,7 +569,7 @@ fun InfoPane(s: AppState, items: List<FileItem>) {
         Modifier.width(M.INFO_PANE_WIDTH.dp).fillMaxHeight().clip(shape).background(p.toolbar, shape).border(1.dp, p.cardStroke, shape).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        T("Details", Modifier.fillMaxWidth(), size = 14.sp, weight = FontWeight.SemiBold)
+        T(S.details, Modifier.fillMaxWidth(), size = 14.sp, weight = FontWeight.SemiBold)
         Spacer(Modifier.height(24.dp))
         when {
             t.isHome -> T("Select a folder to see its details.", color = p.textSecondary, maxLines = 3)
@@ -412,15 +587,19 @@ fun InfoPane(s: AppState, items: List<FileItem>) {
             }
             else -> {
                 val it = sel[0]
-                FileIcon(it, 96.dp)
-                Spacer(Modifier.height(12.dp))
-                T(it.name, weight = FontWeight.SemiBold, maxLines = 3)
-                Spacer(Modifier.height(16.dp))
-                Prop("Item type", it.typeName)
-                if (!it.isDir) Prop("Size", "${Fs.sizeText(it.size)} (${"%,d".format(it.size)} bytes)")
-                Prop("Date modified", Fs.dateText(it.modified))
-                Prop("Date created", Fs.dateText(it.created))
-                Prop("Path", it.path)
+                Column(Modifier.verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+                    PreviewBox(it)
+                    Spacer(Modifier.height(12.dp))
+                    T(it.name, weight = FontWeight.SemiBold, maxLines = 3)
+                    val tags = s.tagStore.tagsOf(it.path)
+                    if (tags.isNotEmpty()) { Spacer(Modifier.height(6.dp)); TagPills(tags) }
+                    Spacer(Modifier.height(16.dp))
+                    Prop(S.type, it.typeName)
+                    if (!it.isDir) Prop(S.size, "${Fs.sizeText(it.size)} (${"%,d".format(it.size)} bytes)")
+                    Prop(S.dateModified, Fs.dateTimeText(it.modified))
+                    Prop(S.dateCreated, Fs.dateTimeText(it.created))
+                    Prop(if (S.zh) "路徑" else "Path", it.path)
+                }
             }
         }
     }

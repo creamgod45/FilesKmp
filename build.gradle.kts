@@ -58,7 +58,7 @@ val windowsApp by tasks.registering {
             "--main-jar", "FilesKmp.jar",
             "--main-class", "app.files.MainKt",
             "--dest", out.absolutePath,
-            "--add-modules", "java.base,java.desktop,java.logging,jdk.unsupported,jdk.zipfs,java.management",
+            "--add-modules", "java.base,java.desktop,java.logging,jdk.unsupported,jdk.zipfs,java.management,jdk.localedata",
             "--java-options", "-Dfile.encoding=UTF-8",
             "--java-options", "-Dsun.stdout.encoding=UTF-8",
         )

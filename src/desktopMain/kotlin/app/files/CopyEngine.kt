@@ -54,6 +54,10 @@ object CopyEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var diskOfLetter: Map<Char, String> = emptyMap()
     @Volatile private var solidState: Set<String> = emptySet()
+    @Volatile private var usbDisks: Set<String> = emptySet()
+    var disksLoaded by mutableStateOf(false)
+
+    fun isUsb(root: String) = deviceOf(root) in usbDisks
     var onJobFinished: ((CopyJob) -> Unit)? = null
 
     /** Spinning disks (and anything unknown) take one task at a time; SSDs take several. */
@@ -66,12 +70,15 @@ object CopyEngine {
             try {
                 val text = Fs.powershell(
                     "Get-Partition | Where-Object DriveLetter | ForEach-Object { \"P`t\$(\$_.DriveLetter)`t\$(\$_.DiskNumber)\" }; " +
-                        "Get-PhysicalDisk | ForEach-Object { \"D`t\$(\$_.DeviceId)`t\$(\$_.MediaType)\" }",
+                        "Get-PhysicalDisk | ForEach-Object { \"D`t\$(\$_.DeviceId)`t\$(\$_.MediaType)\" }; " +
+                        "Get-Disk | ForEach-Object { \"U`t\$(\$_.Number)`t\$(\$_.BusType)\" }",
                     15_000,
                 ) ?: return@launch
                 val rows = text.lines().map { it.trim().split('\t') }.filter { it.size == 3 }
                 diskOfLetter = rows.filter { it[0] == "P" && it[1].length == 1 }.associate { it[1].uppercase()[0] to "disk${it[2]}" }
+                usbDisks = rows.filter { it[0] == "U" && it[2].equals("USB", true) }.map { "disk${it[1]}" }.toSet()
                 solidState = rows.filter { it[0] == "D" && it[2].equals("SSD", true) }.map { "disk${it[1]}" }.toSet()
+                disksLoaded = true
             } catch (_: Exception) {
             }
         }

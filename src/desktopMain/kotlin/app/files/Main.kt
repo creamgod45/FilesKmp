@@ -42,7 +42,19 @@ fun main(args: Array<String>) {
         val layout = args.indexOf("--layout").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
             LayoutMode.entries.firstOrNull { it.name.equals(args[i + 1], true) }
         }
-        screenshot(File(args[shotIdx + 1]), start, layout, "--info-pane" in args)
+        val interact: (suspend (ImageComposeScene, AppState) -> Unit)? = when {
+            "--test-checkbox" in args -> ::checkboxTest
+            "--test-toolbar-drag" in args -> ::toolbarDragTest
+            else -> null
+        }
+        screenshot(File(args[shotIdx + 1]), start, layout, "--info-pane" in args, interact) { s ->
+            if ("--dual" in args) s.toggleDualPane()
+            if ("--hsplit" in args) s.splitPane(PaneArrangement.Horizontal)
+            if ("--sizes" in args) s.calculateFolderSizes = true
+            if ("--customize" in args) s.customizeToolbarOpen = true
+            if ("--settings" in args) s.settingsOpen = true
+            if ("--select-first" in args) s.scope.launch { delay(1200); s.tab.raw.firstOrNull()?.let { s.tab.selection = setOf(it.path) } }
+        }
         exitProcess(0)
     }
     val benchIdx = args.indexOf("--bench-copy")
@@ -65,7 +77,13 @@ fun main(args: Array<String>) {
             resizable = true,
             onPreviewKeyEvent = { handleKey(state, it) },
         ) {
-            LaunchedEffect(Unit) { window.minimumSize = Dimension(M.WINDOW_MIN_W, M.WINDOW_MIN_H) }
+            LaunchedEffect(Unit) {
+                window.minimumSize = Dimension(M.WINDOW_MIN_W, M.WINDOW_MIN_H)
+                // "全螢幕" (F11) toggles between full screen and the normal window.
+                state.toggleFullScreen = {
+                    windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) WindowPlacement.Floating else WindowPlacement.Fullscreen
+                }
+            }
             val controls = remember {
                 WindowControls(
                     state = windowState,
@@ -111,14 +129,17 @@ fun ResizeEdges(ws: WindowState) {
 }
 
 @Composable
-fun Root(s: AppState, dark: Boolean, accent: androidx.compose.ui.graphics.Color?) {
+fun Root(s: AppState, systemDark: Boolean, accent: androidx.compose.ui.graphics.Color?) {
+    // Theme setting: follow Windows (the original's default), or force light / dark.
+    val dark = when (s.theme) { ThemeMode.System -> systemDark; ThemeMode.Light -> false; ThemeMode.Dark -> true }
     val base = if (dark) DarkPalette else LightPalette
     val palette = if (accent != null && !dark) base.copy(accent = accent) else base
     val menu = remember { mutableStateOf<MenuRequest?>(null) }
     val scheme = if (dark) darkColorScheme(surface = palette.flyout) else lightColorScheme(surface = palette.flyout, primary = palette.accent)
     MaterialTheme(colorScheme = scheme) {
-        CompositionLocalProvider(LocalPalette provides palette, LocalMenu provides menu) {
-            Box(Modifier.fillMaxSize().background(palette.window)) {
+        CompositionLocalProvider(LocalPalette provides palette, LocalMenu provides menu, LocalAppState provides s) {
+            Box(Modifier.fillMaxSize()) {
+                BackdropLayer(s, dark)
                 MainLayout(s)
                 if (s.statusCenterOpen) {
                     Popup(
@@ -130,6 +151,9 @@ fun Root(s: AppState, dark: Boolean, accent: androidx.compose.ui.graphics.Color?
                 }
                 menu.value?.let { req -> ContextMenuPopup(req) { menu.value = null } }
                 s.confirmDelete?.let { DeleteDialog(s, it) }
+                s.tagEditorFor?.let { TagEditorDialog(s, it) }
+                if (s.settingsOpen) SettingsPage(s)
+                if (s.customizeToolbarOpen) CustomizeToolbarDialog(s)
                 s.toast?.let { msg ->
                     LaunchedEffect(msg) { delay(2500); if (s.toast == msg) s.toast = null }
                     Box(Modifier.fillMaxSize().padding(bottom = 48.dp), contentAlignment = Alignment.BottomCenter) {
@@ -169,6 +193,7 @@ fun ContextMenuPopup(req: MenuRequest, onDismiss: () -> Unit) {
 fun MainLayout(s: AppState) {
     val p = LocalPalette.current
     val t = s.tab
+    val ct = s.currentTab
     val items = remember(t.raw, s.showHidden, s.searchText, s.sortBy, s.sortAscending) { s.visibleItems(t) }
     Column(Modifier.fillMaxSize()) {
         TabStrip(s)
@@ -179,18 +204,13 @@ fun MainLayout(s: AppState) {
                 Splitter { s.sidebarWidth = (s.sidebarWidth + it / 1.25f).toInt().coerceIn(M.SIDEBAR_MIN, M.SIDEBAR_MAX) }
             }
             Column(Modifier.weight(1f).widthIn(min = M.CONTENT_MIN_WIDTH.dp).padding(end = 8.dp, bottom = 8.dp)) {
-                CommandToolbar(s)
-                Spacer(Modifier.height(4.dp))
+                // On Home the original shows no command toolbar (the page card starts under the address bar).
+                if (s.showToolbar && !(t.isHome && ct.right == null)) {
+                    CommandToolbar(s)
+                    Spacer(Modifier.height(4.dp))
+                }
                 Row(Modifier.weight(1f)) {
-                    val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
-                    Column(
-                        Modifier.weight(1f).fillMaxHeight().shadow(2.dp, shape).clip(shape).background(p.fileArea, shape).border(1.dp, p.cardStroke, shape)
-                    ) {
-                        Box(Modifier.weight(1f)) {
-                            if (t.isHome) HomePage(s) else FolderView(s, t, items)
-                        }
-                        StatusBar(s, items)
-                    }
+                    PanesArea(s, ct, Modifier.weight(1f))
                     if (s.infoPaneOpen) {
                         Spacer(Modifier.width(8.dp))
                         InfoPane(s, items)
@@ -201,6 +221,58 @@ fun MainLayout(s: AppState) {
     }
 }
 
+
+/**
+ * One or two panes. Vertical arrangement = side by side, Horizontal = one above the other
+ * (ShellPanesPage.ArrangePanes); the 8-px gap between them can be dragged to resize.
+ */
+@Composable
+fun PanesArea(s: AppState, ct: Tab, modifier: Modifier) {
+    val r = ct.right
+    if (r == null) {
+        PaneCard(s, ct.left, modifier, active = true)
+        return
+    }
+    BoxWithConstraints(modifier) {
+        val vertical = ct.arrangement == PaneArrangement.Vertical
+        val total = if (vertical) maxWidth.value else maxHeight.value
+        val first = (ct.split * (total - 8f)).coerceAtLeast(120f)
+        val drag = Modifier.pointerInput(vertical, total) {
+            detectDragGestures { c, d ->
+                c.consume()
+                val delta = (if (vertical) d.x else d.y) / density
+                ct.split = ((ct.split * (total - 8f) + delta) / (total - 8f)).coerceIn(0.2f, 0.8f)
+            }
+        }
+        if (vertical) Row(Modifier.fillMaxSize()) {
+            PaneCard(s, ct.left, Modifier.width(first.dp), active = !ct.rightActive)
+            Box(Modifier.width(8.dp).fillMaxHeight().pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR))).then(drag))
+            PaneCard(s, r, Modifier.weight(1f), active = ct.rightActive)
+        } else Column(Modifier.fillMaxSize()) {
+            PaneCard(s, ct.left, Modifier.height(first.dp).fillMaxWidth(), active = !ct.rightActive)
+            Box(Modifier.height(8.dp).fillMaxWidth().pointerHoverIcon(PointerIcon(Cursor(Cursor.S_RESIZE_CURSOR))).then(drag))
+            PaneCard(s, r, Modifier.weight(1f).fillMaxWidth(), active = ct.rightActive)
+        }
+    }
+}
+
+/** One pane's card: Home or a folder view plus its status bar. In dual pane the active one gets an accent outline. */
+@Composable
+fun PaneCard(s: AppState, pane: TabState, modifier: Modifier, active: Boolean) {
+    val p = LocalPalette.current
+    val dual = s.currentTab.right != null
+    val items = remember(pane.raw, s.showHidden, s.searchText, s.sortBy, s.sortAscending, s.tab === pane) { s.visibleItems(pane) }
+    val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
+    Column(
+        modifier.fillMaxHeight().shadow(2.dp, shape).clip(shape).background(p.fileArea, shape)
+            .border(1.dp, if (dual && active) p.accent.copy(alpha = 0.6f) else p.cardStroke, shape)
+    ) {
+        Box(Modifier.weight(1f)) {
+            if (pane.isHome) HomePage(s) else FolderView(s, pane, items)
+        }
+        if (s.showStatusBar) StatusBar(s, items, pane)
+    }
+}
 
 // ====================================================================== keyboard
 
@@ -218,7 +290,15 @@ fun handleKey(s: AppState, e: KeyEvent): Boolean {
         if (e.key == Key.Enter) { s.doDelete(s.confirmDelete!!, false); return true }
         return false
     }
+    if (s.settingsOpen || s.tagEditorFor != null || s.customizeToolbarOpen) {
+        if (e.key == Key.Escape) { s.settingsOpen = false; s.tagEditorFor = null; s.customizeToolbarOpen = false; return true }
+        return false
+    }
     when {
+        ctrl && shift && e.key == Key.S -> s.toggleDualPane()
+        ctrl && shift && e.key == Key.T -> s.reopenClosedTab()
+        ctrl && shift && e.key == Key.W -> s.closeAllTabs()
+        ctrl && e.key == Key.Comma -> s.settingsOpen = true
         ctrl && shift && e.key == Key.N -> s.newFolder()
         ctrl && shift && e.key == Key.C -> s.copyPath()
         ctrl && shift && e.key == Key.K -> s.newTab(s.tab.location)
@@ -252,10 +332,11 @@ fun handleKey(s: AppState, e: KeyEvent): Boolean {
         alt && e.key == Key.DirectionUp -> s.up()
         alt && e.key == Key.D -> s.editingPath = true
         alt && e.key == Key.Enter -> s.infoPaneOpen = true
-        shift && e.key == Key.Delete -> { val sel = s.tab.selection.toList(); if (sel.isNotEmpty() && !s.tab.isHome) s.doDelete(sel, true) }
+        shift && e.key == Key.Delete -> { val sel = s.tab.selection.toList(); if (sel.isNotEmpty()) s.doDelete(sel, true) }
         e.key == Key.Delete -> s.requestDelete()
         e.key == Key.F2 -> s.startRename()
         e.key == Key.F5 -> s.refresh()
+        e.key == Key.F11 -> s.toggleFullScreen?.invoke()
         e.key == Key.F3 -> s.searchRequest++
         e.key == Key.Backspace -> s.back()
         e.key == Key.Enter -> s.openSelected()
@@ -278,8 +359,67 @@ private fun moveSelection(s: AppState, delta: Int, shift: Boolean) {
 
 // ====================================================================== --screenshot
 
+/**
+ * Self-test of the checkbox rule with simulated mouse clicks on the Details list:
+ * click row 1, tick row 2's checkbox (both stay selected), then click row 3 (only it stays).
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+suspend fun checkboxTest(scene: ImageComposeScene, s: AppState) {
+    val rows = s.visibleItems(s.tab)
+    fun y(i: Int) = 206f + 36f * i
+    val checkX = 227f
+    val nameX = 420f
+    suspend fun click(x: Float, yy: Float) {
+        val pos = androidx.compose.ui.geometry.Offset(x, yy)
+        scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Move, pos)
+        scene.render(System.nanoTime()); delay(30)
+        scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Press, pos, buttons = androidx.compose.ui.input.pointer.PointerButtons(isPrimaryPressed = true))
+        scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Release, pos)
+        scene.render(System.nanoTime()); delay(500)   // past the double-click window
+    }
+    click(nameX, y(0))
+    val a = s.tab.selection.size
+    click(checkX, y(1))
+    val b = s.tab.selection.size
+    click(nameX, y(2))
+    val c = s.tab.selection.size
+    click(checkX, y(3))
+    val d = s.tab.selection.size
+    println("CHECKBOX TEST rows=${rows.size}: click row1 -> $a selected (expect 1); tick row2 -> $b (expect 2); click row3 -> $c (expect 1); tick row4 -> $d (expect 2)")
+}
+
+/**
+ * Self-test of the 自訂工具列 window: drag 剪下 by its handle to the end of the list, press 儲存,
+ * print the saved order, then put the person's previous toolbar back.
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+suspend fun toolbarDragTest(scene: ImageComposeScene, s: AppState) {
+    val before = s.toolbarStore.layout
+    val P = androidx.compose.ui.input.pointer.PointerEventType
+    val down = androidx.compose.ui.input.pointer.PointerButtons(isPrimaryPressed = true)
+    suspend fun frame() { scene.render(System.nanoTime()); delay(16) }
+    fun at(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+    // drag the gripper of row 3 (剪下) to below the last row
+    scene.sendPointerEvent(P.Move, at(546f, 352f)); frame()
+    scene.sendPointerEvent(P.Press, at(546f, 352f), buttons = down); frame()
+    var y = 352f
+    while (y < 548f) { y += 14f; scene.sendPointerEvent(P.Move, at(548f, y), buttons = down); frame() }
+    scene.sendPointerEvent(P.Release, at(548f, 548f)); frame(); frame()
+    // 儲存
+    scene.sendPointerEvent(P.Move, at(904f, 652f)); frame()
+    scene.sendPointerEvent(P.Press, at(904f, 652f), buttons = down); frame()
+    scene.sendPointerEvent(P.Release, at(904f, 652f)); frame(); frame()
+    val after = s.toolbarStore.layout[TbContext.AlwaysVisible]?.map { it.id }
+    println("TOOLBAR DRAG TEST saved=${!s.customizeToolbarOpen} order=$after (expect CutItem last)")
+    s.toolbarStore.save(before)
+}
+
 /** Starts the app as normal (Home in one tab), draws about 120 frames, saves the picture, exits. */
-fun screenshot(out: File, start: String? = null, layout: LayoutMode? = null, infoPane: Boolean = false) {
+fun screenshot(
+    out: File, start: String? = null, layout: LayoutMode? = null, infoPane: Boolean = false,
+    interact: (suspend (ImageComposeScene, AppState) -> Unit)? = null,
+    setup: (AppState) -> Unit = {},
+) {
     val dark = systemUsesDarkTheme()
     val accent = systemAccent()
     runBlocking {
@@ -289,6 +429,7 @@ fun screenshot(out: File, start: String? = null, layout: LayoutMode? = null, inf
                 layout?.let { s.layout = it }
                 s.infoPaneOpen = infoPane
                 start?.let { s.navigate(File(it).absolutePath) }
+                setup(s)
             }
         }
         val scene = withContext(Dispatchers.Swing) {
@@ -298,9 +439,10 @@ fun screenshot(out: File, start: String? = null, layout: LayoutMode? = null, inf
         val startNs = System.nanoTime()
         var image: org.jetbrains.skia.Image? = null
         val deadline = System.currentTimeMillis() + 15_000
-        while (frame < 120 || (!(state.pinnedLoaded && state.drivesLoaded && state.recentLoaded) && System.currentTimeMillis() < deadline)) {
+        while (frame < 120 || ((!(state.pinnedLoaded && state.drivesLoaded && state.recentLoaded) || state.tab.loading || Thumbnails.busy() || state.folderSizing.isNotEmpty()) && System.currentTimeMillis() < deadline)) {
             image = withContext(Dispatchers.Swing) { scene.render(System.nanoTime() - startNs) }
             frame++
+            if (frame == 90) interact?.let { withContext(Dispatchers.Swing) { it(scene, state) } }
             delay(16)
         }
         image = withContext(Dispatchers.Swing) { scene.render(System.nanoTime() - startNs) }

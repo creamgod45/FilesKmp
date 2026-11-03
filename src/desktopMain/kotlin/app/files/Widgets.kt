@@ -182,7 +182,19 @@ fun fileTint(item: FileItem): Color {
 
 @Composable
 fun FileIcon(item: FileItem, size: Dp) {
-    Icon(iconFor(item), null, Modifier.size(size), tint = fileTint(item))
+    // Pictures and videos show their Windows thumbnail when "Show thumbnails" is on (the original's default).
+    val app = LocalAppState.current
+    val px = with(androidx.compose.ui.platform.LocalDensity.current) { size.roundToPx() } * 2
+    val thumb = rememberThumbnail(item, px, app?.showThumbnails == true)
+    if (thumb != null) {
+        androidx.compose.foundation.Image(
+            thumb, null,
+            Modifier.size(size).clip(RoundedCornerShape(M.THUMB_RADIUS.dp)),
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+        )
+    } else {
+        Icon(iconFor(item), null, Modifier.size(size), tint = fileTint(item))
+    }
 }
 
 // ------------------------------------------------------------------ context menus
@@ -229,9 +241,21 @@ fun Modifier.itemPointer(onPress: (ctrl: Boolean, shift: Boolean) -> Unit, onDou
     this.pointerInput(Unit) {
         var last = 0L
         awaitPointerEventScope {
+            var ours = false
             while (true) {
                 val e = awaitPointerEvent()
+                // The release of a click that started on this item is also taken, so the
+                // empty-space handler behind the list doesn't see a "tap" and clear the selection.
+                if (e.type == PointerEventType.Release && ours) {
+                    e.changes.forEach { it.consume() }
+                    ours = false
+                    continue
+                }
+                // A checkbox inside the row handles its own click (it toggles just that item).
+                if (e.changes.any { it.isConsumed }) continue
                 if (e.type == PointerEventType.Press && e.buttons.isPrimaryPressed) {
+                    e.changes.forEach { it.consume() }
+                    ours = true
                     val now = e.changes.first().uptimeMillis
                     val mods = e.keyboardModifiers
                     if (now - last < 450 && !mods.isCtrlPressed && !mods.isShiftPressed) {

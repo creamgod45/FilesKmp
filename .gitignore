@@ -4,3 +4,7 @@ dist
 .idea
 .junie
 .kotlin
+
+# Test screenshots show the owner's own folders and pictures; keep only the checker picture.
+shots/*
+!shots/now.png

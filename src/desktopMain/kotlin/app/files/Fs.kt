@@ -24,9 +24,9 @@ class FileItem(
     val ext: String get() = if (isDir) "" else name.substringAfterLast('.', "").lowercase()
     val typeName: String
         get() = when {
-            isDir -> "File folder"
-            ext.isEmpty() -> "File"
-            else -> "${ext.uppercase()} File"
+            isDir -> S.fileFolder
+            ext.isEmpty() -> S.file
+            else -> if (S.zh) "${ext.uppercase()} 檔案" else "${ext.uppercase()} File"
         }
 }
 
@@ -39,30 +39,68 @@ class DriveInfo(
 ) {
     val used: Long get() = total - free
     val usedFraction: Float get() = if (total > 0) used.toFloat() / total else 0f
-    val title: String get() = if (label.isNotBlank()) "$label (${root.trimEnd('\\')})" else "Local Disk (${root.trimEnd('\\')})"
+    val title: String get() = if (label.isNotBlank()) "$label (${root.trimEnd('\\')})" else "${if (S.zh) "本機磁碟" else "Local Disk"} (${root.trimEnd('\\')})"
+    val isSystem: Boolean get() = root.equals((System.getenv("SystemDrive") ?: "C:") + "\\", true)
 }
+
+class CloudDrive(val name: String, val path: String)
+
+/** Default file tags (FileTagsSettingsService.DefaultFileTags in the original). */
+class FileTag(val name: String, val color: Long)
+
+val DefaultTags = listOf(
+    FileTag("Home", 0xFF0072BD),
+    FileTag("Work", 0xFFD95319),
+    FileTag("Photos", 0xFFEDB120),
+    FileTag("Important", 0xFF77AC30),
+)
 
 class PinnedFolder(val name: String, val path: String)
 
 class RecentFile(val name: String, val path: String, val modified: Long)
 
 object Fs {
+    /** Dates follow the app language (zh-TW gives 2026年7月6日 星期一, as the original shows). */
+    private val uiLocale: java.util.Locale = if (S.zh) java.util.Locale.TRADITIONAL_CHINESE else java.util.Locale.getDefault()
     private val sizeFmt = DecimalFormat("0.##")
     private val dateFmt: DateTimeFormatter =
-        DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
+        DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT).withLocale(uiLocale).withZone(ZoneId.systemDefault())
 
-    /** Binary units, shown with the short names the original uses (KB, MB...). */
+    /** Binary units (1024), named KiB/MiB/GiB/TiB as the original shows them. */
     fun sizeText(bytes: Long): String {
         if (bytes < 1024) return "$bytes B"
-        val units = arrayOf("KB", "MB", "GB", "TB", "PB")
+        val units = arrayOf("KiB", "MiB", "GiB", "TiB", "PiB")
         var v = bytes.toDouble() / 1024
         var i = 0
         while (v >= 1024 && i < units.size - 1) { v /= 1024; i++ }
         return "${sizeFmt.format(v)} ${units[i]}"
     }
 
-    fun dateText(millis: Long): String =
-        if (millis <= 0) "" else dateFmt.format(Instant.ofEpochMilli(millis))
+    private val longDate: DateTimeFormatter =
+        DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(uiLocale).withZone(ZoneId.systemDefault())
+
+    /**
+     * The original's default "Application" date format (ApplicationDateTimeFormatter.ToShortLabel):
+     * a week or older -> long date ("D", e.g. 2026年7月6日 星期一); otherwise days / hours /
+     * minutes / seconds ago, and "now" under a second.
+     */
+    fun dateText(millis: Long): String {
+        if (millis <= 0) return ""
+        val elapsed = System.currentTimeMillis() - millis
+        val sec = elapsed / 1000
+        return when {
+            elapsed < 0 -> longDate.format(Instant.ofEpochMilli(millis))
+            sec >= 7 * 86400 -> longDate.format(Instant.ofEpochMilli(millis))
+            sec >= 86400 -> S.daysAgo(sec / 86400)
+            sec >= 3600 -> S.hoursAgo(sec / 3600)
+            sec >= 60 -> S.minutesAgo(sec / 60)
+            sec >= 1 -> S.secondsAgo(sec)
+            else -> S.now
+        }
+    }
+
+    /** Full date and time, for the details pane. */
+    fun dateTimeText(millis: Long): String = if (millis <= 0) "" else dateFmt.format(Instant.ofEpochMilli(millis))
 
     fun displayName(path: String): String {
         val p = path.trimEnd('\\', '/')
@@ -151,6 +189,19 @@ object Fs {
         }
     }
 
+    /** Known folders get their display name in the app's language (as Explorer and the original show them). */
+    private fun localName(f: PinnedFolder): String {
+        val zh = mapOf(
+            KnownKind.Desktop to "桌面", KnownKind.Downloads to "下載", KnownKind.Documents to "文件",
+            KnownKind.Pictures to "圖片", KnownKind.Music to "音樂", KnownKind.Videos to "影片",
+        )
+        val en = mapOf(
+            KnownKind.Desktop to "Desktop", KnownKind.Downloads to "Downloads", KnownKind.Documents to "Documents",
+            KnownKind.Pictures to "Pictures", KnownKind.Music to "Music", KnownKind.Videos to "Videos",
+        )
+        return (if (S.zh) zh else en)[knownKind(f)] ?: f.name
+    }
+
     /** Windows' own Quick access pins (the original mirrors these), with known folders as the fallback. */
     fun quickAccess(): List<PinnedFolder> {
         val script = "\$s=New-Object -ComObject Shell.Application; " +
@@ -162,11 +213,34 @@ object Fs {
             val parts = line.trim().split('\t')
             if (parts.size == 2 && parts[1].isNotBlank()) PinnedFolder(parts[0], parts[1]) else null
         }.orEmpty()
-        if (pins.isNotEmpty()) return pins
+        if (pins.isNotEmpty()) return pins.map { PinnedFolder(localName(it), it.path) }
         val home = System.getProperty("user.home")
         return listOf("Desktop", "Downloads", "Documents", "Pictures", "Music", "Videos")
             .map { PinnedFolder(it, "$home\\$it") }
             .filter { File(it.path).isDirectory }
+    }
+
+    /** Cloud drive folders that sync providers register on this PC (iCloud here). */
+    fun cloudDrives(): List<CloudDrive> {
+        val home = System.getProperty("user.home")
+        val out = ArrayList<CloudDrive>()
+        File(home, "iCloudDrive").takeIf { it.isDirectory }?.let { out += CloudDrive("iCloud Drive", it.path) }
+        listOf(File(home, "iCloudPhotos\\Photos"), File(home, "iCloudPhotos")).firstOrNull { it.isDirectory }
+            ?.let { out += CloudDrive("iCloud Photos", it.path) }
+        File(home, "Dropbox").takeIf { it.isDirectory }?.let { out += CloudDrive("Dropbox", it.path) }
+        return out
+    }
+
+    /** WSL distributions (wsl -l -q prints UTF-16), with a time limit so a stopped WSL can't hang anything. */
+    fun wslDistros(): List<String> = try {
+        val p = ProcessBuilder("wsl.exe", "-l", "-q").redirectErrorStream(true).start()
+        p.outputStream.close()
+        val bytes = java.util.concurrent.CompletableFuture.supplyAsync { p.inputStream.readAllBytes() }
+        if (!p.waitFor(4, TimeUnit.SECONDS)) { p.destroyForcibly(); emptyList() }
+        else String(bytes.get(1, TimeUnit.SECONDS), StandardCharsets.UTF_16LE)
+            .lines().map { it.replace("\u0000", "").trim() }.filter { it.isNotEmpty() && !it.contains(' ') }
+    } catch (_: Exception) {
+        emptyList()
     }
 
     /** Recent files from Windows' Recent folder (shortcut names, newest first), capped. */

@@ -30,15 +30,18 @@ data class Palette(
     val progressTrack: Color,
     val danger: Color,
     val flyout: Color,
+    val card: Color = Color(0xFFFFFFFF),   // CardBackgroundFillColorDefault on the file area
+    val solid: Color = Color(0xFFF3F3F3),  // opaque window colour for dialogs (SolidBackgroundFillColorBase)
 )
 
 val LightPalette = Palette(
     dark = false,
-    window = Color(0xFFE9EDF2),
-    layer = Color(0xFFF6F8FA),
-    tabSelected = Color(0xFFF6F8FA),
-    toolbar = Color(0xFFF7F7F7),
-    fileArea = Color(0xFFFCFCFC),     // #C0FCFCFC over the layer
+    // The original's theme brushes (App.xaml:120-155) are translucent so the backdrop shows through.
+    window = Color(0x00000000),
+    layer = Color(0x00000000),        // address bar + sidebar sit directly on the backdrop
+    tabSelected = Color(0xB3FFFFFF),  // LayerOnMicaBaseAltFillColorDefault
+    toolbar = Color(0x99F9F9F9),      // CardBackgroundFillColorSecondary
+    fileArea = Color(0xC0FCFCFC),     // App.xaml:125
     cardStroke = Color(0x14000000),
     divider = Color(0x14000000),
     text = Color(0xE4000000),
@@ -56,15 +59,17 @@ val LightPalette = Palette(
     progressTrack = Color(0x24000000),
     danger = Color(0xFFC42B1C),
     flyout = Color(0xFFF9F9F9),
+    card = Color(0xB3FFFFFF),
+    solid = Color(0xFFF3F3F3),
 )
 
 val DarkPalette = Palette(
     dark = true,
-    window = Color(0xFF1C1F24),
-    layer = Color(0xFF282A2E),
-    tabSelected = Color(0xFF282A2E),
-    toolbar = Color(0xFF2B2D31),
-    fileArea = Color(0xFF2C2E32),
+    window = Color(0x00000000),
+    layer = Color(0x00000000),
+    tabSelected = Color(0x733A3A3A),
+    toolbar = Color(0x14FFFFFF),
+    fileArea = Color(0x0DFFFFFF),
     cardStroke = Color(0x19000000),
     divider = Color(0x15FFFFFF),
     text = Color(0xFFFFFFFF),
@@ -82,6 +87,8 @@ val DarkPalette = Palette(
     progressTrack = Color(0x30FFFFFF),
     danger = Color(0xFFFF99A4),
     flyout = Color(0xFF2C2C2C),
+    card = Color(0x12FFFFFF),
+    solid = Color(0xFF202020),
 )
 
 val LocalPalette = staticCompositionLocalOf { LightPalette }
