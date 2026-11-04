@@ -1,5 +1,7 @@
 package app.files
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
@@ -36,6 +38,8 @@ class TabState(start: String) {
     val isTag: Boolean get() = location.startsWith(TAG_PREFIX)
     val isSearch: Boolean get() = location.startsWith(SEARCH_PREFIX)
     val isNetwork: Boolean get() = location == NETWORK
+    /** 資源回收筒 (RecycleBin.kt): deleted items; restore or delete them for good. */
+    val isRecycleBin: Boolean get() = location == RECYCLE_BIN
     /** `\\server`: the list of a server's shares, not a folder. */
     val isServer: Boolean get() = NetworkFs.isServer(location)
     /** Home, a tag view, search results, 網路 or a server: not a real folder you can create files in. */
@@ -45,12 +49,17 @@ class TabState(start: String) {
     val searchQuery: String get() = location.substringAfter(SEP, "")
 
     var raw by mutableStateOf<List<FileItem>>(emptyList())
+    /** [raw] filtered and sorted for display (AppState.startViewUpdater), and the inputs it was made from. */
+    var view by mutableStateOf<List<FileItem>>(emptyList())
+    @Volatile var viewKey: ViewKey? = null
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var selection by mutableStateOf<Set<String>>(emptySet())
     var anchor by mutableStateOf<String?>(null)
     var renaming by mutableStateOf<String?>(null)
     var loadJob: Job? = null
+    /** Search results: how they were found and how long it took (status bar). */
+    var searchInfo by mutableStateOf<String?>(null)
     /** Git repository this folder is in (null when it isn't one). */
     var git by mutableStateOf<GitInfo?>(null)
 
@@ -60,11 +69,21 @@ class TabState(start: String) {
             isTag -> "${S.tags}: $tagName"
             isSearch -> "${S.search}: $searchQuery"
             isNetwork -> S.network
+            isRecycleBin -> S.recycleBin
             isServer -> NetworkFs.hostOf(location).let { if (NetworkFs.isWslHost(it)) S.wsl else it }
             else -> Fs.displayName(location)
         }
     val canBack get() = index > 0
     val canForward get() = index < history.size - 1
+}
+
+/** What a pane's sorted view depends on; the listing is compared by identity (no element-wise compare of 100 000 items). */
+class ViewKey(val raw: List<FileItem>, val hidden: Boolean, val system: Boolean, val search: String, val sortBy: SortBy,
+              val ascending: Boolean, val extra: DetailCol?, val props: Int, val regex: Boolean, val case: Boolean) {
+    override fun equals(other: Any?) = other is ViewKey && other.raw === raw && other.hidden == hidden && other.system == system &&
+        other.search == search && other.sortBy == sortBy && other.ascending == ascending && other.extra == extra && other.props == props &&
+        other.regex == regex && other.case == case
+    override fun hashCode() = System.identityHashCode(raw) * 31 + search.hashCode()
 }
 
 /**
@@ -129,6 +148,18 @@ class AppState(val scope: CoroutineScope) {
     var backgroundImage by mutableStateOf(Prefs.str("backgroundImage", ""))
     var backgroundImageFit by mutableStateOf(runCatching { ImageFit.valueOf(Prefs.str("backgroundImageFit", "UniformToFill")) }.getOrDefault(ImageFit.UniformToFill))
     var backgroundImageOpacity by mutableStateOf(Prefs.str("backgroundImageOpacity", "1").toFloatOrNull() ?: 1f)
+    // 半透明視窗 (needs a restart: the window is created see-through or not) and 漸層背景
+    var translucentWindow by mutableStateOf(Prefs.bool("translucentWindow", false))
+    /** Whether this run's window was created see-through (set by main before the window opens). */
+    var translucentActive by mutableStateOf(false)
+    /** Turns the blur behind the see-through window on or off (set by main once the window exists). */
+    var applyWindowBlur: (() -> Unit)? = null
+    var windowOpacity by mutableStateOf(Prefs.str("windowOpacity", "0.82").toFloatOrNull() ?: 0.82f)
+    var blurBehind by mutableStateOf(Prefs.bool("blurBehind", true))
+    var gradientOn by mutableStateOf(Prefs.bool("gradientOn", false))
+    var gradientIndex by mutableStateOf(Prefs.int("gradientIndex", 1))
+    var gradientAngle by mutableStateOf(Prefs.str("gradientAngle", "45").toFloatOrNull() ?: 45f)
+    var gradientStrength by mutableStateOf(Prefs.str("gradientStrength", "0.35").toFloatOrNull() ?: 0.35f)
     var backgroundImageAlign by mutableStateOf(runCatching { ImageAlign.valueOf(Prefs.str("backgroundImageAlign", "Center")) }.getOrDefault(ImageAlign.Center))
 
     // ---- background picture rotation (several pictures, switched on a timer / at each start, per-folder rules)
@@ -179,6 +210,8 @@ class AppState(val scope: CoroutineScope) {
     var showRecentWidget by mutableStateOf(Prefs.bool("w.recent", true))
     var showStorageWidget by mutableStateOf(Prefs.bool("w.storage", true))
     var showToolbar by mutableStateOf(Prefs.bool("showToolbar", true))
+    /** 卡片陰影: soft by default (SoftShadow.kt). */
+    var cardShadow by mutableStateOf(runCatching { ShadowLevel.valueOf(Prefs.str("cardShadow", "Soft")) }.getOrDefault(ShadowLevel.Soft))
     var showStatusBar by mutableStateOf(Prefs.bool("showStatusBar", true))
     // Same rule as the original (function 0x1401e4c80): stored width clamped to 180..500, default 255.
     var sidebarWidth by mutableStateOf(Prefs.int("sidebarWidth", M.SIDEBAR_WIDTH).coerceIn(M.SIDEBAR_MIN, M.SIDEBAR_MAX))
@@ -197,8 +230,8 @@ class AppState(val scope: CoroutineScope) {
     var searchText by mutableStateOf("")
     var searchRequest by mutableStateOf(0)
     var textFocus by mutableStateOf(false)
-    var gridStep by mutableStateOf(M.GRID_DEFAULT_STEP)
-    var detailsSize by mutableStateOf(M.DETAILS_DEFAULT_SIZE)
+    var gridStep by mutableStateOf(Prefs.int("gridStep", M.GRID_DEFAULT_STEP).coerceIn(0, M.GRID_ITEM_WIDTH.size - 1))
+    var detailsSize by mutableStateOf(Prefs.int("detailsSize", M.DETAILS_DEFAULT_SIZE).coerceIn(0, 4))
     var clipboard by mutableStateOf<Clipboard?>(null)
     var toast by mutableStateOf<String?>(null)
     var confirmDelete by mutableStateOf<List<String>?>(null)
@@ -231,6 +264,9 @@ class AppState(val scope: CoroutineScope) {
             }
         }
         loadHome()
+        refreshRecycleInfo()
+        startViewUpdater()
+        FlowStore.reload()
         // Sidebar extras, each in the background with its own time limit.
         scope.launch(Dispatchers.IO) { val c = Fs.cloudDrives(); withContext(Dispatchers.Main) { cloud = c } }
         scope.launch(Dispatchers.IO) {
@@ -282,12 +318,18 @@ class AppState(val scope: CoroutineScope) {
         "showHidden" to showHidden, "showSystem" to showSystem, "trackStorage" to trackStorage, "showExtensions" to showExtensions, "showCheckboxes" to showCheckboxes, "showThumbnails" to showThumbnails,
         "confirmDelete" to confirmDeleteAlways, "openFoldersInNewTab" to openFoldersInNewTab, "continueSession" to continueSession,
         "w.quickAccess" to showQuickAccessWidget, "w.drives" to showDrivesWidget, "w.network" to showNetworkWidget,
-        "w.tags" to showTagsWidget, "w.recent" to showRecentWidget, "w.storage" to showStorageWidget, "showToolbar" to showToolbar, "showStatusBar" to showStatusBar,
+        "w.tags" to showTagsWidget, "w.recent" to showRecentWidget, "w.storage" to showStorageWidget, "showToolbar" to showToolbar, "cardShadow" to cardShadow,
+        "searchRegex" to searchRegex, "searchCase" to searchCase, "indexRoots" to indexRoots.joinToString(SEP),
+        "detailColumns" to detailColumns.joinToString(",") { it.name }, "customColumns" to customColumns.joinToString(SEP),
+        "columnWidths" to columnWidths.entries.joinToString(",") { "${it.key.name}:${it.value.toInt()}" },
+        "nameColumnWidth" to nameColumnWidth.toInt(), "gridStep" to gridStep, "detailsSize" to detailsSize, "showStatusBar" to showStatusBar,
         "sidebarWidth" to sidebarWidth,
         "calculateFolderSizes" to calculateFolderSizes, "paneArrangement" to defaultArrangement,
         "backdrop" to backdrop, "backgroundTint" to backgroundTint, "backgroundImage" to backgroundImage,
         "backgroundImageFit" to backgroundImageFit, "backgroundImageOpacity" to backgroundImageOpacity,
         "backgroundImageAlign" to backgroundImageAlign,
+        "translucentWindow" to translucentWindow, "windowOpacity" to windowOpacity, "blurBehind" to blurBehind,
+        "gradientOn" to gradientOn, "gradientIndex" to gradientIndex, "gradientAngle" to gradientAngle, "gradientStrength" to gradientStrength,
         "bgImages" to bgImages.joinToString(SEP), "bgMode" to bgMode, "bgShuffle" to bgShuffle, "bgInterval" to bgIntervalMin,
         "bgIndex" to bgIndex, "bgRules" to bgRules.joinToString(SEP) { "${it.folder}\u0002${it.image}\u0002${if (it.includeSubfolders) 1 else 0}" },
         "session" to tabs.map { it.left.location }.filter { !it.startsWith("::") || it == HOME }.joinToString(SEP),
@@ -315,11 +357,129 @@ class AppState(val scope: CoroutineScope) {
         else -> true
     }
 
+    /**
+     * The sorted, filtered list a pane shows. Worked out off the UI thread (see [startViewUpdater])
+     * so a folder of 100 000+ items never stalls the window; this returns that result when it is
+     * current and only computes in place when it isn't yet.
+     */
     fun visibleItems(t: TabState): List<FileItem> {
-        var list = t.raw
-        if (!showHidden || !showSystem) list = list.filter { isShown(it) }
-        if (searchText.isNotBlank() && !t.isSearch) list = list.filter { it.name.contains(searchText, ignoreCase = true) }
-        return Fs.sort(list, sortBy, sortAscending)
+        val key = viewKey(t)
+        return if (t.viewKey == key) t.view else computeView(t)
+    }
+
+    fun viewKey(t: TabState) = ViewKey(t.raw, showHidden, showSystem, if (t.isSearch) "" else searchText, sortBy, sortAscending, extraSort, propsVersion, searchRegex, searchCase)
+
+    /** Keeps every pane's [TabState.view] up to date; large lists are sorted on a background thread. */
+    private fun startViewUpdater() {
+        scope.launch {
+            snapshotFlow { allPanes().map { it to viewKey(it) } }.collectLatest { panes ->
+                for ((t, key) in panes) {
+                    if (t.viewKey == key) continue
+                    val v = if (key.raw.size < 3000) computeView(t, key) else withContext(Dispatchers.Default) { computeView(t, key) }
+                    t.view = v; t.viewKey = key
+                }
+            }
+        }
+    }
+
+    private fun computeView(t: TabState, k: ViewKey = viewKey(t)): List<FileItem> {
+        var list = k.raw
+        if (!k.hidden || !k.system) list = list.filter { f -> if (f.system) k.system else if (f.hidden) k.hidden else true }
+        if (k.search.isNotBlank()) {
+            // The quick filter understands the search syntax too (regex, wildcards, ext:, size:, …).
+            val q = runCatching { SearchQuery.parse(k.search, k.regex, k.case) }.getOrNull()
+            list = if (q == null) list.filter { it.name.contains(k.search, ignoreCase = true) }
+                else list.filter { f -> q.matches(SearchQuery.Candidate(f.name, if (k.case) f.name else f.name.lowercase(), f.isDir, f.size, f.modified, f.created) { f.path }) }
+        }
+        val col = k.extra ?: return Fs.sort(list, k.sortBy, k.ascending)
+        @Suppress("UNCHECKED_CAST")
+        val byValue = Comparator<FileItem> { a, b -> (FileProps.sortKey(this, a, col) as Comparable<Any>).compareTo(FileProps.sortKey(this, b, col)) }
+        val cmp = if (k.ascending) byValue else byValue.reversed()
+        return list.sortedWith(compareBy<FileItem> { !it.isDir }.then(cmp))
+    }
+
+    // ------------------------------------------------------------ search (SearchQuery.kt / SearchIndex.kt)
+
+    /** The omnibar's .* and Aa switches: the whole query is a regular expression / matching is case-sensitive. */
+    var searchRegex by mutableStateOf(Prefs.bool("searchRegex", false))
+    var searchCase by mutableStateOf(Prefs.bool("searchCase", false))
+    /** Folders (or drives) kept in the instant-search index; none by default (it costs a full walk). */
+    val indexRoots = mutableStateListOf<String>().apply { addAll(Prefs.str("indexRoots", "").split(SEP).filter { it.isNotBlank() }) }
+    /** root → (entries indexed, ready). */
+    val indexStatus = mutableStateMapOf<String, Pair<Int, Boolean>>()
+
+    init {
+        // After Home has loaded: indexing is background work and never competes with start-up.
+        if (indexRoots.isNotEmpty()) scope.launch { delay(3000); applyIndexRoots() }
+    }
+
+    fun applyIndexRoots() {
+        SearchIndex.want(indexRoots.toList()) { root, n, ready -> scope.launch(Dispatchers.Main) { indexStatus[root] = n to ready } }
+        indexStatus.keys.filter { k -> indexRoots.none { it.equals(k, true) } }.forEach { indexStatus.remove(it) }
+    }
+
+    fun addIndexRoot(path: String) {
+        if (indexRoots.any { it.equals(path, true) }) return
+        indexRoots.add(path); applyIndexRoots()
+    }
+
+    fun removeIndexRoot(path: String) { indexRoots.removeAll { it.equals(path, true) }; applyIndexRoots() }
+
+    fun rebuildIndex(path: String) {
+        SearchIndex.rebuild(path) { root, n, ready -> scope.launch(Dispatchers.Main) { indexStatus[root] = n to ready } }
+    }
+
+    // ------------------------------------------------------------ 詳細資料 columns (DetailColumns.kt)
+
+    var detailColumns by mutableStateOf(DetailCol.parse(Prefs.str("detailColumns", DetailCol.defaults.joinToString(",") { it.name })).ifEmpty { DetailCol.defaults })
+    val columnWidths = mutableStateMapOf<DetailCol, Float>().apply {
+        Prefs.str("columnWidths", "").split(',').forEach { e ->
+            val (n, w) = e.split(':').let { if (it.size == 2) it[0] to it[1] else return@forEach }
+            DetailCol.entries.firstOrNull { it.name == n }?.let { c -> w.toFloatOrNull()?.let { put(c, it.coerceIn(48f, 900f)) } }
+        }
+    }
+    var nameColumnWidth by mutableStateOf(Prefs.str("nameColumnWidth", M.COL_NAME.toString()).toFloatOrNull() ?: M.COL_NAME.toFloat())
+    /** Sorting by a column that isn't one of [SortBy]'s (null = [sortBy]). */
+    var extraSort by mutableStateOf<DetailCol?>(null)
+    /** Bumped when [FileProps] has read new values, so the table redraws. */
+    var propsVersion by mutableStateOf(0)
+
+    fun widthOf(c: DetailCol) = columnWidths[c] ?: c.defaultWidth.toFloat()
+
+    /** The person's own fields (MetaStore) shown as columns, by name. */
+    var customColumns by mutableStateOf(Prefs.str("customColumns", "").split(SEP).filter { it.isNotBlank() })
+    fun toggleCustomColumn(name: String) { customColumns = if (name in customColumns) customColumns - name else customColumns + name }
+
+    fun toggleColumn(c: DetailCol) {
+        detailColumns = if (c in detailColumns) detailColumns - c
+            else (detailColumns + c).sortedBy { it.ordinal }
+        if (c !in detailColumns && extraSort == c) extraSort = null
+    }
+
+    fun resetColumns() { detailColumns = DetailCol.defaults; columnWidths.clear(); nameColumnWidth = M.COL_NAME.toFloat() }
+
+    /** Header click: SortBy columns as before, the others through [extraSort]. */
+    fun sortByColumn(c: DetailCol) {
+        val sb = c.sort
+        if (sb != null) {
+            if (extraSort == null && sortBy == sb) sortAscending = !sortAscending else { sortBy = sb; sortAscending = true }
+            extraSort = null
+        } else {
+            if (extraSort == c) sortAscending = !sortAscending else { extraSort = c; sortAscending = true }
+        }
+    }
+
+    /** Reads the values the visible columns need for [t]'s items (background, once per folder). */
+    fun loadProps(t: TabState) {
+        val cols = detailColumns.filter { it.basic || it.shell != null }
+        if (cols.isEmpty() || t.isHome || t.isNetwork || t.isServer) return
+        val items = t.raw
+        val dir = if (t.isVirtual) null else t.location
+        val loc = t.location
+        scope.launch {
+            val changed = withContext(Dispatchers.IO) { FileProps.load(dir, items, cols) { t.location != loc } }
+            if (changed) propsVersion++
+        }
     }
 
     fun displayName(item: FileItem): String =
@@ -361,6 +521,12 @@ class AppState(val scope: CoroutineScope) {
         }
     }
 
+    /** The × on a split pane: closes that pane, the other one stays. */
+    fun closePane(t: TabState) {
+        activate(t)
+        closeActivePane()
+    }
+
     fun focusOtherPane() {
         val ct = currentTab
         if (ct.right != null) ct.rightActive = !ct.rightActive
@@ -397,6 +563,8 @@ class AppState(val scope: CoroutineScope) {
     }
 
     fun refresh(t: TabState = tab) {
+        if (!t.isVirtual) FileProps.invalidate(t.location)
+        t.git?.root?.let { Git.forget(it) }
         if (t.isHome) loadHome() else load(t, keepSelection = true)
         treeExpanded.filterValues { it }.keys.toList().forEach { loadTreeChildren(it) }
     }
@@ -419,16 +587,36 @@ class AppState(val scope: CoroutineScope) {
         t.loading = true
         if (t.isSearch) {
             t.raw = emptyList()
+            t.searchInfo = null
+            val q = try { SearchQuery.parse(t.searchQuery, searchRegex, searchCase) } catch (e: IllegalArgumentException) {
+                t.error = e.message; t.loading = false; return
+            }
+            if (q == null) { t.loading = false; return }
+            val cs = searchCase
             val job = scope.launch {
+                val started = System.nanoTime()
+                val index = SearchIndex.covering(t.searchRoot)
+                if (index != null) {
+                    // Indexed: one scan of the in-memory name list (SearchIndex.kt), no disk access.
+                    val hits = withContext(Dispatchers.Default) { index.search(q, cs, t.searchRoot, M.SEARCH_LIMIT) { !isActive || t.location != path } }
+                    if (t.location == path) {
+                        t.raw = hits; t.loading = false
+                        t.searchInfo = S.searchIndexed((System.nanoTime() - started) / 1_000_000)
+                    }
+                    return@launch
+                }
                 val acc = ArrayList<FileItem>()
                 withContext(Dispatchers.IO) {
-                    FsExtra.search(t.searchRoot, t.searchQuery, M.SEARCH_LIMIT, cancelled = { !isActive || t.location != path }) { batch ->
+                    FsExtra.search(t.searchRoot, q, cs, M.SEARCH_LIMIT, cancelled = { !isActive || t.location != path }) { batch ->
                         acc += batch
                         val snapshot = acc.toList()
                         launch(Dispatchers.Main) { if (t.location == path) t.raw = snapshot }
                     }
                 }
-                if (t.location == path) { t.raw = acc.toList(); t.loading = false }
+                if (t.location == path) {
+                    t.raw = acc.toList(); t.loading = false
+                    t.searchInfo = S.searchWalked((System.nanoTime() - started) / 1_000_000)
+                }
             }
             t.loadJob = job
             return
@@ -450,8 +638,19 @@ class AppState(val scope: CoroutineScope) {
                 runCatching {
                     when {
                         t.isTag -> tagStore.filesWith(t.tagName).mapNotNull { FsExtra.item(it) }
+                        t.isRecycleBin -> RecycleBin.list()
                         t.isServer -> NetworkFs.serverContents(NetworkFs.hostOf(path), includeAdminShares = true)
-                        else -> Fs.list(path)
+                        else -> {
+                            // Big folders show their first items at once and fill in as they are read.
+                            val acc = ArrayList<FileItem>()
+                            val io = this
+                            Fs.listChunked(path, cancelled = { !isActive || t.location != path }) { chunk ->
+                                acc.addAll(chunk)
+                                val snapshot = acc.toList()
+                                io.launch(Dispatchers.Main) { if (t.location == path && t.loading) t.raw = snapshot }
+                            }
+                            acc
+                        }
                     }
                 }
             }
@@ -465,6 +664,49 @@ class AppState(val scope: CoroutineScope) {
             if (keepSelection) t.selection = t.selection.filter { s -> t.raw.any { it.path == s } }.toSet()
             t.loading = false
             if (!t.isVirtual) refreshGit(t)
+            if (t.isRecycleBin) refreshRecycleInfo()
+        }
+    }
+
+    // ------------------------------------------------------------ 資源回收筒
+
+    /** Items and bytes in the bin (sidebar, empty dialog); null until read. */
+    var recycleInfo by mutableStateOf<Pair<Long, Long>?>(null)
+    var confirmEmptyRecycle by mutableStateOf(false)
+    var emptyingRecycle by mutableStateOf(false)
+
+    fun refreshRecycleInfo() {
+        scope.launch { recycleInfo = withContext(Dispatchers.IO) { RecycleBin.query() } }
+    }
+
+    private fun reloadRecyclePanes() {
+        allPanes().filter { it.isRecycleBin }.forEach { load(it, keepSelection = true) }
+        refreshRecycleInfo()
+    }
+
+    /** 還原: back to where each item was deleted from. */
+    fun restoreSelected() {
+        val t = tab
+        if (!t.isRecycleBin || t.selection.isEmpty()) return
+        val sel = t.selection.toList()
+        scope.launch {
+            val failed = withContext(Dispatchers.IO) { RecycleBin.restore(sel) }
+            toast = if (failed > 0) (if (S.zh) "有 $failed 個項目無法還原" else "$failed item(s) couldn't be restored")
+                else if (S.zh) "已還原 ${sel.size} 個項目" else "Restored ${sel.size} item(s)"
+            reloadRecyclePanes()
+        }
+    }
+
+    /** 清空資源回收筒 (after the confirmation dialog). */
+    fun emptyRecycleBin() {
+        confirmEmptyRecycle = false
+        if (emptyingRecycle) return
+        emptyingRecycle = true
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { RecycleBin.empty() }
+            emptyingRecycle = false
+            if (!ok) toast = if (S.zh) "無法清空資源回收筒" else "Couldn't empty the Recycle Bin"
+            reloadRecyclePanes()
         }
     }
 
@@ -526,9 +768,7 @@ class AppState(val scope: CoroutineScope) {
     fun setDesktopWallpaper() {
         val img = tab.selection.firstOrNull() ?: return
         scope.launch(Dispatchers.IO) {
-            val ps = "Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class W { [DllImport(\"user32.dll\", CharSet = CharSet.Unicode)] public static extern int SystemParametersInfo(int a, int b, string c, int d); }'; " +
-                "[W]::SystemParametersInfo(20, 0, '${img.replace("'", "''")}', 3) | Out-Null"
-            Fs.powershell(ps, 10_000)
+            FsExtra.setWallpaper(img)
             withContext(Dispatchers.Main) { toast = if (S.zh) "已設為桌面背景" else "Set as desktop background" }
         }
     }
@@ -547,13 +787,195 @@ class AppState(val scope: CoroutineScope) {
     /** Message of the Git operation running now (shown in the status bar), or null. */
     var gitBusy by mutableStateOf<String?>(null)
     var cloneDialogOpen by mutableStateOf(false)
+    var gitBranchDialog by mutableStateOf(false)
+    // ---- 捷徑 (Flows.kt / FlowsUi.kt)
+    var flowsOpen by mutableStateOf(false)
+    var flowRun by mutableStateOf<FlowRunState?>(null)
+    var flowPrompt by mutableStateOf<FlowPrompt?>(null)
+
+    /** Runs a shortcut on the selection (or the open folder); asks for its parameters first. */
+    fun runFlow(flow: Flow, dryRun: Boolean = false) {
+        if (flowRun?.running == true) { toast = S.flowBusy; return }
+        val input = tab.selection.toList().ifEmpty { if (tab.isVirtual || "folder" !in flow.accepts) emptyList() else listOf(tab.location) }
+        val state = FlowRunState(flow, dryRun)
+        flowRun = state
+        state.job = scope.launch {
+            val ask: suspend (FlowPrompt) -> String? = { q -> withContext(Dispatchers.Main) { flowPrompt = q }; q.answer.await() }
+            val log: (String) -> Unit = { line -> scope.launch(Dispatchers.Main) { state.log.add(line) } }
+            try {
+                // Parameters: asked one by one, defaults filled in.
+                val params = LinkedHashMap<String, String>()
+                val pre = FlowRun(this@AppState, flow, input, params, dryRun, ask, log)
+                for (prm in flow.params) {
+                    params[prm.id] = ask(FlowPrompt("input", prm.label.ifEmpty { prm.id }, emptyList(), pre.expand(prm.default), kotlinx.coroutines.CompletableDeferred()))
+                        ?: throw FlowStopped(if (S.zh) "已取消" else "Cancelled")
+                }
+                val run = FlowRun(this@AppState, flow, input, params, dryRun, ask, log)
+                withContext(Dispatchers.IO) { run.runSteps(flow.steps) }
+                state.result = run.items
+                state.outcome = S.flowDone
+            } catch (e: FlowStopped) { state.outcome = e.message
+            } catch (e: kotlinx.coroutines.CancellationException) { state.outcome = S.flowStopped
+            } catch (e: Throwable) { state.outcome = (if (S.zh) "錯誤：" else "Error: ") + (e.message ?: e.javaClass.simpleName) }
+            state.running = false
+            flowPrompt?.answer?.complete(null); flowPrompt = null
+            // Things may have changed on disk.
+            allPanes().filter { !it.isVirtual }.forEach { load(it, keepSelection = true) }
+        }
+    }
+    /** 批次重新命名 / 編輯屬性: the items they work on (null = closed). */
+    var batchRenameFor by mutableStateOf<List<String>?>(null)
+    var metadataFor by mutableStateOf<List<String>?>(null)
+    /** The last batch rename as (old, new) pairs, for 復原. */
+    var lastRename by mutableStateOf<List<Pair<String, String>>>(emptyList())
+
+    /** F2 on several items, or 批次重新命名: the rename dialog for the selection. */
+    fun openBatchRename() {
+        val sel = tab.selection.filter { !NetworkFs.isServer(it) && !NetworkFs.isShareRoot(it) }
+        if (sel.isEmpty() || tab.isRecycleBin) return
+        batchRenameFor = sel
+    }
+
+    fun openMetadata() {
+        val sel = tab.selection.toList().ifEmpty { if (tab.isVirtual) emptyList() else emptyList() }
+        if (sel.isEmpty() || tab.isRecycleBin) return
+        metadataFor = sel
+    }
+
+    /** Runs a previewed batch; null when it worked, else what went wrong (nothing is left half-done). */
+    suspend fun performRename(rows: List<RenameRow>): String? {
+        val (done, err) = withContext(Dispatchers.IO) { RenameEngine.perform(rows) }
+        if (done.isNotEmpty()) {
+            done.forEach { (a, b) -> tagStore.movePath(a, b); MetaStore.movePath(a, b) }
+            lastRename = done
+            val t = tab
+            load(t, keepSelection = false)
+            t.selection = done.map { it.second }.toSet()
+            toast = S.renamedN(done.size)
+        }
+        return err
+    }
+
+    suspend fun undoLastRename(): String? {
+        val back = lastRename.map { (old, new) ->
+            val item = FsExtra.item(new) ?: return S.undoFailed
+            RenameRow(item, File(old).name, null)
+        }
+        val (done, err) = withContext(Dispatchers.IO) { RenameEngine.perform(back) }
+        done.forEach { (a, b) -> tagStore.movePath(a, b); MetaStore.movePath(a, b) }
+        if (err == null) lastRename = emptyList()
+        load(tab, keepSelection = true)
+        return err
+    }
+
+    fun afterMetadataChange(paths: List<String>) {
+        paths.mapNotNull { Fs.parent(it) }.distinct().forEach { FileProps.invalidate(it) }
+        allPanes().filter { p -> paths.any { Fs.parent(it).equals(p.location, true) } }.forEach { load(it, keepSelection = true) }
+        propsVersion++
+    }
+    /** 快速預覽 (Space): the file being previewed. */
+    var quickLook by mutableStateOf<String?>(null)
+    /** 鍵盤快速鍵 list (F1). */
+    var shortcutsOpen by mutableStateOf(false)
+
+    /** Space: preview the focused (last selected) item; Space again closes it. */
+    fun toggleQuickLook() {
+        if (quickLook != null) { quickLook = null; return }
+        val t = tab
+        if (t.isHome) return
+        val items = visibleItems(t)
+        val path = t.anchor?.takeIf { it in t.selection } ?: items.lastOrNull { it.path in t.selection }?.path ?: return
+        quickLook = path
+    }
+
+    /** ← → in the preview: the previous / next item, which also becomes the selection. */
+    fun quickLookStep(delta: Int) {
+        val t = tab
+        val items = visibleItems(t)
+        val i = items.indexOfFirst { it.path == quickLook }
+        if (i < 0) return
+        val next = items[(i + delta).coerceIn(0, items.size - 1)]
+        t.selection = setOf(next.path); t.anchor = next.path
+        quickLook = next.path
+    }
+
+    /** Esc: closes whatever dialog is on top. True when there was one. */
+    fun closeTopDialog(): Boolean {
+        when {
+            quickLook != null -> quickLook = null
+            shortcutsOpen -> shortcutsOpen = false
+            confirmDelete != null -> confirmDelete = null
+            confirmEmptyRecycle -> confirmEmptyRecycle = false
+            gitApplyPatchFor != null -> gitApplyPatchFor = null
+            gitCreatePatchOpen -> gitCreatePatchOpen = false
+            gitBranchDialog -> gitBranchDialog = false
+            batchRenameFor != null -> batchRenameFor = null
+            metadataFor != null -> metadataFor = null
+            deleteReport != null -> deleteReport = null
+            flowPrompt != null -> { flowPrompt?.answer?.complete(null); flowPrompt = null }
+            flowsOpen -> flowsOpen = false
+            cloneDialogOpen -> cloneDialogOpen = false
+            cleanPlan != null -> cleanPlan = null
+            tagEditorFor != null -> tagEditorFor = null
+            customizeToolbarOpen -> customizeToolbarOpen = false
+            settingsOpen -> settingsOpen = false
+            statusCenterOpen -> statusCenterOpen = false
+            else -> return false
+        }
+        return true
+    }
+
+    /** A dialog is open: the file list's own keys stay off. */
+    val dialogOpen: Boolean get() = flowsOpen || flowPrompt != null || deleteReport != null || batchRenameFor != null || metadataFor != null || shortcutsOpen || confirmEmptyRecycle || gitApplyPatchFor != null || gitCreatePatchOpen ||
+        gitBranchDialog || cloneDialogOpen || cleanPlan != null || tagEditorFor != null || customizeToolbarOpen || settingsOpen
+    /** 套用修補檔: the patch to start with ("" = choose one in the dialog); null = closed. */
+    var gitApplyPatchFor by mutableStateOf<String?>(null)
+    var gitCreatePatchOpen by mutableStateOf(false)
+
+    /** 套用修補檔: the selected .patch / .diff file, or the dialog with nothing chosen yet. */
+    fun openApplyPatch() {
+        if (tab.git == null) return
+        gitApplyPatchFor = tab.selection.firstOrNull { it.endsWith(".patch", true) || it.endsWith(".diff", true) } ?: ""
+    }
+
+    /** The Git menu (toolbar group "Git ..."): the old fixed Git button's items plus the patch tools. */
+    fun gitMenuEntries(): List<MenuEntry> {
+        val g = tab.git
+        val ready = gitBusy == null
+        val zh = S.zh
+        if (g == null) return listOf(
+            MenuEntry(if (zh) "初始化 Git 儲存庫" else "Initialize repository", Icons.Outlined.Add, enabled = ready && !tab.isVirtual) { gitInit() },
+            MenuEntry(if (zh) "複製儲存庫到此資料夾…" else "Clone repository here…", Icons.Outlined.ContentCopy, enabled = ready && !tab.isVirtual) { cloneDialogOpen = true },
+        )
+        val I = Icons.Outlined
+        return listOf(
+            MenuEntry("${g.branch}  ↑${g.ahead} ↓${g.behind}", I.AccountTree, enabled = false),
+            MenuEntry(if (zh) "取得遠端變更" else "Fetch", I.CloudDownload, enabled = ready, separatorBefore = true) { gitFetch() },
+            MenuEntry(if (zh) "拉取" else "Pull", I.ArrowDownward, enabled = ready) { gitPull() },
+            MenuEntry(if (zh) "推送" else "Push", I.ArrowUpward, enabled = ready) { gitPush() },
+            MenuEntry(if (zh) "同步" else "Sync", I.Sync, enabled = ready) { gitSync() },
+            MenuEntry(S.gitApplyPatch, I.Healing, enabled = ready, separatorBefore = true) { openApplyPatch() },
+            MenuEntry(S.gitCreatePatch, I.History, enabled = ready) { gitCreatePatchOpen = true },
+            MenuEntry(if (zh) "建立分支…" else "Create branch…", I.Add, enabled = ready, separatorBefore = true) { gitBranchDialog = true },
+        ) + g.localBranches.map { b ->
+            MenuEntry(b, if (b == g.branch) I.Check else I.AccountTree, enabled = ready && b != g.branch) { gitCheckout(b) }
+        } + g.remoteBranches.map { b ->
+            MenuEntry(b, I.Cloud, enabled = ready) { gitCheckout(b, remote = true) }
+        } + MenuEntry(if (zh) "複製儲存庫到此資料夾…" else "Clone repository here…", I.ContentCopy, enabled = ready, separatorBefore = true) { cloneDialogOpen = true }
+    }
+
+    /** After the patch tools changed files: reload every pane in that repository. */
+    fun afterGitChange(root: String) {
+        Git.forget(root)
+        allPanes().filter { it.git?.root == root || it.location.startsWith(root, true) }.forEach { load(it, keepSelection = true) }
+    }
 
     /** Finds the repository of [t]'s folder and reads branch, ahead/behind and file status, in the background. */
     fun refreshGit(t: TabState = tab) {
         val path = t.location
         if (t.isVirtual) { t.git = null; return }
         scope.launch {
-            val info = withContext(Dispatchers.IO) { Git.rootOf(path)?.let { Git.info(it) } }
+            val info = withContext(Dispatchers.IO) { Git.rootOf(path)?.let { Git.cachedInfo(it) } }
             if (t.location == path) t.git = info
         }
     }
@@ -565,6 +987,7 @@ class AppState(val scope: CoroutineScope) {
         gitBusy = running
         scope.launch {
             val r = withContext(Dispatchers.IO) { op(g) }
+            Git.forget(g.root)
             gitBusy = null
             toast = if (r.ok) done else "$failed\n${r.output.lines().takeLast(3).joinToString("\n")}"
             allPanes().filter { it.git?.root == g.root }.forEach { load(it, keepSelection = true) }
@@ -722,6 +1145,8 @@ class AppState(val scope: CoroutineScope) {
     private fun isNetworkPlace(path: String) = NetworkFs.isServer(path) || NetworkFs.isShareRoot(path)
 
     fun copy(cut: Boolean = false) {
+        // Items in the bin are moved out with 還原, never cut (that would leave their $I records behind).
+        if (cut && tab.isRecycleBin) return
         val sel = tab.selection.toList().filter { !cut || !isNetworkPlace(it) }
         if (sel.isEmpty()) return
         clipboard = Clipboard(sel, cut)
@@ -758,7 +1183,8 @@ class AppState(val scope: CoroutineScope) {
 
     fun startRename() {
         val sel = tab.selection
-        if (sel.size == 1 && !isNetworkPlace(sel.first())) tab.renaming = sel.first()
+        if (sel.size > 1) { openBatchRename(); return }
+        if (sel.size == 1 && !isNetworkPlace(sel.first()) && !tab.isRecycleBin) tab.renaming = sel.first()
     }
 
     fun commitRename(path: String, newName: String) {
@@ -776,7 +1202,8 @@ class AppState(val scope: CoroutineScope) {
     fun requestDelete() {
         val sel = tab.selection.toList().filter { !isNetworkPlace(it) }
         if (sel.isEmpty()) return
-        if (confirmDeleteAlways) confirmDelete = sel else doDelete(sel, false)
+        // In the bin, deleting is for good: always ask.
+        if (confirmDeleteAlways || tab.isRecycleBin) confirmDelete = sel else doDelete(sel, false)
     }
 
     fun doDelete(all: List<String>, permanent: Boolean) {
@@ -784,13 +1211,42 @@ class AppState(val scope: CoroutineScope) {
         val paths = all.filter { !isNetworkPlace(it) }
         if (paths.isEmpty()) return
         val t = tab
+        if (t.isRecycleBin) {
+            scope.launch { withContext(Dispatchers.IO) { RecycleBin.purge(paths) }; reloadRecyclePanes() }
+            return
+        }
+        // Permanent: always the inside-out delete (SafeDelete), which also clears read-only and handles long paths.
+        if (permanent) { safeDelete(paths, toRecycleBin = false); return }
         scope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                if (permanent) { Fs.deletePermanently(paths); true } else Fs.recycle(paths)
-            }
+            val failed = withContext(Dispatchers.IO) { paths.filter { p -> !Fs.recycle(listOf(p)) && File(p).exists() } }
             tagStore.clear(paths.filter { !File(it).exists() })
-            if (!ok) toast = if (S.zh) "部分項目無法移到資源回收筒" else "Some items couldn't be moved to the Recycle Bin"
             load(t)
+            if (allPanes().any { it.isRecycleBin }) reloadRecyclePanes() else refreshRecycleInfo()
+            // The bin refused some (typically a folder on a managed PC): offer the inside-out way.
+            if (failed.isNotEmpty()) deleteReport = DeleteReport(0, failed, emptyList())
+        }
+    }
+
+    /** Shown when a delete didn't fully work (DeleteUi.kt). */
+    var deleteReport by mutableStateOf<DeleteReport?>(null)
+    /** Progress of an inside-out delete, for the status bar. */
+    var deleteBusy by mutableStateOf<String?>(null)
+
+    /** Deletes files first, deepest folders first (SafeDelete); lists what is left and why. */
+    fun safeDelete(paths: List<String>, toRecycleBin: Boolean) {
+        if (paths.isEmpty() || deleteBusy != null) return
+        val t = tab
+        deleteBusy = S.deleting(0)
+        scope.launch {
+            val r = withContext(Dispatchers.IO) {
+                SafeDelete.deleteTree(paths, toRecycleBin) { n -> scope.launch(Dispatchers.Main) { if (deleteBusy != null) deleteBusy = S.deleting(n) } }
+            }
+            deleteBusy = null
+            tagStore.clear(paths.filter { !File(it).exists() })
+            allPanes().filter { p -> !p.isVirtual && (p === t || paths.any { Fs.parent(it).equals(p.location, true) }) }.forEach { load(it, keepSelection = true) }
+            if (allPanes().any { it.isRecycleBin }) reloadRecyclePanes() else refreshRecycleInfo()
+            if (r.failures.isNotEmpty()) deleteReport = DeleteReport(1, paths, r.failures)
+            else toast = S.deletedN(r.removed)
         }
     }
 

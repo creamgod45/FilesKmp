@@ -17,6 +17,7 @@ enum class TbContext(private val zhName: String, private val enName: String) {
     BatchFiles("批次檔案", "Batch files"),
     PowerShellFiles("PowerShell 檔案", "PowerShell files"),
     ImageFiles("圖片檔", "Images"),
+    PatchFiles("修補檔", "Patch files"),
     MediaFiles("多媒體檔案", "Media files"),
     OtherContexts("其他內容", "Other contexts");
     val text get() = if (S.zh) zhName else enName
@@ -27,7 +28,7 @@ enum class TbCategory(private val zhName: String, private val enName: String) {
     Theme("主題", "Theme"), Ui("介面", "Interface"), Panes("分割畫面", "Panes"), Run("執行", "Run"),
     Archive("壓縮", "Archive"), Media("媒體", "Media"), Navigation("導覽", "Navigation"), Image("影像", "Image"),
     Sort("排序", "Sort"), Create("新增", "New"), FileOps("檔案操作", "File operations"), Layout("版面配置", "Layout"),
-    Window("視窗", "Window"), Selection("選取", "Selection"), Open("開啟", "Open"),
+    Window("視窗", "Window"), Selection("選取", "Selection"), Open("開啟", "Open"), Git("Git", "Git"),
     /** The person's own commands and folders (ToolbarCustom.kt). */
     Custom("自訂", "Custom");
     val text get() = if (S.zh) zhName else enName
@@ -56,6 +57,7 @@ class TbCmd(
 const val SEPARATOR = "Separator"
 
 private fun sel(s: AppState) = s.tab.selection.isNotEmpty()
+private fun git(s: AppState) = s.tab.git != null && s.gitBusy == null
 private fun selExt(s: AppState, exts: Set<String>) = s.tab.selection.any { it.substringAfterLast('.', "").lowercase() in exts }
 private val audioExt = setOf("mp3", "wav", "flac", "aac", "ogg", "m4a", "wma")
 private val imageExtSet get() = FsExtra.imageExt + setOf("heic", "tif", "tiff")
@@ -152,7 +154,9 @@ object TbCommands {
         TbCmd("CutItem", "剪下", "Cut", TbCategory.FileOps, Icons.Outlined.ContentCut, hotkey = "Ctrl+X", enabled = { sel(it) }, run = { it.copy(cut = true) }),
         TbCmd("CopyItem", "複製", "Copy", TbCategory.FileOps, Icons.Outlined.ContentCopy, hotkey = "Ctrl+C", enabled = { sel(it) }, run = { it.copy() }),
         TbCmd("PasteItem", "貼上", "Paste", TbCategory.FileOps, Icons.Outlined.ContentPaste, hotkey = "Ctrl+V", enabled = { it.clipboard != null && it.canCreateHere }, run = { it.paste() }),
-        TbCmd("Rename", "重新命名", "Rename", TbCategory.FileOps, Icons.Outlined.DriveFileRenameOutline, hotkey = "F2", enabled = { it.tab.selection.size == 1 }, run = { it.startRename() }),
+        TbCmd("Rename", "重新命名", "Rename", TbCategory.FileOps, Icons.Outlined.DriveFileRenameOutline, hotkey = "F2", enabled = { sel(it) }, run = { it.startRename() }),
+        TbCmd("BatchRename", "批次重新命名", "Batch rename", TbCategory.FileOps, Icons.Outlined.DriveFileRenameOutline, hotkey = "Ctrl+Shift+F2", enabled = { sel(it) && !it.tab.isRecycleBin }, run = { it.openBatchRename() }),
+        TbCmd("EditProperties", "編輯屬性與中繼資料", "Edit properties", TbCategory.FileOps, Icons.Outlined.EditNote, hotkey = "Ctrl+Shift+M", enabled = { sel(it) && !it.tab.isRecycleBin }, run = { it.openMetadata() }),
         TbCmd("DeleteItem", "刪除", "Delete", TbCategory.FileOps, Icons.Outlined.Delete, hotkey = "Delete", enabled = { sel(it) }, run = { it.requestDelete() }),
         TbCmd("DeleteItemPermanently", "永久刪除", "Delete permanently", TbCategory.FileOps, Icons.Outlined.DeleteForever, hotkey = "Shift+Delete", enabled = { sel(it) },
             run = { s -> s.doDelete(s.tab.selection.toList(), true) }),
@@ -191,6 +195,29 @@ object TbCommands {
         TbCmd("Search", "搜尋", "Search", TbCategory.Open, Icons.Outlined.Search, hotkey = "Ctrl+F", run = { it.searchRequest++ }),
         TbCmd("EditPath", "編輯路徑", "Edit path", TbCategory.Open, null, hotkey = "Ctrl+L", run = { it.editingPath = true }),
         TbCmd("OpenSettings", "設定", "Settings", TbCategory.Open, Icons.Outlined.Settings, hotkey = "Ctrl+,", run = { it.settingsOpen = true }),
+        // Git (the old fixed Git button, now a toolbar item like any other)
+        TbCmd("GitMenu", "Git", "Git", TbCategory.Git, Icons.Outlined.AccountTree, enabled = { !it.tab.isVirtual }, groupItems = { it.gitMenuEntries() }),
+        TbCmd("GitFetch", "取得遠端變更", "Fetch", TbCategory.Git, Icons.Outlined.CloudDownload, enabled = { git(it) }, run = { it.gitFetch() }),
+        TbCmd("GitPull", "拉取", "Pull", TbCategory.Git, Icons.Outlined.ArrowDownward, enabled = { git(it) }, run = { it.gitPull() }),
+        TbCmd("GitPush", "推送", "Push", TbCategory.Git, Icons.Outlined.ArrowUpward, enabled = { git(it) }, run = { it.gitPush() }),
+        TbCmd("GitSync", "同步", "Sync", TbCategory.Git, Icons.Outlined.Sync, enabled = { git(it) }, run = { it.gitSync() }),
+        TbCmd("GitApplyPatch", "套用修補檔", "Apply patch", TbCategory.Git, Icons.Outlined.Healing, TbContext.PatchFiles, hotkey = "Ctrl+Alt+A", enabled = { git(it) }, run = { it.openApplyPatch() }),
+        TbCmd("GitCreatePatch", "從提交紀錄建立 .patch", "Create .patch from history", TbCategory.Git, Icons.Outlined.History, hotkey = "Ctrl+Alt+P", enabled = { git(it) }, run = { it.gitCreatePatchOpen = true }),
+        TbCmd("GitCreateBranch", "建立分支", "Create branch", TbCategory.Git, Icons.Outlined.Add, enabled = { git(it) }, run = { it.gitBranchDialog = true }),
+        TbCmd("GitClone", "複製儲存庫", "Clone repository", TbCategory.Git, Icons.Outlined.ContentCopy, enabled = { !it.tab.isVirtual && it.gitBusy == null }, run = { it.cloneDialogOpen = true }),
+        // 資源回收筒
+        TbCmd("OpenRecycleBin", "資源回收筒", "Recycle Bin", TbCategory.FileOps, Icons.Outlined.Delete, hotkey = "Ctrl+Alt+R", run = { it.navigate(RECYCLE_BIN) }),
+        TbCmd("RestoreItems", "還原", "Restore", TbCategory.FileOps, Icons.Outlined.RestoreFromTrash, enabled = { it.tab.isRecycleBin && sel(it) }, run = { it.restoreSelected() }),
+        TbCmd("EmptyRecycleBin", "清空資源回收筒", "Empty Recycle Bin", TbCategory.FileOps, Icons.Outlined.DeleteSweep, hotkey = "Ctrl+Shift+Delete",
+            enabled = { (it.recycleInfo?.first ?: 1L) > 0 && !it.emptyingRecycle }, run = { it.confirmEmptyRecycle = true }),
+        // 捷徑
+        TbCmd("Flows", "捷徑", "Shortcuts", TbCategory.Run, Icons.Outlined.Bolt,
+            groupItems = { s -> FlowStore.all().map { f -> MenuEntry(f.name, Icons.Outlined.Bolt, f.hotkey) { s.runFlow(f) } } +
+                MenuEntry(if (S.zh) "管理捷徑…" else "Manage shortcuts…", Icons.Outlined.Tune, "Ctrl+Alt+S", separatorBefore = true) { s.flowsOpen = true } }),
+        TbCmd("OpenFlows", "管理捷徑", "Manage shortcuts", TbCategory.Run, Icons.Outlined.Tune, hotkey = "Ctrl+Alt+S", run = { it.flowsOpen = true }),
+        // 預覽與說明
+        TbCmd("QuickLook", "快速預覽", "Quick preview", TbCategory.Open, Icons.Outlined.Preview, hotkey = "Space", enabled = { sel(it) }, run = { it.toggleQuickLook() }),
+        TbCmd("ShowShortcuts", "鍵盤快速鍵", "Keyboard shortcuts", TbCategory.Open, Icons.Outlined.Keyboard, hotkey = "F1", run = { it.shortcutsOpen = true }),
         TbCmd("CustomizeToolbar", "自訂工具列", "Customize toolbar", TbCategory.Open, null, run = { it.customizeToolbarOpen = true }),
     )
 
@@ -215,12 +242,13 @@ fun toolbarDefaults(): Map<TbContext, List<TbEntry>> = mapOf(
     TbContext.AlwaysVisible to listOf(
         TbEntry("NewItem", true, true), TbEntry(SEPARATOR, false, false),
         TbEntry("CutItem"), TbEntry("CopyItem"), TbEntry("PasteItem"), TbEntry("Rename"),
-        TbEntry("DeleteItem"), TbEntry("OpenProperties"),
+        TbEntry("DeleteItem"), TbEntry("OpenProperties"), TbEntry(SEPARATOR, false, false), TbEntry("GitMenu", true, true), TbEntry("Flows", true, true),
     ),
     TbContext.ArchiveFiles to listOf(TbEntry("Extract", true, true)),
     TbContext.BatchFiles to listOf(TbEntry("EditInNotepad", true, true)),
     TbContext.PowerShellFiles to listOf(TbEntry("RunWithPowershell", true, true)),
     TbContext.ImageFiles to listOf(TbEntry("SetAs", true, true)),
+    TbContext.PatchFiles to listOf(TbEntry("GitApplyPatch", true, true)),
     TbContext.MediaFiles to listOf(TbEntry("PlayAll", true, true)),
     TbContext.OtherContexts to emptyList(),
 )
@@ -228,8 +256,14 @@ fun toolbarDefaults(): Map<TbContext, List<TbEntry>> = mapOf(
 /** Saved toolbar layout per context (%APPDATA%\FilesKmp\toolbar.txt: context, id, icon, label per line). */
 class ToolbarStore {
     private val file = File(Prefs.dir, "toolbar.txt")
+    /** Set by [load] when it added the Git menu to an older saved layout; saved once below. */
+    private var migrated = false
     var layout by mutableStateOf(load())
         private set
+
+    init {
+        if (migrated) save(layout)
+    }
 
     private fun load(): Map<TbContext, List<TbEntry>> {
         if (!file.exists()) return toolbarDefaults()
@@ -246,6 +280,13 @@ class ToolbarStore {
                         ?.let { runCatching { String(java.util.Base64.getDecoder().decode(it), Charsets.UTF_8) }.getOrNull() }
                     if (p[1] == SEPARATOR || TbCommands.get(p[1]) != null) map[ctx]!!.add(TbEntry(p[1], p[2] == "1", p[3] == "1", label))
                 }
+            }
+            if (!Prefs.bool("tb.gitMenuAdded", false)) {
+                if (map.values.none { l -> l.any { it.id.startsWith("Git") } }) {
+                    map[TbContext.AlwaysVisible]!!.add(TbEntry("GitMenu", true, true))
+                    migrated = true
+                }
+                if (!Prefs.readOnly) Prefs.put(mapOf("tb.gitMenuAdded" to true))
             }
             map
         } catch (_: Exception) { toolbarDefaults() }
@@ -280,6 +321,7 @@ fun activeContexts(s: AppState): List<TbContext> {
             TbContext.BatchFiles -> selExt(s, setOf("bat", "cmd"))
             TbContext.PowerShellFiles -> selExt(s, setOf("ps1"))
             TbContext.ImageFiles -> selExt(s, imageExtSet)
+            TbContext.PatchFiles -> s.tab.git != null && selExt(s, setOf("patch", "diff"))
             TbContext.MediaFiles -> selExt(s, Thumbnails.videoExt + audioExt)
             else -> false
         }

@@ -38,10 +38,44 @@ object WindowCorners {
     }
 
     /** The native window handle, through AWT's internal accessor (exported by a JVM option). */
+    fun hwnd(window: Window): Long? = runCatching { hwndOf(window) }.getOrNull()
+
     private fun hwndOf(window: Window): Long? {
         val accessor = Class.forName("sun.awt.AWTAccessor").getMethod("getComponentAccessor").invoke(null)
         val peer = Class.forName("sun.awt.AWTAccessor\$ComponentAccessor")
             .getMethod("getPeer", Component::class.java).invoke(accessor, window) ?: return null
         return Class.forName("sun.awt.windows.WComponentPeer").getMethod("getHWnd").invoke(peer) as? Long
+    }
+}
+
+/**
+ * 模糊背後的內容 for the see-through window: asks DWM (SetWindowCompositionAttribute, the call
+ * Windows' own shell uses) to blur what is behind the window. Off again with [on] = false.
+ */
+object WindowBlur {
+    private const val WCA_ACCENT_POLICY = 19
+    private const val ACCENT_DISABLED = 0
+    private const val ACCENT_ENABLE_BLURBEHIND = 3
+
+    fun set(window: Window, on: Boolean) {
+        try {
+            val hwnd = WindowCorners.hwnd(window) ?: return
+            Arena.ofConfined().use { arena ->
+                val user32 = SymbolLookup.libraryLookup("user32", arena)
+                val fn = Linker.nativeLinker().downcallHandle(
+                    user32.find("SetWindowCompositionAttribute").orElseThrow(),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+                )
+                // ACCENT_POLICY { int AccentState, AccentFlags, GradientColor, AnimationId }
+                val policy = arena.allocate(16)
+                policy.set(ValueLayout.JAVA_INT, 0, if (on) ACCENT_ENABLE_BLURBEHIND else ACCENT_DISABLED)
+                // WINDOWCOMPOSITIONATTRIBDATA on x64 { int Attrib; (pad); void* pvData; SIZE_T cbData } = 24 bytes
+                val data = arena.allocate(24)
+                data.set(ValueLayout.JAVA_INT, 0, WCA_ACCENT_POLICY)
+                data.set(ValueLayout.ADDRESS, 8, policy)
+                data.set(ValueLayout.JAVA_LONG, 16, 16L)
+                fn.invokeWithArguments(MemorySegment.ofAddress(hwnd), data)
+            }
+        } catch (_: Throwable) {}
     }
 }

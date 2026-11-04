@@ -153,9 +153,12 @@ fun ToolbarItem(s: AppState, e: TbEntry, interactive: Boolean, onUnpin: (() -> U
             }
         }
         if (cmd.isGroup) Flyout(open, { open = false }) {
-            cmd.groupItems!!(s).forEach { m ->
-                if (m.separatorBefore) FlyoutSeparator()
-                FlyoutItem(m.label, m.icon, m.hotkey, enabled = m.enabled, iconTint = if (m.icon == Icons.Filled.Folder) p.folder else null) { open = false; m.action() }
+            // Long groups (Git branches) scroll instead of running off the window.
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                cmd.groupItems!!(s).forEach { m ->
+                    if (m.separatorBefore) FlyoutSeparator()
+                    FlyoutItem(m.label, m.icon, m.hotkey, enabled = m.enabled, iconTint = if (m.icon == Icons.Filled.Folder) p.folder else null) { open = false; m.action() }
+                }
             }
         }
     }

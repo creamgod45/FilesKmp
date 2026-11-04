@@ -8,7 +8,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -92,6 +94,30 @@ val TintChoices = listOf(
     TintChoice("Camouflage", "迷彩色", "#327E735F"),
 )
 
+/** 漸層背景 presets (rebuild's own). */
+class GradientChoice(val en: String, val zh: String, val colors: List<Long>) { val name get() = if (S.zh) zh else en }
+
+val GradientChoices = listOf(
+    GradientChoice("Dawn", "晨曦", listOf(0xFFFF9A8B, 0xFFFF6A88, 0xFFFF99AC)),
+    GradientChoice("Ocean", "海洋", listOf(0xFF2E3192, 0xFF1BFFFF)),
+    GradientChoice("Aurora", "極光", listOf(0xFF00C9A7, 0xFF845EC2)),
+    GradientChoice("Sunset", "夕陽", listOf(0xFFF7971E, 0xFFFFD200)),
+    GradientChoice("Lavender", "紫霧", listOf(0xFFC471F5, 0xFFFA71CD)),
+    GradientChoice("Forest", "森林", listOf(0xFF134E5E, 0xFF71B280)),
+    GradientChoice("Midnight", "深夜", listOf(0xFF0F2027, 0xFF203A43, 0xFF2C5364)),
+    GradientChoice("Ice", "冰藍", listOf(0xFFE0EAFC, 0xFFCFDEF3, 0xFF9FC5E8)),
+)
+
+/** A linear gradient across [size] at [angleDeg] (0 = left to right, 90 = top to bottom). */
+fun angledGradient(colors: List<Color>, angleDeg: Float, size: androidx.compose.ui.geometry.Size): Brush {
+    val rad = Math.toRadians(angleDeg.toDouble())
+    val dx = kotlin.math.cos(rad).toFloat(); val dy = kotlin.math.sin(rad).toFloat()
+    // Half the projection of the box on the direction, so the gradient spans corner to corner.
+    val half = (kotlin.math.abs(size.width * dx) + kotlin.math.abs(size.height * dy)) / 2f
+    val c = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+    return Brush.linearGradient(colors, start = c - androidx.compose.ui.geometry.Offset(dx * half, dy * half), end = c + androidx.compose.ui.geometry.Offset(dx * half, dy * half))
+}
+
 fun parseArgb(hex: String): Color = try {
     val h = hex.removePrefix("#")
     val v = h.toLong(16)
@@ -155,11 +181,20 @@ fun BackdropLayer(s: AppState, dark: Boolean) {
     LaunchedEffect(wanted) { picture = withContext(Dispatchers.IO) { BgCache.get(wanted) } }
 
     val base = if (dark) Color(0xFF202020) else Color(0xFFF3F3F3)
-    Box(Modifier.fillMaxSize().background(base)) {
+    // 半透明視窗: the window itself is see-through, so the base colour only partly covers the desktop.
+    val seeThrough = s.translucentActive
+    Box(Modifier.fillMaxSize().background(if (seeThrough) base.copy(alpha = s.windowOpacity.coerceIn(0.2f, 1f)) else base)) {
         val wp = wallpaper
-        if (wp != null && s.backdrop != Backdrop.Solid) {
+        if (!seeThrough && wp != null && s.backdrop != Backdrop.Solid) {
             Image(wp, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(Modifier.fillMaxSize().background(base.copy(alpha = s.backdrop.cover())))
+        }
+        if (s.gradientOn) {
+            val g = GradientChoices.getOrElse(s.gradientIndex) { GradientChoices[0] }
+            val colors = g.colors.map { Color(it) }
+            val angle = s.gradientAngle
+            val alpha = s.gradientStrength.coerceIn(0.05f, 1f)
+            Box(Modifier.fillMaxSize().drawBehind { drawRect(angledGradient(colors, angle, size), alpha = alpha) })
         }
         val tint = parseArgb(s.backgroundTint)
         if (tint.alpha > 0f) Box(Modifier.fillMaxSize().background(tint))

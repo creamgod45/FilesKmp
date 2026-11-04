@@ -23,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -250,7 +251,11 @@ fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
         if (s.calculateFolderSizes && !t.isNetwork && !t.isServer) items.filter { it.isDir && s.folderSizes[it.path] == null }.forEach { s.calcFolderSize(it.path) }
     }
     val emptyMenu = {
-        if (t.isVirtual) listOf(
+        if (t.isRecycleBin) listOf(
+            MenuEntry(S.recycleEmpty, Icons.Outlined.DeleteSweep, enabled = items.isNotEmpty()) { s.confirmEmptyRecycle = true },
+            MenuEntry(S.selectAll, Icons.Outlined.SelectAll, "Ctrl+A", separatorBefore = true) { s.selectAll() },
+            MenuEntry(S.refresh, Icons.Outlined.Refresh, "F5") { s.refresh() },
+        ) else if (t.isVirtual) listOf(
             MenuEntry(S.selectAll, Icons.Outlined.SelectAll, "Ctrl+A") { s.selectAll() },
             MenuEntry(S.refresh, Icons.Outlined.Refresh, "F5") { s.refresh() },
         ) else listOf(
@@ -267,6 +272,19 @@ fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
     Box(
         Modifier.fillMaxSize()
             .contextMenu(onOpen = { s.activate(t); t.selection = emptySet() }, entries = emptyMenu)
+            // Ctrl+wheel: icon size (taken before the list scrolls).
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val e = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                        if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Scroll && e.keyboardModifiers.isCtrlPressed) {
+                            val dy = e.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                            if (dy < 0) s.gridLarger() else if (dy > 0) s.gridSmaller()
+                            e.changes.forEach { it.consume() }
+                        }
+                    }
+                }
+            }
             .pointerInput(t) { detectTapGestures2 { s.activate(t); t.selection = emptySet(); t.renaming = null } }
     ) {
         when {
@@ -277,6 +295,7 @@ fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
                     t.isTag -> S.noTagged
                     t.isNetwork -> S.netEmpty
                     t.isServer -> S.netNoShares
+                    t.isRecycleBin -> S.recycleIsEmpty
                     t.isSearch || s.searchText.isNotBlank() -> S.noResults
                     else -> S.emptyFolder
                 }
@@ -310,6 +329,13 @@ private fun networkPlaceMenu(s: AppState, item: FileItem): List<MenuEntry> = lis
 )
 
 fun itemMenu(s: AppState, item: FileItem): List<MenuEntry> {
+    if (s.tab.isRecycleBin) return listOf(
+        MenuEntry(S.recycleRestore, Icons.Outlined.RestoreFromTrash) { s.restoreSelected() },
+        MenuEntry(S.open, Icons.AutoMirrored.Outlined.OpenInNew, "Enter", separatorBefore = true) { s.openSelected() },
+        MenuEntry(S.copy, Icons.Outlined.ContentCopy, "Ctrl+C") { s.copy() },
+        MenuEntry(S.recycleDeleteForever, Icons.Outlined.DeleteForever, "Delete", separatorBefore = true) { s.requestDelete() },
+        MenuEntry(S.properties, Icons.Outlined.Info, "Alt+Enter", separatorBefore = true) { s.infoPaneOpen = true },
+    )
     if (NetworkFs.isServer(item.path) || NetworkFs.isShareRoot(item.path)) return networkPlaceMenu(s, item)
     val multi = s.tab.selection.size > 1
     val isZip = item.ext == "zip"
@@ -327,7 +353,8 @@ fun itemMenu(s: AppState, item: FileItem): List<MenuEntry> {
         MenuEntry(S.editTags, Icons.Outlined.LocalOffer, separatorBefore = true) { s.editTags() },
         MenuEntry(S.compress, Icons.Outlined.FolderZip) { s.compressSelected() },
         if (isZip) MenuEntry(S.extract, Icons.Outlined.Unarchive) { s.extractSelected() } else null,
-        MenuEntry(S.rename, Icons.Outlined.DriveFileRenameOutline, "F2", enabled = !multi, separatorBefore = true) { s.startRename() },
+        MenuEntry(if (multi) S.batchRename else S.rename, Icons.Outlined.DriveFileRenameOutline, "F2", separatorBefore = true) { s.startRename() },
+        MenuEntry(S.editProperties, Icons.Outlined.EditNote, "Ctrl+Shift+M") { s.openMetadata() },
         MenuEntry(S.delete, Icons.Outlined.Delete, "Delete") { s.requestDelete() },
         MenuEntry(S.properties, Icons.Outlined.Info, "Alt+Enter", separatorBefore = true) { s.infoPaneOpen = true },
     )
@@ -381,39 +408,134 @@ fun DetailsLayout(s: AppState, t: TabState, items: List<FileItem>) {
     val p = LocalPalette.current
     val rowH = M.DETAILS_ROW[s.detailsSize].dp
     val icon = M.DETAILS_ICON[s.detailsSize].dp
-    var nameW by remember { mutableStateOf(M.COL_NAME.toFloat()) }
     val state = rememberLazyListState()
-    Column(Modifier.fillMaxSize()) {
-        // Header (40)
-        Row(Modifier.fillMaxWidth().height(M.DETAILS_HEADER.dp).padding(start = 12.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.width(4.dp))
-            if (s.showCheckboxes) SelectAllBox(s, t, items) else Spacer(Modifier.width(20.dp))
-            Spacer(Modifier.width(icon + 6.dp))
-            HeaderCell(s, S.name, SortBy.Name, Modifier.width(nameW.dp))
-            Box(Modifier.width(6.dp).fillMaxHeight()) { Splitter { nameW = (nameW + it / 1.25f).coerceIn(120f, 800f) } }
-            T(S.fileTag, Modifier.width(M.COL_TAG.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
-            HeaderCell(s, S.dateModified, SortBy.DateModified, Modifier.width(M.COL_DATE_MODIFIED.dp))
-            HeaderCell(s, S.type, SortBy.Type, Modifier.width(M.COL_TYPE.dp))
-            HeaderCell(s, S.size, SortBy.Size, Modifier.width(M.COL_SIZE.dp))
-        }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(p.divider))
-        ScrollList(state, Modifier.weight(1f)) {
-            LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)) {
-                items(items, key = { it.path }) { item ->
-                    ItemBox(s, t, item, items, Modifier.fillMaxWidth().height(rowH)) { selected ->
-                        Row(Modifier.fillMaxSize().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            CheckMark(selected)
-                            Spacer(Modifier.width(8.dp))
-                            FileIcon(item, icon)
-                            Spacer(Modifier.width(10.dp))
-                            NameCell(s, t, item, Modifier.width((nameW - 6).dp))
-                            TagPills(s.tagStore.tagsOf(item.path), Modifier.width(M.COL_TAG.dp).padding(start = 12.dp))
-                            T(Fs.dateText(item.modified), Modifier.width(M.COL_DATE_MODIFIED.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
-                            T(item.typeName, Modifier.width(M.COL_TYPE.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
-                            SizeCell(s, item, Modifier.width(M.COL_SIZE.dp).padding(start = 12.dp))
+    val cols = s.detailColumns
+    // Columns that need more than the listing (owner, dimensions, length, …) are read in the background.
+    LaunchedEffect(t.raw, cols) { s.loadProps(t) }
+    val headerMenu = {
+        DetailCol.entries.map { c ->
+            MenuEntry(c.label, if (c in cols) Icons.Filled.CheckBox else Icons.Outlined.CheckBoxOutlineBlank) { s.toggleColumn(c) }
+        } + MetaStore.fields.mapIndexed { i, f ->
+            MenuEntry(f, if (f in s.customColumns) Icons.Filled.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, separatorBefore = i == 0) { s.toggleCustomColumn(f) }
+        } + MenuEntry(S.resetColumns, Icons.Outlined.RestartAlt, separatorBefore = true) { s.resetColumns() }
+    }
+    // In split view the pane's × floats in the top-left corner: header and rows move over for it.
+    BoxWithConstraints(Modifier.fillMaxSize().padding(start = if (s.currentTab.right != null) 26.dp else 0.dp)) {
+        val custom = s.customColumns.filter { it in MetaStore.fields }
+        val fixed = 12 + 4 + 20 + icon.value + 6 + s.nameColumnWidth + 6 + cols.sumOf { s.widthOf(it).toDouble() }.toFloat() + custom.size * CUSTOM_COL_W + 24
+        val tableW = maxOf(fixed.dp, maxWidth)
+        val hs = rememberScrollState()
+        Column(Modifier.fillMaxSize().horizontalScroll(hs)) {
+            // Header (40): click to sort, drag the edges to resize, right-click to choose columns.
+            Row(Modifier.width(tableW).height(M.DETAILS_HEADER.dp).contextMenu(entries = headerMenu).padding(start = 12.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.width(4.dp))
+                if (s.showCheckboxes) SelectAllBox(s, t, items) else Spacer(Modifier.width(20.dp))
+                Spacer(Modifier.width(icon + 6.dp))
+                HeaderCell(s, S.name, SortBy.Name, Modifier.width(s.nameColumnWidth.dp))
+                Box(Modifier.width(6.dp).fillMaxHeight()) { Splitter { s.nameColumnWidth = (s.nameColumnWidth + it / 1.25f).coerceIn(120f, 900f) } }
+                cols.forEach { c ->
+                    ColumnHeader(s, t, c, Modifier.width((s.widthOf(c) - 6).dp))
+                    Box(Modifier.width(6.dp).fillMaxHeight()) { Splitter { s.columnWidths[c] = (s.widthOf(c) + it / 1.25f).coerceIn(48f, 900f) } }
+                }
+                custom.forEach { name -> T(name, Modifier.width(CUSTOM_COL_W.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary) }
+            }
+            Box(Modifier.width(tableW).height(1.dp).background(p.divider))
+            ScrollList(state, Modifier.weight(1f).width(tableW)) {
+                LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)) {
+                    items(items, key = { it.path }) { item ->
+                        ItemBox(s, t, item, items, Modifier.fillMaxWidth().height(rowH)) { selected ->
+                            Row(Modifier.fillMaxSize().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                CheckMark(selected)
+                                Spacer(Modifier.width(8.dp))
+                                FileIcon(item, icon)
+                                Spacer(Modifier.width(10.dp))
+                                NameCell(s, t, item, Modifier.width((s.nameColumnWidth - 6).dp))
+                                Spacer(Modifier.width(6.dp))
+                                cols.forEach { c -> DetailCell(s, item, c, Modifier.width(s.widthOf(c).dp).padding(start = 12.dp)) }
+                                if (custom.isNotEmpty()) { val v = MetaStore.version; custom.forEach { name ->
+                                    T(remember(item.path, name, v) { MetaStore.get(item.path, name) }, Modifier.width(CUSTOM_COL_W.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary)
+                                } }
+                            }
                         }
                     }
                 }
+            }
+        }
+        // Column chooser at the header's right end (stays in place while the table scrolls sideways).
+        Box(Modifier.align(Alignment.TopEnd).padding(end = 4.dp, top = 6.dp)) { ColumnChooser(s) }
+    }
+}
+
+private const val CUSTOM_COL_W = 140
+
+/** One header cell: sorts by that column (SortBy or [AppState.extraSort]). */
+@Composable
+private fun ColumnHeader(s: AppState, t: TabState, c: DetailCol, modifier: Modifier) {
+    val p = LocalPalette.current
+    val label = when {
+        t.isRecycleBin && c == DetailCol.DateModified -> S.recycleDeleted
+        t.isRecycleBin && c == DetailCol.Type -> S.recycleOriginal
+        else -> c.label
+    }
+    val active = if (c.sort != null) s.extraSort == null && s.sortBy == c.sort else s.extraSort == c
+    Hover(modifier.fillMaxHeight(), onClick = { s.sortByColumn(c) }) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            T(label, Modifier.weight(1f, fill = false), size = 13.sp, color = p.textSecondary)
+            if (active) {
+                Spacer(Modifier.width(4.dp))
+                Icon(if (s.sortAscending) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown, null, Modifier.size(14.dp), tint = p.textSecondary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailCell(s: AppState, item: FileItem, c: DetailCol, modifier: Modifier) {
+    val p = LocalPalette.current
+    when (c) {
+        DetailCol.Tags -> TagPills(s.tagStore.tagsOf(item.path), modifier)
+        DetailCol.Size -> SizeCell(s, item, modifier)
+        else -> {
+            // Read propsVersion so the cell redraws when background values arrive.
+            val v = s.propsVersion
+            T(remember(item.path, c, v) { FileProps.text(s, item, c) }, modifier, size = 13.sp, color = p.textSecondary)
+        }
+    }
+}
+
+/** The column button: tick columns on and off (the menu stays open for several), or reset them. */
+@Composable
+private fun ColumnChooser(s: AppState) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconBtn(Icons.Outlined.ViewColumn, S.chooseColumns, { open = true }, width = 30.dp, height = 28.dp, iconSize = 15.dp)
+        if (open) androidx.compose.ui.window.Popup(
+            alignment = Alignment.TopEnd, offset = offsetDp(0, 32), onDismissRequest = { open = false },
+            properties = androidx.compose.ui.window.PopupProperties(focusable = true),
+        ) {
+            val p = LocalPalette.current
+            Column(
+                Modifier.width(240.dp).shadow8().background(p.flyout, RoundedCornerShape(8.dp))
+                    .border(1.dp, p.controlStroke, RoundedCornerShape(8.dp)).padding(4.dp)
+            ) {
+                T(S.chooseColumns, Modifier.padding(10.dp, 6.dp), size = 12.sp, color = p.textSecondary)
+                FlyoutItem(S.name, Icons.Filled.CheckBox, "", enabled = false) {}
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    DetailCol.entries.forEach { c ->
+                        FlyoutItem(c.label, if (c in s.detailColumns) Icons.Filled.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "",
+                            iconTint = if (c in s.detailColumns) p.accent else null) { s.toggleColumn(c) }
+                    }
+                }
+                if (MetaStore.fields.isNotEmpty()) {
+                    FlyoutSeparator()
+                    T(S.customFields, Modifier.padding(10.dp, 4.dp), size = 11.sp, color = p.textSecondary)
+                    MetaStore.fields.forEach { f ->
+                        FlyoutItem(f, if (f in s.customColumns) Icons.Filled.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "",
+                            iconTint = if (f in s.customColumns) p.accent else null) { s.toggleCustomColumn(f) }
+                    }
+                }
+                FlyoutSeparator()
+                FlyoutItem(S.resetColumns, Icons.Outlined.RestartAlt, "") { s.resetColumns() }
             }
         }
     }
@@ -593,7 +715,7 @@ fun InfoPane(s: AppState, items: List<FileItem>) {
     val sel = items.filter { it.path in t.selection }
     val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
     Column(
-        Modifier.width(M.INFO_PANE_WIDTH.dp).fillMaxHeight().clip(shape).background(p.toolbar, shape).border(1.dp, p.cardStroke, shape).padding(16.dp),
+        Modifier.width(M.INFO_PANE_WIDTH.dp).fillMaxHeight().cardShadow(s, shape).clip(shape).background(p.toolbar, shape).border(1.dp, p.cardStroke, shape).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         T(S.details, Modifier.fillMaxWidth(), size = 14.sp, weight = FontWeight.SemiBold)

@@ -19,7 +19,37 @@ object FsExtra {
     } catch (_: Exception) { null }
 
     /** Total size of everything inside a folder (files that can't be read are skipped). */
+    /**
+     * Desktop background through SystemParametersInfoW(SPI_SETDESKWALLPAPER) directly: the path is
+     * passed as data, never put into a script.
+     */
+    fun setWallpaper(path: String): Boolean = try {
+        java.lang.foreign.Arena.ofConfined().use { arena ->
+            val user32 = java.lang.foreign.SymbolLookup.libraryLookup("user32", arena)
+            val I = java.lang.foreign.ValueLayout.JAVA_INT
+            val fn = java.lang.foreign.Linker.nativeLinker().downcallHandle(user32.find("SystemParametersInfoW").orElseThrow(),
+                java.lang.foreign.FunctionDescriptor.of(I, I, I, java.lang.foreign.ValueLayout.ADDRESS, I))
+            // SPI_SETDESKWALLPAPER = 20; SPIF_UPDATEINIFILE | SPIF_SENDCHANGE = 3
+            (fn.invokeWithArguments(20, 0, arena.allocateFrom(File(path).absolutePath, Charsets.UTF_16LE), 3) as Int) != 0
+        }
+    } catch (_: Throwable) { false }
+
     fun folderSize(path: String): Long {
+        // One native directory read per folder (FastDir) instead of a stat per file; links aren't followed.
+        if (FastDir.available) {
+            var total = 0L
+            val stack = ArrayDeque<String>().apply { add(path) }
+            var any = false
+            while (stack.isNotEmpty()) {
+                val dir = stack.removeLast()
+                val ok = FastDir.forEach(dir) { e ->
+                    if (e.isDir) { if (!e.isReparse) stack.add(if (dir.endsWith("\\")) dir + e.name else dir + "\\" + e.name) }
+                    else total += e.size
+                }
+                any = any || ok
+            }
+            if (any) return total
+        }
         var total = 0L
         try {
             Files.walkFileTree(Paths.get(path), object : SimpleFileVisitor<Path>() {
@@ -104,40 +134,34 @@ object FsExtra {
      * Searches [root] and every folder below it for names containing [query]. Results are
      * reported in batches through [onBatch]; stops at [limit] results or when [cancelled].
      */
-    fun search(root: String, query: String, limit: Int, cancelled: () -> Boolean, onBatch: (List<FileItem>) -> Unit) {
-        val q = query.lowercase()
+    fun search(root: String, q: SearchQuery, caseSensitive: Boolean, limit: Int, cancelled: () -> Boolean, onBatch: (List<FileItem>) -> Unit) {
         val batch = ArrayList<FileItem>()
         var found = 0
         var lastFlush = System.currentTimeMillis()
         fun flush() { if (batch.isNotEmpty()) { onBatch(batch.toList()); batch.clear() }; lastFlush = System.currentTimeMillis() }
-        try {
-            Files.walkFileTree(Paths.get(root), object : SimpleFileVisitor<Path>() {
-                fun check(p: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    if (cancelled() || found >= limit) return FileVisitResult.TERMINATE
-                    val name = p.fileName?.toString() ?: return FileVisitResult.CONTINUE
-                    if (name.lowercase().contains(q)) {
-                        val dos = attrs as? DosFileAttributes
-                        batch += FileItem(p.toString(), name, attrs.isDirectory, if (attrs.isDirectory) 0 else attrs.size(),
-                            attrs.lastModifiedTime().toMillis(), attrs.creationTime().toMillis(),
-                            dos?.isHidden ?: false, isSystemItem(dos?.isSystem ?: false, name))
-                        found++
-                    }
-                    if (System.currentTimeMillis() - lastFlush > 200) flush()
-                    return FileVisitResult.CONTINUE
+        // Breadth-first with the native folder read (FastDir): one directory read per folder, no stat per file.
+        val queue = ArrayDeque<String>().apply { add(root) }
+        while (queue.isNotEmpty() && found < limit && !cancelled()) {
+            val dir = queue.removeFirst()
+            val ok = FastDir.forEach(dir, { cancelled() || found >= limit }) { e ->
+                val path = if (dir.endsWith("\\")) dir + e.name else dir + "\\" + e.name
+                if (e.isDir && !e.isReparse && !(e.name.equals("\$Recycle.Bin", true) || e.name.equals("System Volume Information", true) || e.name.equals("WinSxS", true)))
+                    queue.add(path)
+                val c = SearchQuery.Candidate(e.name, if (caseSensitive) e.name else e.name.lowercase(), e.isDir, e.size, e.modified, e.created) { path }
+                if (q.matches(c)) { batch += FastDir.toItem(dir, e); found++ }
+                if (System.currentTimeMillis() - lastFlush > 200) flush()
+            }
+            if (!ok && !FastDir.available) {
+                // No native access: the JDK way for this folder.
+                runCatching {
+                    Files.newDirectoryStream(Paths.get(dir)).use { st -> for (p in st) {
+                        val it = item(p.toString()) ?: continue
+                        if (it.isDir) queue.add(it.path)
+                        val c = SearchQuery.Candidate(it.name, if (caseSensitive) it.name else it.name.lowercase(), it.isDir, it.size, it.modified, it.created) { it.path }
+                        if (q.matches(c)) { batch += it; found++ }
+                    } }
                 }
-                override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    if (dir.toString() == root) return FileVisitResult.CONTINUE
-                    val r = check(dir, attrs)
-                    val n = dir.fileName?.toString() ?: ""
-                    // Skip system folders that are huge and never what people look for.
-                    if (r == FileVisitResult.CONTINUE && (n.equals("\$Recycle.Bin", true) || n.equals("System Volume Information", true) || n.equals("WinSxS", true)))
-                        return FileVisitResult.SKIP_SUBTREE
-                    return r
-                }
-                override fun visitFile(file: Path, attrs: BasicFileAttributes) = check(file, attrs)
-                override fun visitFileFailed(file: Path, exc: java.io.IOException) = FileVisitResult.CONTINUE
-            })
-        } catch (_: Exception) {
+            }
         }
         flush()
     }

@@ -2,6 +2,10 @@ package app.files
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -101,6 +105,27 @@ fun main(args: Array<String>) {
                 Cleanup.targets().firstOrNull { it.id == args[i + 1] }?.let { s.planCleanup(it) }
             }
             if ("--clone-dialog" in args) s.cloneDialogOpen = true
+            if ("--empty-recycle-dialog" in args) s.confirmEmptyRecycle = true
+            if ("--gradient" in args) s.gradientOn = true
+            if ("--no-picture" in args) s.backgroundImageOpacity = 0f
+            args.firstOrNull { it.startsWith("--columns=") }?.let { s.detailColumns = DetailCol.parse(it.substringAfter('=')) }
+            // --quicklook <file>: the Space preview, once the folder has loaded.
+            args.indexOf("--quicklook").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+                s.scope.launch { delay(1500.milliseconds); s.quickLook = args[i + 1] }
+            }
+            if ("--shortcuts" in args) s.shortcutsOpen = true
+            if ("--flows" in args) s.flowsOpen = true
+            if ("--delete-report" in args) s.deleteReport = DeleteReport(0, listOf(System.getProperty("user.home") + "\\example-folder"), emptyList())
+            args.firstOrNull { it.startsWith("--search=") }?.let { q -> s.scope.launch { delay(1200.milliseconds); s.searchDeep(q.substringAfter('=')) } }
+            // --batch-rename / --edit-meta: the dialogs for every item in the folder (preview only in screenshots).
+            if ("--batch-rename" in args) s.scope.launch { delay(1500.milliseconds); s.batchRenameFor = s.tab.raw.filter { !it.isDir }.map { it.path } }
+            if ("--edit-meta" in args) s.scope.launch { delay(1500.milliseconds); s.metadataFor = s.tab.raw.filter { !it.isDir }.map { it.path } }
+            args.firstOrNull { it.startsWith("--shadow=") }?.let { a -> ShadowLevel.entries.firstOrNull { it.name.equals(a.substringAfter('='), true) }?.let { s.cardShadow = it } }
+            // Git patch dialogs (they wait for the folder's repository to be found).
+            if ("--git-create-patch" in args) s.scope.launch { delay(1500.milliseconds); s.gitCreatePatchOpen = true }
+            args.indexOf("--git-apply-patch").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+                s.scope.launch { delay(1500.milliseconds); s.gitApplyPatchFor = args[i + 1] }
+            }
             if ("--select-first" in args) s.scope.launch { delay(1200.milliseconds); s.tab.raw.firstOrNull()?.let { s.tab.selection = setOf(it.path) } }
         }
         exitProcess(0)
@@ -114,6 +139,183 @@ fun main(args: Array<String>) {
             " valid(evil)=" + NetworkFs.isValidHost("a‘;calc;‘"))
         exitProcess(0)
     }
+    // --test-git-patch <empty dir>: commits, .patch from two of them, then --check and apply on a fresh branch.
+    args.indexOf("--test-git-patch").takeIf { it >= 0 && it + 1 < args.size }?.let { gitPatchTest(File(args[it + 1])); exitProcess(0) }
+    // --test-recycle <dir>: recycles a file this test creates, finds it in the bin, restores it. Touches nothing else.
+    args.indexOf("--test-recycle").takeIf { it >= 0 && it + 1 < args.size }?.let {
+        val f = File(args[it + 1], "fileskmp-recycle-test-${System.currentTimeMillis()}.txt").apply { parentFile.mkdirs(); writeText("restore me") }
+        println("recycled=" + Fs.recycle(listOf(f.path)) + " existsAfterRecycle=" + f.exists())
+        val hit = RecycleBin.list().firstOrNull { item -> RecycleBin.entry(item.path)?.originalPath.equals(f.path, true) }
+        println("inBin=" + (hit != null) + " name=" + hit?.name + " from=" + hit?.typeLabel + " count=" + RecycleBin.query()?.first)
+        if (hit != null) println("restoreFailures=" + RecycleBin.restore(listOf(hit.path)) + " existsAfterRestore=" + f.exists() + " text=" + f.takeIf { x -> x.exists() }?.readText())
+        f.delete()
+        exitProcess(0)
+    }
+    // --test-safe-delete <empty dir> / --test-rename <empty dir>: fixtures made and checked by the test itself.
+    args.indexOf("--test-safe-delete").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+        val base = File(args[i + 1]).apply { mkdirs() }
+        val outside = File(base, "outside").apply { mkdirs() }; File(outside, "keep.txt").writeText("must survive")
+        val tree = File(base, "tree").apply { mkdirs() }
+        File(tree, "ro.txt").apply { writeText("r"); setReadOnly() }
+        var deep = File(tree, "deep"); repeat(14) { deep = File(deep, "level_${it}_xxxxxxxxxxxxxxxx") }
+        java.nio.file.Files.createDirectories(deep.toPath()); java.nio.file.Files.writeString(File(deep, "deep-file.txt").toPath(), "d")
+        println("deep path length=${File(deep, "deep-file.txt").path.length}")
+        ProcessBuilder("cmd", "/c", "mklink", "/J", File(tree, "link").path, outside.path).redirectErrorStream(true).start().waitFor()
+        val locked = File(tree, "sub/locked.txt").apply { parentFile.mkdirs(); writeText("l") }
+        val ch = java.io.RandomAccessFile(locked, "rw")   // held open without delete sharing
+        val r1 = SafeDelete.deleteTree(listOf(tree.path), toRecycleBin = false)
+        println("pass 1: removed=${r1.removed} failures=" + r1.failures.map { File(it.path).name + " → " + it.reason })
+        println("outside/keep.txt still there=${File(outside, "keep.txt").exists()} tree exists=${tree.exists()}")
+        ch.close()
+        val r2 = SafeDelete.deleteTree(listOf(tree.path), toRecycleBin = false)
+        println("pass 2: removed=${r2.removed} failures=${r2.failures.size} tree exists=${tree.exists()} keep.txt=${File(outside, "keep.txt").exists()}")
+        exitProcess(0)
+    }
+    args.indexOf("--test-rename").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+        Prefs.readOnly = true
+        val dir = File(args[i + 1]).apply { mkdirs() }
+        val names = listOf("a.txt", "b.txt", "IMG 0042.JPG", "my Report  final.docx", "CON.txt")
+        names.forEach { File(dir, it).writeText(it) }
+        val s = AppState(CoroutineScope(SupervisorJob()))
+        val items = names.mapNotNull { FsExtra.item(File(dir, it).path) }
+        val rules = listOf(
+            RenameRule.Clean(), RenameRule.Replace("(\\d+)", "#$1", regex = true),
+            RenameRule.ChangeCase(CaseMode.Kebab), RenameRule.ChangeCase(CaseMode.Lower, RenameTarget.Extension),
+            RenameRule.Insert("{parent}_{n:00}_", at = -1),
+        )
+        RenameEngine.preview(s, items, rules, 1, 1).forEach { println("preview: ${it.item.name} → ${it.newName}" + (it.problem?.let { p -> "  [$p]" } ?: "")) }
+        // a.txt ↔ b.txt in one batch.
+        val swap = listOf(RenameRow(items[0], "b.txt", null), RenameRow(items[1], "a.txt", null))
+        val (done, err) = RenameEngine.perform(swap)
+        println("swap: done=${done.size} err=$err a.txt now holds '${File(dir, "a.txt").readText()}', b.txt holds '${File(dir, "b.txt").readText()}'")
+        val back = done.map { (old, new) -> RenameRow(FsExtra.item(new)!!, File(old).name, null) }
+        val (undone, err2) = RenameEngine.perform(back)
+        println("undo: ${undone.size} err=$err2 a.txt holds '${File(dir, "a.txt").readText()}'")
+        exitProcess(0)
+    }
+    // --test-meta <empty dir>: dates, attributes and a custom field on two files, read back.
+    args.indexOf("--test-meta").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+        Prefs.readOnly = true
+        val dir = File(args[i + 1]).apply { mkdirs() }
+        val a = File(dir, "one.txt").apply { writeText("1") }; val b = File(dir, "two.txt").apply { writeText("2"); setReadOnly() }
+        val items = listOf(a, b).mapNotNull { FsExtra.item(it.path) }
+        val err = applyMetadataForTest(items, created = "2020-01-02 03:04:05", modified = "2021-06-07 08:09", hidden = true)
+        val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(java.time.ZoneId.systemDefault())
+        for (f in listOf(a, b)) {
+            val at = java.nio.file.Files.readAttributes(f.toPath(), java.nio.file.attribute.DosFileAttributes::class.java)
+            println("${f.name}: created=${fmt.format(at.creationTime().toInstant())} modified=${fmt.format(at.lastModifiedTime().toInstant())} hidden=${at.isHidden} readOnly=${at.isReadOnly} err=$err")
+        }
+        MetaStore.addField("專案"); MetaStore.set(items.map { it.path }, "專案", "Alpha")
+        println("field: " + items.map { MetaStore.get(it.path, "專案") })
+        exitProcess(0)
+    }
+    args.indexOf("--export-flow-spec").takeIf { it >= 0 && it + 1 < args.size }?.let { File(args[it + 1]).writeText(FlowActions.specMarkdown(), Charsets.UTF_8); exitProcess(0) }
+    args.indexOf("--test-flows").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+        Prefs.readOnly = true
+        val dir = File(args[i + 1]).apply { mkdirs() }
+        repeat(3) { n ->
+            val surf = org.jetbrains.skia.Surface.makeRasterN32Premul(400 + n * 100, 300)
+            surf.canvas.clear(0xFF3366CC.toInt() + n * 0x1000)
+            File(dir, "pic$n.png").writeBytes(surf.makeImageSnapshot().encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)!!.bytes)
+        }
+        File(dir, "a.txt").writeText("hello world"); File(dir, "b.txt").writeText("hello there")
+        // 1. Every sample survives JSON → Flow → JSON unchanged.
+        FlowStore.samples().forEach { f -> val j = f.toJson(); println("roundtrip ${f.id}: " + (Flow.fromJson(f.id, j).toJson() == j)) }
+        val s = AppState(CoroutineScope(SupervisorJob()))
+        s.navigate(dir.path)
+        suspend fun run(f: Flow, dry: Boolean, params: Map<String, String> = emptyMap()): List<String> {
+            val r = FlowRun(s, f, emptyList(), params, dry, { null }) { println("   log: $it") }
+            r.runSteps(f.steps); return r.items
+        }
+        runBlocking {
+            val json = """{ "schema": "fileskmp.shortcut/v1", "name": "img", "steps": [
+                { "action": "files.list", "args": { "folder": "${dir.path.replace("\\", "\\\\")}", "query": "ext:png" } },
+                { "action": "files.sort" },
+                { "action": "image.resize", "args": { "max": 64, "to": "{item.parent}\\small" } },
+                { "action": "image.convert", "args": { "format": "webp", "quality": 80, "to": "{item.parent}" } },
+                { "action": "file.rename", "args": { "name": "thumb_{item.index:00}.{item.ext}" } } ] }"""
+            val out = run(Flow.fromJson("t1", json), dry = false)
+            println("real run: " + out.map { File(it).name + " exists=" + File(it).exists() })
+            val dryDest = File(dir, "sorted")
+            s.tab.selection = dir.listFiles { f -> f.name.endsWith(".png") }!!.map { it.path }.toSet()
+            run(FlowStore.samples().first { it.id == "builtin:photos-by-date" }.copy(steps = FlowStore.samples().first { it.id == "builtin:photos-by-date" }.steps.dropLast(1)),
+                dry = true, params = mapOf("dest" to dryDest.path)).let { println("dry run: ${it.size} planned copies, e.g. ${it.firstOrNull()}; sorted folder created=${dryDest.exists()}") }
+            val each = Flow.fromJson("t2", """{ "schema": "fileskmp.shortcut/v1", "name": "each", "steps": [
+                { "action": "files.list", "args": { "folder": "${dir.path.replace("\\", "\\\\")}", "query": "ext:txt" } },
+                { "action": "files.sort" },
+                { "action": "each", "args": { "steps": [ { "action": "file.readText" }, { "action": "text.replace", "args": { "find": "hello", "replace": "bye #{var.index}" } } ] } },
+                { "action": "text.join", "args": { "separator": " | " } } ] }""")
+            println("each: " + run(each, dry = false))
+            val ps = Flow.fromJson("t3", """{ "schema": "fileskmp.shortcut/v1", "name": "ps", "steps": [
+                { "action": "text.set", "args": { "text": "x\ny\nz" } }, { "action": "text.split" },
+                { "action": "shell.run", "args": { "shell": "powershell", "script": "(${'$'}env:FILES_ITEMS -split \"`n\").Count" } } ] }""")
+            println("shell.run: " + run(ps, dry = false))
+            println("bad schema: " + runCatching { Flow.fromJson("x", """{"schema":"other","steps":[]}""") }.exceptionOrNull()?.message)
+        }
+        exitProcess(0)
+    }
+    // --bench-search <root>: index build, searches (index vs folder walk), save/load, live watch updates.
+    args.indexOf("--bench-search").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+        val root = args[i + 1]
+        fun ms(t0: Long) = (System.nanoTime() - t0) / 1_000_000
+        var t0 = System.nanoTime()
+        val idx = IndexRoot(root)
+        idx.build(4, { false }) { }
+        println("BENCH index build: ${idx.count} entries in ${ms(t0)} ms")
+        val queries = listOf("mod7" to false, "*.json" to false, "ext:json pkg19" to false, "regex:^mod(1|2)\\.js$" to false, "pkg1999 | pkg42" to false, "mod4 !json" to false, "lib\\mod3" to false, "MOD1" to false)
+        for ((q, rx) in queries) {
+            val sq = SearchQuery.parse(q, rx, false)!!
+            t0 = System.nanoTime(); val a = idx.search(sq, false, root, 1_000_000) { false }; val ia = ms(t0)
+            t0 = System.nanoTime(); var b = 0; FsExtra.search(root, sq, false, 1_000_000, { false }) { b += it.size }; val wb = ms(t0)
+            println("BENCH query [$q]: index ${a.size} hits in $ia ms; walk $b hits in $wb ms")
+        }
+        val f = File(AppDirs.cache, "bench-index.bin")
+        t0 = System.nanoTime(); idx.save(f); println("BENCH save ${f.length() / 1024} KiB in ${ms(t0)} ms")
+        t0 = System.nanoTime(); val loaded = IndexRoot.load(f)!!; println("BENCH load ${loaded.count} entries in ${ms(t0)} ms; same hits=" +
+            (loaded.search(SearchQuery.parse("*.json")!!, false, root, 1_000_000) { false }.size == idx.search(SearchQuery.parse("*.json")!!, false, root, 1_000_000) { false }.size))
+        f.delete()
+        // Live updates through the watcher.
+        SearchIndex.want(listOf(root)) { _, _, _ -> }
+        while (SearchIndex.get(root) == null || SearchIndex.get(root)!!.builtAt == 0L) Thread.sleep(50)
+        Thread.sleep(1500)
+        val probe = File(root, "zz_watch_probe_${System.currentTimeMillis()}.txt")
+        probe.writeText("x"); Thread.sleep(1500)
+        val seen = SearchIndex.get(root)!!.search(SearchQuery.parse(probe.name)!!, false, root, 10) { false }.size
+        probe.delete(); Thread.sleep(1500)
+        val gone = SearchIndex.get(root)!!.search(SearchQuery.parse(probe.name)!!, false, root, 10) { false }.size
+        println("BENCH watch: created seen=$seen (expect 1), deleted seen=$gone (expect 0)")
+        exitProcess(0)
+    }
+    // --bench-list <dir>: how long listing, first chunk and sorting a big folder take.
+    args.indexOf("--bench-list").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+        val dir = args[i + 1]
+        fun timeIt(label: String, attrs: (java.nio.file.Path) -> Unit) {
+            val t0 = System.nanoTime(); var n = 0
+            java.nio.file.Files.newDirectoryStream(java.nio.file.Paths.get(dir)).use { st -> for (p in st) { attrs(p); n++ } }
+            println("BENCH $label: $n in ${(System.nanoTime() - t0) / 1_000_000} ms")
+        }
+        timeIt("names only") { }
+        timeIt("basic") { java.nio.file.Files.readAttributes(it, java.nio.file.attribute.BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS) }
+        timeIt("dos") { java.nio.file.Files.readAttributes(it, java.nio.file.attribute.DosFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS) }
+        timeIt("native") { }
+        val t0 = System.nanoTime()
+        val nat = FastDir.list(dir)
+        println("BENCH FastDir: ${nat?.size} in ${(System.nanoTime() - t0) / 1_000_000} ms")
+        repeat(2) { round ->
+            var t0 = System.nanoTime()
+            val all = Fs.list(dir)
+            val listMs = (System.nanoTime() - t0) / 1_000_000
+            t0 = System.nanoTime()
+            var firstMs = -1L; var chunks = 0; var n = 0
+            Fs.listChunked(dir, { false }) { chunk -> if (firstMs < 0) firstMs = (System.nanoTime() - t0) / 1_000_000; chunks++; n += chunk.size }
+            val chunkedMs = (System.nanoTime() - t0) / 1_000_000
+            t0 = System.nanoTime()
+            Fs.sort(all, SortBy.Name, true)
+            val sortMs = (System.nanoTime() - t0) / 1_000_000
+            println("BENCH round $round: ${all.size} items, list ${listMs} ms; chunked ${chunkedMs} ms, first chunk after ${firstMs} ms, $chunks chunks ($n items); sort ${sortMs} ms")
+        }
+        exitProcess(0)
+    }
     if ("--test-custom-persist" in args) { customPersistTest(write = "write" in args); exitProcess(0) }
     args.indexOf("--test-custom-command").takeIf { it >= 0 && it + 1 < args.size }?.let { customCommandTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-safe-cleaner").takeIf { it >= 0 && it + 1 < args.size }?.let { safeCleanerTest(File(args[it + 1])); exitProcess(0) }
@@ -125,11 +327,13 @@ fun main(args: Array<String>) {
     val startPath = args.firstOrNull { !it.startsWith("--") && File(it).isDirectory }
     val dark = systemUsesDarkTheme()
     val accent = systemAccent()
+    // 半透明視窗: decided once per run, because a window is created see-through or not.
+    val translucent = Prefs.bool("translucentWindow", false)
     val appIcon = Thread.currentThread().contextClassLoader.getResourceAsStream("icon.svg")
         ?.use { loadSvgPainter(it, Density(1f)) }
     application {
         val scope = rememberCoroutineScope()
-        val state = remember { AppState(scope).also { s -> startPath?.let { s.navigate(File(it).absolutePath) } } }
+        val state = remember { AppState(scope).also { s -> s.translucentActive = translucent; startPath?.let { s.navigate(File(it).absolutePath) } } }
         val windowState = rememberWindowState(size = DpSize(M.WINDOW_W.dp, M.WINDOW_H.dp), position = WindowPosition(Alignment.Center))
         Window(
             onCloseRequest = ::exitApplication,
@@ -137,12 +341,17 @@ fun main(args: Array<String>) {
             title = "Files",
             icon = appIcon,
             undecorated = true,
+            transparent = translucent,
             resizable = true,
             onPreviewKeyEvent = { handleKey(state, it) },
         ) {
             LaunchedEffect(Unit) {
                 window.minimumSize = Dimension(M.WINDOW_MIN_W, M.WINDOW_MIN_H)
                 WindowCorners.round(window)
+                if (translucent) {
+                    state.applyWindowBlur = { WindowBlur.set(window, state.blurBehind) }
+                    state.applyWindowBlur?.invoke()
+                }
                 // "全螢幕" (F11) toggles between full screen and the normal window.
                 state.toggleFullScreen = {
                     windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) WindowPlacement.Floating else WindowPlacement.Fullscreen
@@ -157,7 +366,9 @@ fun main(args: Array<String>) {
                 )
             }
             CompositionLocalProvider(LocalWindowControls provides controls) {
-                Box(Modifier.fillMaxSize()) {
+                // A see-through window gets no rounded frame from DWM: round the content itself.
+                val rounded = translucent && windowState.placement == WindowPlacement.Floating
+                Box(Modifier.fillMaxSize().then(if (rounded) Modifier.clip(RoundedCornerShape(8.dp)) else Modifier)) {
                     Root(state, dark, accent)
                     if (windowState.placement != WindowPlacement.Maximized) ResizeEdges(windowState)
                 }
@@ -270,10 +481,22 @@ fun Root(s: AppState, systemDark: Boolean, accent: androidx.compose.ui.graphics.
                 }
                 menu.value?.let { req -> ContextMenuPopup(req) { menu.value = null } }
                 s.confirmDelete?.let { DeleteDialog(s, it) }
+                if (s.confirmEmptyRecycle) EmptyRecycleDialog(s)
                 s.tagEditorFor?.let { TagEditorDialog(s, it) }
                 if (s.settingsOpen) SettingsPage(s)
                 if (s.customizeToolbarOpen) CustomizeToolbarDialog(s)
                 if (s.cloneDialogOpen) GitCloneDialog(s)
+                if (s.gitBranchDialog) GitBranchDialog(s)
+                s.gitApplyPatchFor?.let { GitApplyPatchDialog(s, it) }
+                if (s.gitCreatePatchOpen) GitCreatePatchDialog(s)
+                s.quickLook?.let { QuickLookDialog(s, it) }
+                s.batchRenameFor?.let { BatchRenameDialog(s, it) }
+                s.metadataFor?.let { MetadataDialog(s, it) }
+                s.deleteReport?.let { DeleteProblemDialog(s, it) }
+                if (s.flowsOpen) FlowsDialog(s)
+                s.flowRun?.let { FlowRunPanel(s, it) }
+                s.flowPrompt?.let { FlowPromptDialog(s, it) }
+                if (s.shortcutsOpen) ShortcutsDialog(s)
                 s.toast?.let { msg ->
                     LaunchedEffect(msg) { delay(2500.milliseconds); if (s.toast == msg) s.toast = null }
                     Box(Modifier.fillMaxSize().padding(bottom = 48.dp), contentAlignment = Alignment.BottomCenter) {
@@ -314,7 +537,7 @@ fun MainLayout(s: AppState) {
     val p = LocalPalette.current
     val t = s.tab
     val ct = s.currentTab
-    val items = remember(t.raw, s.showHidden, s.showSystem, s.searchText, s.sortBy, s.sortAscending) { s.visibleItems(t) }
+    val items = t.view
     Column(Modifier.fillMaxSize()) {
         TabStrip(s)
         AddressBar(s)
@@ -383,16 +606,38 @@ fun PanesArea(s: AppState, ct: Tab, outer: Modifier) {
 fun PaneCard(s: AppState, pane: TabState, modifier: Modifier, active: Boolean) {
     val p = LocalPalette.current
     val dual = s.currentTab.right != null
-    val items = remember(pane.raw, s.showHidden, s.showSystem, s.searchText, s.sortBy, s.sortAscending, s.tab === pane) { s.visibleItems(pane) }
+    // Sorted and filtered off the UI thread (AppState.startViewUpdater).
+    val items = pane.view
     val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
     Column(
-        modifier.fillMaxHeight().shadow(2.dp, shape).clip(shape).background(p.fileArea, shape)
+        modifier.fillMaxHeight().cardShadow(s, shape).clip(shape).background(p.fileArea, shape)
             .border(1.dp, if (dual && active) p.accent.copy(alpha = 0.6f) else p.cardStroke, shape)
     ) {
         Box(Modifier.weight(1f)) {
             if (pane.isHome) HomePage(s) else FolderView(s, pane, items)
+            // Split view: each pane has its own close button floating in its top-left corner.
+            if (dual) PaneCloseButton(Modifier.align(Alignment.TopStart).padding(6.dp)) { s.closePane(pane) }
         }
         if (s.showStatusBar) StatusBar(s, items, pane)
+    }
+}
+
+/** The round × floating over a split pane's top-left corner; fades in fully on hover. */
+@Composable
+fun PaneCloseButton(modifier: Modifier, onClose: () -> Unit) {
+    val p = LocalPalette.current
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val hovered by src.collectIsHoveredAsState()
+    val shape = androidx.compose.foundation.shape.CircleShape
+    Box(
+        modifier.size(24.dp).softShadow(shape, elevation = 4.dp)
+            .background(if (hovered) p.danger else p.flyout.copy(alpha = 0.92f), shape)
+            .border(1.dp, if (hovered) p.danger else p.controlStroke, shape)
+            .hoverable(src).clickable(src, indication = null, onClick = onClose),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Outlined.Close, S.closeThisPane, Modifier.size(12.dp),
+            tint = if (hovered) androidx.compose.ui.graphics.Color.White else p.textSecondary)
     }
 }
 
@@ -407,16 +652,41 @@ fun handleKey(s: AppState, e: KeyEvent): Boolean {
     if (editing) {
         return false
     }
+    // 快速預覽 has its own keys.
+    if (s.quickLook != null) {
+        when (e.key) {
+            Key.Escape, Key.Spacebar -> s.quickLook = null
+            Key.DirectionLeft, Key.DirectionUp -> s.quickLookStep(-1)
+            Key.DirectionRight, Key.DirectionDown -> s.quickLookStep(1)
+            Key.Enter, Key.NumPadEnter -> { val p = s.quickLook!!; s.quickLook = null; if (File(p).isDirectory) s.openFolder(p) else Fs.open(p) }
+            else -> return false
+        }
+        return true
+    }
     if (s.confirmDelete != null) {
         if (e.key == Key.Escape) { s.confirmDelete = null; return true }
-        if (e.key == Key.Enter) { s.doDelete(s.confirmDelete!!, false); return true }
+        if (e.key == Key.Enter) { s.doDelete(s.confirmDelete!!, s.tab.isRecycleBin); return true }
         return false
     }
-    if (s.settingsOpen || s.tagEditorFor != null || s.customizeToolbarOpen) {
-        if (e.key == Key.Escape) { s.settingsOpen = false; s.tagEditorFor = null; s.customizeToolbarOpen = false; return true }
+    if (s.confirmEmptyRecycle) {
+        if (e.key == Key.Escape) { s.confirmEmptyRecycle = false; return true }
+        if (e.key == Key.Enter) { s.emptyRecycleBin(); return true }
         return false
     }
+    if (s.dialogOpen) {
+        if (e.key == Key.Escape) return s.closeTopDialog()
+        if (e.key == Key.F1) { s.shortcutsOpen = !s.shortcutsOpen; return true }
+        return false
+    }
+    // Every shortcut a command declares (toolbar commands, exact modifiers), then the others below.
+    if (Hotkeys.dispatch(s, e)) return true
     when {
+        e.key == Key.Spacebar && !ctrl && !alt -> s.toggleQuickLook()
+        e.key == Key.F1 || (ctrl && e.key == Key.Slash) -> s.shortcutsOpen = true
+        ctrl && !shift && e.key == Key.Z && s.tab.isRecycleBin -> s.restoreSelected()
+        e.key == Key.MoveHome || e.key == Key.MoveEnd -> jumpSelection(s, e.key == Key.MoveEnd, shift)
+        e.key == Key.DirectionLeft && !alt && s.layout == LayoutMode.Grid -> moveSelection(s, -1, shift)
+        e.key == Key.DirectionRight && !alt && s.layout == LayoutMode.Grid -> moveSelection(s, 1, shift)
         ctrl && shift && e.key == Key.S -> s.toggleDualPane()
         ctrl && shift && e.key == Key.T -> s.reopenClosedTab()
         ctrl && shift && e.key == Key.W -> s.closeAllTabs()
@@ -454,19 +724,28 @@ fun handleKey(s: AppState, e: KeyEvent): Boolean {
         alt && e.key == Key.DirectionUp -> s.up()
         alt && e.key == Key.D -> s.editingPath = true
         alt && e.key == Key.Enter -> s.infoPaneOpen = true
-        shift && e.key == Key.Delete -> { val sel = s.tab.selection.toList(); if (sel.isNotEmpty()) s.doDelete(sel, true) }
-        e.key == Key.Delete -> s.requestDelete()
+        shift && !ctrl && e.key == Key.Delete -> { val sel = s.tab.selection.toList(); if (sel.isNotEmpty()) s.doDelete(sel, true) }
+        !ctrl && e.key == Key.Delete -> s.requestDelete()
         e.key == Key.F2 -> s.startRename()
         e.key == Key.F5 -> s.refresh()
         e.key == Key.F11 -> s.toggleFullScreen?.invoke()
         e.key == Key.F3 -> s.searchRequest++
         e.key == Key.Backspace -> s.back()
         e.key == Key.Enter -> s.openSelected()
-        e.key == Key.Escape -> s.clearSelection()
+        e.key == Key.Escape -> if (!s.closeTopDialog()) s.clearSelection()
         e.key == Key.DirectionDown || e.key == Key.DirectionUp -> moveSelection(s, if (e.key == Key.DirectionDown) 1 else -1, shift)
+        // Everything else a toolbar command names as its shortcut (Ctrl+Alt+T, Ctrl+Shift+B, Ctrl+`, …).
         else -> return false
     }
     return true
+}
+
+private fun jumpSelection(s: AppState, end: Boolean, shift: Boolean) {
+    val t = s.tab
+    if (t.isHome) return
+    val items = s.visibleItems(t)
+    if (items.isEmpty()) return
+    s.click(if (end) items.last() else items.first(), ctrl = false, shift = shift, items = items)
 }
 
 private fun moveSelection(s: AppState, delta: Int, shift: Boolean) {
@@ -489,8 +768,9 @@ private fun moveSelection(s: AppState, delta: Int, shift: Boolean) {
 suspend fun checkboxTest(scene: ImageComposeScene, s: AppState) {
     val rows = s.visibleItems(s.tab)
     fun y(i: Int) = 206f + 36f * i
-    val checkX = 227f
-    val nameX = 420f
+    // From the pane's real position (it moves with the sidebar width setting): list padding 8 + row padding 8 + half the 20-dp box.
+    val checkX = s.paneAreaRect.left + 26f
+    val nameX = s.paneAreaRect.left + 200f
     suspend fun click(x: Float, yy: Float) {
         val pos = androidx.compose.ui.geometry.Offset(x, yy)
         scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Move, pos)
@@ -687,6 +967,31 @@ fun demoCustomToolbar(s: AppState) {
     if (i >= 0) general[i] = general[i].copy(label = if (S.zh) "屬性" else "Props", showLabel = true)
     l[TbContext.AlwaysVisible] = general
     s.toolbarStore.save(l)
+}
+
+fun gitPatchTest(dir: File) {
+    dir.mkdirs()
+    fun git(vararg a: String) = ProcessBuilder(listOf("git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false") + a)
+        .directory(dir).redirectErrorStream(true).start().let { p -> val o = p.inputStream.readAllBytes().toString(Charsets.UTF_8); p.waitFor(); o.trim() }
+    git("init", "-q", "-b", "main")
+    File(dir, "a.txt").writeText("one\n"); git("add", "."); git("commit", "-qm", "first")
+    File(dir, "a.txt").writeText("one\ntwo\n"); git("commit", "-qam", "second 中文")
+    File(dir, "b.txt").writeText("bee\n"); git("add", "."); git("commit", "-qm", "third")
+    val log = Git.log(dir.path)
+    println("log: " + log.map { it.short + " " + it.subject })
+    val picked = log.take(2).reversed().map { it.hash }   // second + third, oldest first
+    val out = File(dir, "out/range.patch")
+    val (r, files) = Git.formatPatch(dir.path, picked, out, perCommit = false)
+    println("format ok=${r.ok} files=${files.map { it.name }} size=${out.length()} subjects=${out.readLines().filter { it.startsWith("Subject:") }}")
+    val (r2, files2) = Git.formatPatch(dir.path, picked, File(dir, "out/each"), perCommit = true)
+    println("per-commit ok=${r2.ok} files=${files2.map { it.name }}")
+    git("checkout", "-q", "-b", "replay", log.last().hash)
+    val check = Git.applyPatch(dir.path, out.path, check = true, threeWay = false)
+    println("check ok=${check.ok} changed=${File(dir, "b.txt").exists()} out=${check.output.lines()}")
+    val apply = Git.applyPatch(dir.path, out.path, check = false, threeWay = false)
+    println("apply ok=${apply.ok} a=${File(dir, "a.txt").readText().trim().replace("\n", "|")} b=${File(dir, "b.txt").takeIf { it.exists() }?.readText()?.trim()}")
+    val again = Git.applyPatch(dir.path, out.path, check = true, threeWay = false)
+    println("re-check ok=${again.ok} (expected false) out=${again.output.lines().take(2)}")
 }
 
 /** Starts the app as normal (Home in one tab), draws about 120 frames, saves the picture, exits. */
