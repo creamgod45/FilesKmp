@@ -41,6 +41,8 @@ class TabState(start: String) {
     var anchor by mutableStateOf<String?>(null)
     var renaming by mutableStateOf<String?>(null)
     var loadJob: Job? = null
+    /** Git repository this folder is in (null when it isn't one). */
+    var git by mutableStateOf<GitInfo?>(null)
 
     val title: String
         get() = when {
@@ -374,6 +376,7 @@ class AppState(val scope: CoroutineScope) {
             }
             if (keepSelection) t.selection = t.selection.filter { s -> t.raw.any { it.path == s } }.toSet()
             t.loading = false
+            if (!t.isVirtual) refreshGit(t)
         }
     }
 
@@ -449,6 +452,137 @@ class AppState(val scope: CoroutineScope) {
         backgroundImage = imgs.first()
         bgImages.addAll(imgs.filter { it !in bgImages })
         toast = if (S.zh) "已設定為應用程式背景" else "Set as app background"
+    }
+
+    // ------------------------------------------------------------ Git
+
+    /** Message of the Git operation running now (shown in the status bar), or null. */
+    var gitBusy by mutableStateOf<String?>(null)
+    var cloneDialogOpen by mutableStateOf(false)
+
+    /** Finds the repository of [t]'s folder and reads branch, ahead/behind and file status, in the background. */
+    fun refreshGit(t: TabState = tab) {
+        val path = t.location
+        if (t.isVirtual) { t.git = null; return }
+        scope.launch {
+            val info = withContext(Dispatchers.IO) { Git.rootOf(path)?.let { Git.info(it) } }
+            if (t.location == path) t.git = info
+        }
+    }
+
+    private fun gitOp(running: String, done: String, failed: String, op: (GitInfo) -> GitResult) {
+        val t = tab
+        val g = t.git ?: return
+        if (gitBusy != null) return
+        gitBusy = running
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { op(g) }
+            gitBusy = null
+            toast = if (r.ok) done else "$failed\n${r.output.lines().takeLast(3).joinToString("\n")}"
+            allPanes().filter { it.git?.root == g.root }.forEach { load(it, keepSelection = true) }
+        }
+    }
+
+    private fun repoName(g: GitInfo) = File(g.root).name
+
+    fun gitFetch() = tab.git?.let { g ->
+        gitOp(if (S.zh) "正在取得「${repoName(g)}」的遠端變更…" else "Fetching remote changes for \"${repoName(g)}\"…",
+            if (S.zh) "已取得「${repoName(g)}」的遠端變更" else "Fetched remote changes for \"${repoName(g)}\"",
+            if (S.zh) "無法取得遠端變更" else "Failed to fetch remote changes") { Git.fetch(it.root) }
+    }
+
+    fun gitPull() = tab.git?.let { g ->
+        gitOp(if (S.zh) "正在將遠端變更拉取到「${repoName(g)}」…" else "Pulling remote changes into \"${repoName(g)}\"…",
+            if (S.zh) "已將遠端變更拉取到「${repoName(g)}」" else "Pulled remote changes into \"${repoName(g)}\"",
+            if (S.zh) "Pull 失敗" else "Failed to pull") { Git.pull(it.root) }
+    }
+
+    fun gitPush() = tab.git?.let { g ->
+        gitOp(if (S.zh) "正在推送「${repoName(g)}」的本地 commit…" else "Pushing local commits from \"${repoName(g)}\"…",
+            if (S.zh) "已推送「${repoName(g)}」的本地 commit" else "Pushed local commits from \"${repoName(g)}\"",
+            if (S.zh) "Push 失敗" else "Failed to push") { Git.push(it.root, it.branch, it.hasUpstream, it.remotes.firstOrNull()) }
+    }
+
+    /** "同步": git pull, then git push (GitSyncDescription). */
+    fun gitSync() = tab.git?.let { g ->
+        gitOp(if (S.zh) "正在同步「${repoName(g)}」的本地與遠端 commit…" else "Syncing local and remote commits for \"${repoName(g)}\"…",
+            if (S.zh) "已同步「${repoName(g)}」" else "Synced \"${repoName(g)}\"",
+            if (S.zh) "同步失敗" else "Failed to sync") { gi ->
+            val p = if (gi.hasUpstream) Git.pull(gi.root) else GitResult(true, "")
+            if (!p.ok) p else Git.push(gi.root, gi.branch, gi.hasUpstream, gi.remotes.firstOrNull())
+        }
+    }
+
+    fun gitCheckout(branch: String, remote: Boolean = false) = tab.git?.let { g ->
+        gitOp(if (S.zh) "正在切換到「$branch」…" else "Switching to \"$branch\"…",
+            if (S.zh) "已切換到「$branch」" else "Switched to \"$branch\"",
+            if (S.zh) "無法切換到「$branch」" else "Failed to switch to \"$branch\"") {
+            if (remote) Git.checkoutRemote(it.root, branch) else Git.checkout(it.root, branch)
+        }
+    }
+
+    fun gitCreateBranch(name: String) {
+        val n = name.trim()
+        if (!Git.isValidBranchName(n)) { toast = if (S.zh) "無效的分支名稱" else "Invalid branch name"; return }
+        gitOp(if (S.zh) "正在建立分支「$n」…" else "Creating branch \"$n\"…",
+            if (S.zh) "已切換至新分支「$n」" else "Switched to new branch \"$n\"",
+            if (S.zh) "無法建立分支" else "Couldn't create the branch") { Git.createBranch(it.root, n) }
+    }
+
+    fun gitDeleteBranch(name: String) = gitOp(if (S.zh) "正在刪除分支「$name」…" else "Deleting branch \"$name\"…",
+        if (S.zh) "已刪除分支「$name」" else "Deleted branch \"$name\"",
+        if (S.zh) "無法刪除分支" else "Couldn't delete the branch") { Git.deleteBranch(it.root, name) }
+
+    /** "初始化 Git 儲存庫" for the current folder. */
+    fun gitInit() {
+        val t = tab
+        if (t.isVirtual || t.git != null) return
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { Git.init(t.location) }
+            toast = if (r.ok) (if (S.zh) "已將此資料夾初始化為 Git 儲存庫" else "Initialized a Git repository here")
+                    else (if (S.zh) "Files 無法將此目錄初始化為 Git 儲存庫" else "Can't initialize this folder as a Git repository")
+            load(t, keepSelection = true)
+        }
+    }
+
+    /** "複製儲存庫": git clone [url] into the current folder. */
+    fun gitClone(url: String) {
+        val t = tab
+        val u = url.trim()
+        if (u.isEmpty() || t.isVirtual) return
+        val name = u.trimEnd('/').substringAfterLast('/').removeSuffix(".git")
+        gitBusy = if (S.zh) "正在將儲存庫「$name」複製到「${Fs.displayName(t.location)}」…" else "Cloning \"$name\" to \"${Fs.displayName(t.location)}\"…"
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { Git.clone(u, t.location) }
+            gitBusy = null
+            toast = if (r.ok) (if (S.zh) "已成功將儲存庫「$name」複製到「${Fs.displayName(t.location)}」" else "Cloned \"$name\" to \"${Fs.displayName(t.location)}\"")
+                    else (if (S.zh) "無法建立儲存庫副本\n" else "Cannot clone repo\n") + r.output.lines().takeLast(3).joinToString("\n")
+            load(t, keepSelection = true)
+        }
+    }
+
+    // ------------------------------------------------------------ sidebar folder tree
+
+    /** Which sidebar folders are expanded, and their subfolders once read. */
+    val treeExpanded = mutableStateMapOf<String, Boolean>()
+    val treeChildren = mutableStateMapOf<String, List<String>>()
+
+    fun toggleTree(path: String) {
+        val open = treeExpanded[path] != true
+        treeExpanded[path] = open
+        if (open && treeChildren[path] == null) loadTreeChildren(path)
+    }
+
+    fun loadTreeChildren(path: String) {
+        scope.launch {
+            val kids = withContext(Dispatchers.IO) {
+                runCatching {
+                    Fs.list(path).filter { it.isDir && (showHidden || (!it.hidden && !it.name.startsWith("$"))) }
+                        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }).map { it.path }
+                }.getOrDefault(emptyList())
+            }
+            treeChildren[path] = kids
+        }
     }
 
     fun toggleTheme() { theme = if (theme == ThemeMode.Dark) ThemeMode.Light else ThemeMode.Dark }
