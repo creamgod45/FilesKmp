@@ -30,9 +30,11 @@ object RecycleBin {
     private val userSid: String? by lazy {
         try {
             val p = ProcessBuilder("whoami", "/user", "/fo", "csv", "/nh").redirectErrorStream(true).start()
-            val out = p.inputStream.bufferedReader().readText()
-            p.waitFor()
-            Regex("S-1-[0-9-]+").find(out)?.value
+            p.outputStream.close()
+            // Read on another thread so a whoami that never answers can't hold up the bin listing.
+            val out = java.util.concurrent.CompletableFuture.supplyAsync { p.inputStream.bufferedReader().readText() }
+            if (!p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) { p.destroyForcibly(); null }
+            else Regex("S-1-[0-9-]+").find(out.get(1, java.util.concurrent.TimeUnit.SECONDS))?.value
         } catch (_: Exception) { null }
     }
 
@@ -86,6 +88,7 @@ object RecycleBin {
     /** Puts items back where they were; a name already in use gets " (2)" and so on. Returns how many failed. */
     fun restore(dataPaths: Collection<String>): Int {
         var failed = 0
+        val done = HashSet<String>()
         for (p in dataPaths) {
             val e = entries[p]
             if (e == null) { failed++; continue }
@@ -94,8 +97,11 @@ object RecycleBin {
                 target.parentFile?.mkdirs()
                 java.nio.file.Files.move(File(e.dataPath).toPath(), target.toPath())
                 File(e.infoPath).delete()
+                done += p
             } catch (_: Exception) { failed++ }
         }
+        // Restored items are no longer in the bin.
+        entries = entries - done
         return failed
     }
 
@@ -114,6 +120,7 @@ object RecycleBin {
             File(e.dataPath).deleteRecursively()
             File(e.infoPath).delete()
         }
+        entries = entries - dataPaths.toSet()
     }
 
     /** Item count and bytes in the whole bin (all drives), from Windows; null if it can't say. */

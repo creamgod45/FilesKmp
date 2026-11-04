@@ -151,7 +151,7 @@ object SafeDelete {
      * Programs with any of [files] open, via the Restart Manager (RmStartSession / RmRegisterResources /
      * RmGetList) — the same API Windows' "file in use" dialog uses. Names like "Code.exe (1234)".
      */
-    fun whoHasOpen(files: List<String>): List<String> = try {
+    internal fun whoHasOpen(files: List<String>): List<String> = try {
         Arena.ofConfined().use { arena ->
             val rm = SymbolLookup.libraryLookup("rstrtmgr", arena)
             val l = Linker.nativeLinker()
