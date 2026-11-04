@@ -62,6 +62,11 @@ val releases: List<Release> = listOf(
                 "Old Excel workbooks (.xls) now preview as tables too.") to
                 ("在影片或音樂上按 Space，直接用 Windows 內建的媒體引擎播放：播放／暫停、拖曳進度、音量。舊版 Excel 活頁簿（.xls）也能以表格預覽。"),
             key = "QuickLook"),
+        Feature(Icons.Outlined.FolderZip, "Quick preview: inside archives, PDF and Office" to "快速預覽：壓縮檔內容、PDF 與 Office 文件",
+            ("Space on a zip, rar, 7z, tar, tar.gz, tar.xz, gz or xz lists what's inside as a folder tree with sizes and dates, without extracting. " +
+                "PDF, Word, PowerPoint and other files Windows can preview are shown with Windows' own previewers.") to
+                ("在 zip、rar、7z、tar、tar.gz、tar.xz、gz、xz 上按 Space，不用解壓縮就能以資料夾樹狀檢視內容、大小與日期；PDF、Word、PowerPoint 等 Windows 能預覽的檔案，直接用 Windows 內建的預覽顯示。"),
+            key = "QuickLook"),
         Feature(Icons.Outlined.Fingerprint, "Shortcuts: comparing hashes works" to "捷徑：雜湊值比對修正",
             ("“Hash” now gives the hash alone by default (choose “hash+name” for the old list), and “equals” ignores spaces " +
                 "and line breaks around the text, such as the one a copied hash ends with.") to

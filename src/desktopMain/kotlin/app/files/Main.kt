@@ -504,6 +504,8 @@ fun main(args: Array<String>) {
     if ("--test-tokens" in args) { tokensTest(); exitProcess(0) }
     args.indexOf("--test-media").takeIf { it >= 0 && it + 1 < args.size }?.let { mediaTest(File(args[it + 1]), args.getOrNull(it + 2)?.takeIf { a -> !a.startsWith("--") }?.let { a -> File(a) }); exitProcess(0) }
     args.indexOf("--test-xls").takeIf { it >= 0 }?.let { i -> xlsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
+    args.indexOf("--test-archives").takeIf { it >= 0 }?.let { i -> archivesTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
+    args.indexOf("--test-shell-preview").takeIf { it >= 0 && it + 1 < args.size }?.let { i -> shellPreviewTest(File(args[i + 1]), args.drop(i + 2).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
     args.indexOf("--test-keymap").takeIf { it >= 0 && it + 1 < args.size }?.let { keymapTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-update-fresh").takeIf { it >= 0 && it + 1 < args.size }?.let { updateFreshTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-custom-command").takeIf { it >= 0 && it + 1 < args.size }?.let { customCommandTest(File(args[it + 1])); exitProcess(0) }

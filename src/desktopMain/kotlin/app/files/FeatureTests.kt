@@ -324,3 +324,81 @@ fun xlsTest(files: List<File>) {
     }
     println("\nXLS TEST: ${c.pass} passed, ${c.fail} failed")
 }
+
+/** --test-archives <file>...: lists archives (read only) and prints a summary of each. */
+fun archivesTest(files: List<File>) {
+    val c = Checks()
+    files.forEach { f ->
+        val r = runCatching { Archives.list(f) }
+        val l = r.getOrNull()
+        println("   ${f.name}: ${l?.format} ${l?.entries?.size} entries ${l?.note ?: ""} ${r.exceptionOrNull()?.message ?: ""}")
+        l?.entries?.take(6)?.forEach { e -> println("      ${if (e.dir) "[D]" else "   "} ${e.path}  ${e.size}  packed ${e.packed}  ${if (e.modified > 0) java.time.Instant.ofEpochMilli(e.modified) else ""}") }
+        c.check("${f.name}: listed", l != null && l.entries.isNotEmpty(), r.exceptionOrNull())
+    }
+    println("\nARCHIVES TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** A one-page PDF with a line of text (offsets in the xref table computed). */
+private fun writeTestPdf(f: File) {
+    val objs = listOf(
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        "<< /Length 44 >>\nstream\nBT /F1 24 Tf 40 100 Td (FilesKmp PDF) Tj ET\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    )
+    val sb = StringBuilder("%PDF-1.4\n")
+    val offsets = ArrayList<Int>()
+    objs.forEachIndexed { i, o -> offsets += sb.length; sb.append("${i + 1} 0 obj\n$o\nendobj\n") }
+    val xref = sb.length
+    sb.append("xref\n0 ${objs.size + 1}\n0000000000 65535 f \n")
+    offsets.forEach { sb.append("%010d 00000 n \n".format(it)) }
+    sb.append("trailer\n<< /Size ${objs.size + 1} /Root 1 0 R >>\nstartxref\n$xref\n%%EOF\n")
+    f.writeText(sb.toString(), Charsets.ISO_8859_1)
+}
+
+/** A minimal Word document (one paragraph). */
+private fun writeTestDocx(f: File) {
+    java.util.zip.ZipOutputStream(f.outputStream()).use { z ->
+        fun put(n: String, t: String) { z.putNextEntry(java.util.zip.ZipEntry(n)); z.write(t.toByteArray(Charsets.UTF_8)); z.closeEntry() }
+        put("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>""")
+        put("_rels/.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>""")
+        put("word/document.xml", """<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>FilesKmp 預覽測試</w:t></w:r></w:p></w:body></w:document>""")
+    }
+}
+
+/**
+ * --test-shell-preview <dir> [file...]: opens a PDF and a .docx this test writes (and any files given,
+ * read only) with Windows' preview handlers in an invisible off-screen window.
+ */
+fun shellPreviewTest(dir: File, extra: List<File>) {
+    val c = Checks()
+    dir.mkdirs()
+    val pdf = File(dir, "test.pdf").also { writeTestPdf(it) }
+    val docx = File(dir, "test.docx").also { writeTestDocx(it) }
+    val findChild = java.lang.foreign.Linker.nativeLinker().downcallHandle(
+        java.lang.foreign.SymbolLookup.libraryLookup("user32", java.lang.foreign.Arena.global()).find("FindWindowExW").orElseThrow(),
+        java.lang.foreign.FunctionDescriptor.of(java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS))
+    listOf("txt", "csv", "xlsx").forEach { e -> c.check("own previewer kept for .$e", ShellPreview.handlerFor(e) == null) }
+    (listOf(pdf, docx) + extra).forEach { f ->
+        val ext = f.name.substringAfterLast('.').lowercase()
+        val clsid = ShellPreview.handlerFor(ext)
+        println("   .$ext handler: $clsid")
+        c.check("${f.name}: handler registered", clsid != null)
+        if (clsid == null) return@forEach
+        val host = java.awt.Window(null as java.awt.Frame?).apply { setBounds(-4000, -4000, 640, 480); isVisible = true }
+        val canvas = java.awt.Canvas().apply { setSize(640, 480) }
+        host.add(canvas); host.validate(); Thread.sleep(300)
+        val hwnd = WindowCorners.hwnd(canvas) ?: 0L
+        val t0 = System.nanoTime()
+        val r = runCatching { ShellPreview.open(f.path, clsid, hwnd, 640, 480) }
+        println("   ${f.name}: ${if (r.isSuccess) "shown" else r.exceptionOrNull()?.message} in ${(System.nanoTime() - t0) / 1_000_000} ms")
+        c.check("${f.name}: preview opened", r.isSuccess, r.exceptionOrNull())
+        var child = 0L
+        repeat(50) { if (child == 0L) { Thread.sleep(100); child = (findChild.invokeWithArguments(java.lang.foreign.MemorySegment.ofAddress(hwnd), java.lang.foreign.MemorySegment.NULL, java.lang.foreign.MemorySegment.NULL, java.lang.foreign.MemorySegment.NULL) as java.lang.foreign.MemorySegment).address() } }
+        c.check("${f.name}: the handler drew its window inside ours", child != 0L)
+        r.getOrNull()?.let { h -> h.resize(800, 600); h.close() }
+        host.dispose()
+    }
+    println("\nSHELL PREVIEW TEST: ${c.pass} passed, ${c.fail} failed")
+}

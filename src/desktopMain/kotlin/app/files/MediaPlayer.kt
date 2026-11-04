@@ -153,7 +153,7 @@ object MediaEngine {
 }
 
 /** A heavyweight surface that leaves its pixels to the video renderer (no AWT painting over it). */
-private class VideoCanvas : java.awt.Canvas() {
+internal class VideoCanvas : java.awt.Canvas() {
     init { background = java.awt.Color.BLACK; ignoreRepaint = true }
     override fun paint(g: java.awt.Graphics?) {}
     override fun update(g: java.awt.Graphics?) {}
