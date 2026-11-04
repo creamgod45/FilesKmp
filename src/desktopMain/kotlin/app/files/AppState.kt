@@ -1,10 +1,15 @@
 package app.files
 
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 
 enum class SortBy(val label: String) { Name("Name"), DateModified("Date modified"), DateCreated("Date created"), Size("Size"), Type("Type");
     val text: String get() = when (this) { Name -> S.name; DateModified -> S.dateModified; DateCreated -> S.dateCreated; Size -> S.size; Type -> S.type }
@@ -16,6 +21,8 @@ enum class LayoutMode(val label: String) { Details("Details"), List("List"), Car
 const val HOME = "::home"
 const val TAG_PREFIX = "::tag:"
 const val SEARCH_PREFIX = "::search:"
+/** The 網路 page: servers found on the network (see NetworkFs). */
+const val NETWORK = "::network"
 private const val SEP = "\u0001"
 
 fun searchLocation(root: String, query: String) = "$SEARCH_PREFIX$root$SEP$query"
@@ -28,8 +35,11 @@ class TabState(start: String) {
     val isHome: Boolean get() = location == HOME
     val isTag: Boolean get() = location.startsWith(TAG_PREFIX)
     val isSearch: Boolean get() = location.startsWith(SEARCH_PREFIX)
-    /** Home, a tag view or search results: not a real folder you can create files in. */
-    val isVirtual: Boolean get() = location.startsWith("::")
+    val isNetwork: Boolean get() = location == NETWORK
+    /** `\\server`: the list of a server's shares, not a folder. */
+    val isServer: Boolean get() = NetworkFs.isServer(location)
+    /** Home, a tag view, search results, 網路 or a server: not a real folder you can create files in. */
+    val isVirtual: Boolean get() = location.startsWith("::") || isServer
     val tagName: String get() = location.removePrefix(TAG_PREFIX)
     val searchRoot: String get() = location.removePrefix(SEARCH_PREFIX).substringBefore(SEP)
     val searchQuery: String get() = location.substringAfter(SEP, "")
@@ -49,6 +59,8 @@ class TabState(start: String) {
             isHome -> S.home
             isTag -> "${S.tags}: $tagName"
             isSearch -> "${S.search}: $searchQuery"
+            isNetwork -> S.network
+            isServer -> NetworkFs.hostOf(location).let { if (NetworkFs.isWslHost(it)) S.wsl else it }
             else -> Fs.displayName(location)
         }
     val canBack get() = index > 0
@@ -89,6 +101,23 @@ class AppState(val scope: CoroutineScope) {
     var sortBy by mutableStateOf(runCatching { SortBy.valueOf(Prefs.str("sortBy", "Name")) }.getOrDefault(SortBy.Name))
     var sortAscending by mutableStateOf(Prefs.bool("sortAscending", true))
     var showHidden by mutableStateOf(Prefs.bool("showHidden", false))              // FoldersSettingsService:55
+    // Separate from showHidden: items with the System attribute (or a "$" name) stay hidden unless this is on.
+    var showSystem by mutableStateOf(Prefs.bool("showSystem", false))
+    // ---- storage statistics (StorageStats.kt / StorageUi.kt); recording is off by default
+    var trackStorage by mutableStateOf(Prefs.bool("trackStorage", false))
+    var storageHistoryLoaded by mutableStateOf(false)
+    var storageSamples by mutableStateOf<List<StorageSample>>(emptyList())
+    var storageReminder by mutableStateOf<String?>(null)
+    var profileEntries by mutableStateOf<List<ProfileEntry>>(emptyList())
+    var profileProgress by mutableStateOf<Pair<Int, Int>?>(null)
+    var cleanupResults by mutableStateOf<List<CleanupResult>?>(null)
+    var cleanupScanning by mutableStateOf(false)
+    /** 預覽並清理: the plan being shown (SafeCleaner), the target being planned, and a running clean. */
+    var cleanPlan by mutableStateOf<CleanPlan?>(null)
+    var cleanPlanning by mutableStateOf<String?>(null)
+    var cleaning by mutableStateOf(false)
+    /** Opens 設定 at 儲存空間 (screenshot mode, --settings-storage). */
+    var settingsStorageRequest by mutableStateOf(false)
     var showExtensions by mutableStateOf(Prefs.bool("showExtensions", true))       // FoldersSettingsService:118
     var showCheckboxes by mutableStateOf(Prefs.bool("showCheckboxes", true))       // FoldersSettingsService:154
     var showThumbnails by mutableStateOf(Prefs.bool("showThumbnails", true))       // FoldersSettingsService:124
@@ -148,6 +177,7 @@ class AppState(val scope: CoroutineScope) {
     var showNetworkWidget by mutableStateOf(Prefs.bool("w.network", true))
     var showTagsWidget by mutableStateOf(Prefs.bool("w.tags", true))
     var showRecentWidget by mutableStateOf(Prefs.bool("w.recent", true))
+    var showStorageWidget by mutableStateOf(Prefs.bool("w.storage", true))
     var showToolbar by mutableStateOf(Prefs.bool("showToolbar", true))
     var showStatusBar by mutableStateOf(Prefs.bool("showStatusBar", true))
     // Same rule as the original (function 0x1401e4c80): stored width clamped to 180..500, default 255.
@@ -159,6 +189,11 @@ class AppState(val scope: CoroutineScope) {
     var settingsOpen by mutableStateOf(false)
     var tagEditorFor by mutableStateOf<List<String>?>(null)
     var editingPath by mutableStateOf(false)
+    // ---- tab dragging (TabDrag.kt): where things are on screen, in window coordinates
+    var tabDrag by mutableStateOf<TabDrag?>(null)
+    val tabRects = mutableStateMapOf<Tab, androidx.compose.ui.geometry.Rect>()
+    var tabStripRect by mutableStateOf(androidx.compose.ui.geometry.Rect.Zero)
+    var paneAreaRect by mutableStateOf(androidx.compose.ui.geometry.Rect.Zero)
     var searchText by mutableStateOf("")
     var searchRequest by mutableStateOf(0)
     var textFocus by mutableStateOf(false)
@@ -181,6 +216,8 @@ class AppState(val scope: CoroutineScope) {
     var homeLoadMs by mutableStateOf<Long?>(null)
     var cloud by mutableStateOf<List<CloudDrive>>(emptyList())
     var wsl by mutableStateOf<List<String>>(emptyList())
+    /** Icons WSL registered per distribution (see Fs.wslIconFiles); missing ones get a drawn glyph. */
+    var wslIcons by mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
 
     init {
         CopyEngine.onJobFinished = { job ->
@@ -196,7 +233,13 @@ class AppState(val scope: CoroutineScope) {
         loadHome()
         // Sidebar extras, each in the background with its own time limit.
         scope.launch(Dispatchers.IO) { val c = Fs.cloudDrives(); withContext(Dispatchers.Main) { cloud = c } }
-        scope.launch(Dispatchers.IO) { val w = Fs.wslDistros(); withContext(Dispatchers.Main) { wsl = w } }
+        scope.launch(Dispatchers.IO) {
+            val w = Fs.wslDistros(); withContext(Dispatchers.Main) { wsl = w }
+            val icons = Fs.wslIconFiles().filterKeys { it in w }.mapNotNull { (name, file) ->
+                runCatching { org.jetbrains.skia.Image.makeFromEncoded(file.readBytes()).toComposeImageBitmap() }.getOrNull()?.let { name to it }
+            }.toMap()
+            withContext(Dispatchers.Main) { wslIcons = icons }
+        }
         // Reopen the last session's tabs (ContinueLastSessionOnStartUp, on by default in the original).
         if (continueSession) {
             val saved = Prefs.str("session", "").split(SEP).filter { it.isNotBlank() && (it == HOME || File(it).isDirectory) }
@@ -212,22 +255,34 @@ class AppState(val scope: CoroutineScope) {
         else if (bgImages.isNotEmpty() && backgroundImage.isBlank()) backgroundImage = bgImages[bgIndex.coerceIn(0, bgImages.size - 1)]
         scope.launch {
             while (true) {
-                delay(bgIntervalMin * 60_000L)
+                delay(bgIntervalMin.minutes)
                 if (bgMode == BgMode.Timer && bgImages.size > 1) nextBackground()
+            }
+        }
+        // Disk usage readings while 記錄磁碟空間使用量 is on: at once, then every 30 minutes.
+        scope.launch {
+            snapshotFlow { trackStorage }.collectLatest { on ->
+                if (!on) { storageReminder = null; return@collectLatest }
+                // Not at start-up: Home loads first.
+                delay(M.STORAGE_FIRST_SAMPLE_DELAY_MS)
+                while (true) {
+                    recordStorage()
+                    delay(M.STORAGE_SAMPLE_MINUTES.minutes)
+                }
             }
         }
         // Save settings and the open tabs whenever they change.
         scope.launch {
-            snapshotFlow { settingsSnapshot() }.drop(1).debounce(400).collect { Prefs.put(it) }
+            snapshotFlow { settingsSnapshot() }.drop(1).debounce(400.milliseconds).collect { Prefs.put(it) }
         }
     }
 
     private fun settingsSnapshot(): Map<String, Any?> = mapOf(
         "theme" to theme, "layout" to layout, "sortBy" to sortBy, "sortAscending" to sortAscending,
-        "showHidden" to showHidden, "showExtensions" to showExtensions, "showCheckboxes" to showCheckboxes, "showThumbnails" to showThumbnails,
+        "showHidden" to showHidden, "showSystem" to showSystem, "trackStorage" to trackStorage, "showExtensions" to showExtensions, "showCheckboxes" to showCheckboxes, "showThumbnails" to showThumbnails,
         "confirmDelete" to confirmDeleteAlways, "openFoldersInNewTab" to openFoldersInNewTab, "continueSession" to continueSession,
         "w.quickAccess" to showQuickAccessWidget, "w.drives" to showDrivesWidget, "w.network" to showNetworkWidget,
-        "w.tags" to showTagsWidget, "w.recent" to showRecentWidget, "showToolbar" to showToolbar, "showStatusBar" to showStatusBar,
+        "w.tags" to showTagsWidget, "w.recent" to showRecentWidget, "w.storage" to showStorageWidget, "showToolbar" to showToolbar, "showStatusBar" to showStatusBar,
         "sidebarWidth" to sidebarWidth,
         "calculateFolderSizes" to calculateFolderSizes, "paneArrangement" to defaultArrangement,
         "backdrop" to backdrop, "backgroundTint" to backgroundTint, "backgroundImage" to backgroundImage,
@@ -245,7 +300,7 @@ class AppState(val scope: CoroutineScope) {
         val started = System.nanoTime()
         // The three widgets load independently and in parallel, off the UI thread.
         val a = scope.launch(Dispatchers.IO) { val d = Fs.drives(); withContext(Dispatchers.Main) { drives = d; drivesLoaded = true } }
-        val b = scope.launch(Dispatchers.IO) { val p = Fs.quickAccess(); withContext(Dispatchers.Main) { pinned = p; pinnedLoaded = true } }
+        val b = scope.launch(Dispatchers.IO) { val p = withUserHome(Fs.quickAccess()); withContext(Dispatchers.Main) { pinned = p; pinnedLoaded = true } }
         val c = scope.launch(Dispatchers.IO) { val r = Fs.recentFiles(); withContext(Dispatchers.Main) { recent = r; recentLoaded = true } }
         scope.launch {
             joinAll(a, b, c)
@@ -253,9 +308,16 @@ class AppState(val scope: CoroutineScope) {
         }
     }
 
+    /** System items follow 顯示受保護的作業系統檔案, other hidden items follow 顯示隱藏的項目. */
+    fun isShown(f: FileItem) = when {
+        f.system -> showSystem
+        f.hidden -> showHidden
+        else -> true
+    }
+
     fun visibleItems(t: TabState): List<FileItem> {
         var list = t.raw
-        if (!showHidden) list = list.filter { !it.hidden && !it.name.startsWith("\$") }
+        if (!showHidden || !showSystem) list = list.filter { isShown(it) }
         if (searchText.isNotBlank() && !t.isSearch) list = list.filter { it.name.contains(searchText, ignoreCase = true) }
         return Fs.sort(list, sortBy, sortAscending)
     }
@@ -306,8 +368,13 @@ class AppState(val scope: CoroutineScope) {
 
     // ------------------------------------------------------------ navigation
 
-    fun navigate(path: String, t: TabState = tab) {
-        if (!path.startsWith("::") && !File(path).isDirectory) {
+    fun navigate(target: String, t: TabState = tab) {
+        if (NetworkFs.isNfsUrl(target) && !NetworkFs.nfsClientInstalled) { toast = S.netNfsMissing; return }
+        val path = NetworkFs.normalize(target)
+        // Network paths always open here (an unreachable one shows its error in the pane) instead
+        // of falling back to Explorer; only files, and local paths that aren't folders, go to Windows.
+        val network = NetworkFs.isUnc(path)
+        if (!path.startsWith("::") && (if (network) File(path).isFile else !File(path).isDirectory)) {
             Fs.open(path); return
         }
         while (t.history.size > t.index + 1) t.history.removeAt(t.history.size - 1)
@@ -323,6 +390,7 @@ class AppState(val scope: CoroutineScope) {
     fun forward(t: TabState = tab) { if (t.canForward) { t.index++; load(t) } }
     fun up(t: TabState = tab) {
         if (t.isHome) return
+        if (t.isServer) { navigate(if (NetworkFs.isWslHost(NetworkFs.hostOf(t.location))) HOME else NETWORK, t); return }
         if (t.isVirtual) { navigate(if (t.isSearch) t.searchRoot else HOME, t); return }
         val p = Fs.parent(t.location)
         navigate(p ?: HOME, t)
@@ -365,13 +433,31 @@ class AppState(val scope: CoroutineScope) {
             t.loadJob = job
             return
         }
+        if (t.isNetwork) {
+            t.raw = emptyList()
+            t.loadJob = scope.launch {
+                withContext(Dispatchers.IO) {
+                    NetworkFs.discover(cancelled = { !isActive || t.location != path }) { list ->
+                        launch(Dispatchers.Main) { if (t.location == path) t.raw = list }
+                    }
+                }
+                if (t.location == path) t.loading = false
+            }
+            return
+        }
         t.loadJob = scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    if (t.isTag) tagStore.filesWith(t.tagName).mapNotNull { FsExtra.item(it) } else Fs.list(path)
+                    when {
+                        t.isTag -> tagStore.filesWith(t.tagName).mapNotNull { FsExtra.item(it) }
+                        t.isServer -> NetworkFs.serverContents(NetworkFs.hostOf(path), includeAdminShares = true)
+                        else -> Fs.list(path)
+                    }
                 }
             }
             if (t.location != path) return@launch
+            // A server that answered is worth listing on the 網路 page next time.
+            if (result.isSuccess && NetworkFs.isUnc(path) && !NetworkFs.isWslHost(NetworkFs.hostOf(path))) withContext(Dispatchers.IO) { NetworkFs.remember(NetworkFs.hostOf(path)) }
             result.onSuccess { t.raw = it }.onFailure {
                 t.raw = emptyList()
                 t.error = (if (S.zh) "無法開啟此資料夾：" else "Can't open this folder: ") + it.message
@@ -421,7 +507,7 @@ class AppState(val scope: CoroutineScope) {
         val parent = Fs.parent(p) ?: return
         val t = tab
         navigate(parent, t)
-        scope.launch { delay(300); t.selection = setOf(p); t.anchor = p }
+        scope.launch { delay(300.milliseconds); t.selection = setOf(p); t.anchor = p }
     }
 
     /** "解壓縮至此": unpack straight into the current folder. */
@@ -583,7 +669,7 @@ class AppState(val scope: CoroutineScope) {
         scope.launch {
             val kids = withContext(Dispatchers.IO) {
                 runCatching {
-                    Fs.list(path).filter { it.isDir && (showHidden || (!it.hidden && !it.name.startsWith("$"))) }
+                    Fs.list(path).filter { it.isDir && isShown(it) }
                         .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }).map { it.path }
                 }.getOrDefault(emptyList())
             }
@@ -632,8 +718,11 @@ class AppState(val scope: CoroutineScope) {
     /** Creating and pasting need a real folder. */
     val canCreateHere get() = !tab.isVirtual
 
+    /** Servers and share roots are places, not files: never cut, delete or rename them. */
+    private fun isNetworkPlace(path: String) = NetworkFs.isServer(path) || NetworkFs.isShareRoot(path)
+
     fun copy(cut: Boolean = false) {
-        val sel = tab.selection.toList()
+        val sel = tab.selection.toList().filter { !cut || !isNetworkPlace(it) }
         if (sel.isEmpty()) return
         clipboard = Clipboard(sel, cut)
         toast = if (S.zh) "已${if (cut) "剪下" else "複製"} ${sel.size} 個項目" else "${sel.size} item${if (sel.size == 1) "" else "s"} ${if (cut) "cut" else "copied"}"
@@ -669,7 +758,7 @@ class AppState(val scope: CoroutineScope) {
 
     fun startRename() {
         val sel = tab.selection
-        if (sel.size == 1) tab.renaming = sel.first()
+        if (sel.size == 1 && !isNetworkPlace(sel.first())) tab.renaming = sel.first()
     }
 
     fun commitRename(path: String, newName: String) {
@@ -685,13 +774,15 @@ class AppState(val scope: CoroutineScope) {
     }
 
     fun requestDelete() {
-        val sel = tab.selection.toList()
+        val sel = tab.selection.toList().filter { !isNetworkPlace(it) }
         if (sel.isEmpty()) return
         if (confirmDeleteAlways) confirmDelete = sel else doDelete(sel, false)
     }
 
-    fun doDelete(paths: List<String>, permanent: Boolean) {
+    fun doDelete(all: List<String>, permanent: Boolean) {
         confirmDelete = null
+        val paths = all.filter { !isNetworkPlace(it) }
+        if (paths.isEmpty()) return
         val t = tab
         scope.launch {
             val ok = withContext(Dispatchers.IO) {
@@ -750,18 +841,120 @@ class AppState(val scope: CoroutineScope) {
 
     // ------------------------------------------------------------ pin / tags
 
+    // ------------------------------------------------------------ storage statistics
+
+    private suspend fun recordStorage() {
+        storageSamples = withContext(Dispatchers.IO) { StorageHistory.append(StorageHistory.readDrives()) }
+        storageHistoryLoaded = true
+        checkStorageReminder()
+    }
+
+    /** Once a day at most: a drive that grew 5 GB+ in 7 days, or has less than 10 % free. */
+    private fun checkStorageReminder() {
+        val week = 7L * 24 * 3600 * 1000
+        val latest = storageSamples.filter { it.key != PROFILE_KEY }.groupBy { it.key }.mapValues { it.value.maxBy { s -> s.time } }
+        // Low space first (most urgent), then the drive that grew the most.
+        val low = latest.values.filter { it.total > 0 && (it.total - it.used) * 100 / it.total < M.STORAGE_LOW_FREE_PERCENT }
+            .minByOrNull { (it.total - it.used).toDouble() / it.total }
+            ?.let { S.storageLowFree(it.key, ((it.total - it.used) * 100 / it.total).toInt()) }
+        val grew = latest.keys.mapNotNull { k -> StorageHistory.growth(storageSamples, k, week)?.let { k to it } }
+            .filter { it.second >= M.STORAGE_GROWTH_ALERT_BYTES }.maxByOrNull { it.second }
+            ?.let { S.storageGrewBy(it.first, Fs.sizeText(it.second)) }
+        storageReminder = low ?: grew
+        val today = java.time.LocalDate.now().toString()
+        if (storageReminder != null && Prefs.str("storageReminderDay", "") != today) {
+            Prefs.put(mapOf("storageReminderDay" to today))
+            toast = storageReminder + (if (S.zh) "（設定 → 儲存空間）" else " (Settings → Storage)")
+        }
+    }
+
+    /** Home → 儲存空間分析, once it is its turn: the recorded history and the clean-up sizes. */
+    fun loadStorageOverview() {
+        if (trackStorage && !storageHistoryLoaded) scope.launch {
+            storageSamples = withContext(Dispatchers.IO) { StorageHistory.load() }
+            storageHistoryLoaded = true
+            checkStorageReminder()
+        }
+        if (cleanupResults == null) scanCleanup()
+    }
+
+    /** 分析使用者資料夾: sizes each top-level folder of C:\Users\name; read-only. */
+    fun analyzeProfile() {
+        if (profileProgress != null) return
+        profileProgress = 0 to 1
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                scanProfile(cancelled = { !isActive }) { list, done, total ->
+                    launch(Dispatchers.Main) { profileEntries = list; profileProgress = done to total }
+                }
+            }
+            profileEntries = result
+            profileProgress = null
+            if (trackStorage) storageSamples = withContext(Dispatchers.IO) {
+                StorageHistory.append(listOf(StorageSample(System.currentTimeMillis(), PROFILE_KEY, result.sumOf { it.bytes }, 0)))
+            }
+        }
+    }
+
+    /** 掃描清理建議: sizes the known caches present on this PC; read-only. */
+    fun scanCleanup() {
+        if (cleanupScanning) return
+        cleanupScanning = true
+        scope.launch {
+            cleanupResults = withContext(Dispatchers.IO) { Cleanup.measure() }
+            cleanupScanning = false
+        }
+    }
+
+    /** 預覽並清理, step 1: find what would be removed (read-only) and show it. */
+    fun planCleanup(target: CleanupTarget) {
+        if (cleanPlanning != null || cleaning) return
+        val blocker = target.safeDelete?.blockedBy
+        if (blocker != null && Cleanup.isRunning(blocker)) { toast = S.closeFirst(blocker); return }
+        cleanPlanning = target.id
+        scope.launch {
+            cleanPlan = withContext(Dispatchers.IO) { SafeCleaner.plan(target) }
+            cleanPlanning = null
+        }
+    }
+
+    /** Step 2, after the person confirms: remove the planned files, then rescan. */
+    fun runCleanPlan() {
+        val plan = cleanPlan ?: return
+        cleanPlan = null
+        val blocker = plan.target.safeDelete?.blockedBy
+        if (blocker != null && Cleanup.isRunning(blocker)) { toast = S.closeFirst(blocker); return }
+        cleaning = true
+        scope.launch {
+            val (n, freed) = withContext(Dispatchers.IO) { SafeCleaner.execute(plan) }
+            cleaning = false
+            toast = S.cleanedResult(n, Fs.sizeText(freed))
+            scanCleanup()
+        }
+    }
+
+    /**
+     * 已釘選 = Windows' Quick access pins, with the user's own folder added first by default.
+     * That entry belongs to this app (Explorer's Quick access is left alone); unpinning it is remembered.
+     */
+    private fun withUserHome(list: List<PinnedFolder>): List<PinnedFolder> =
+        if (!Prefs.bool("pinUserHome", true) || list.any { isUserHome(it.path) }) list
+        else listOf(PinnedFolder(Fs.displayName(userHome), userHome)) + list
+
     fun pin(path: String) {
         scope.launch {
-            withContext(Dispatchers.IO) { FsExtra.pin(path) }
-            val p = withContext(Dispatchers.IO) { Fs.quickAccess() }
+            if (isUserHome(path)) Prefs.put(mapOf("pinUserHome" to true))
+            else withContext(Dispatchers.IO) { FsExtra.pin(path) }
+            val p = withContext(Dispatchers.IO) { withUserHome(Fs.quickAccess()) }
             pinned = p
         }
     }
 
     fun unpin(path: String) {
         scope.launch {
+            if (isUserHome(path)) Prefs.put(mapOf("pinUserHome" to false))
             withContext(Dispatchers.IO) { FsExtra.unpin(path) }
-            val p = withContext(Dispatchers.IO) { Fs.quickAccess() }
+            val p = withContext(Dispatchers.IO) { withUserHome(Fs.quickAccess()) }
             pinned = p
         }
     }

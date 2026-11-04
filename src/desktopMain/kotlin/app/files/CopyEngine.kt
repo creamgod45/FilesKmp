@@ -8,13 +8,11 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.charset.StandardCharsets
 import java.nio.file.*
 import java.nio.file.attribute.BasicFileAttributes
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.milliseconds
 
 enum class OpKind { Copy, Move }
 enum class JobState { Queued, Running, Done, Failed, Cancelled }
@@ -84,7 +82,7 @@ object CopyEngine {
         }
         scope.launch {
             while (true) {
-                delay(M.PROGRESS_INTERVAL_MS)
+                delay(M.PROGRESS_INTERVAL_MS.milliseconds)
                 tick()
             }
         }

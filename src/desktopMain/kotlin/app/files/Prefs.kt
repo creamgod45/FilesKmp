@@ -4,9 +4,33 @@ import androidx.compose.runtime.*
 import java.io.File
 import java.util.Properties
 
+/**
+ * Where the app writes, following Windows' per-user data locations:
+ * - settings, tags, toolbar, last session: %APPDATA%\FilesKmp (roaming user settings)
+ * - everything that can be rebuilt (thumbnails, Skia's native library): %LOCALAPPDATA%\FilesKmp\Cache
+ * - disk usage history (only when 記錄磁碟空間使用量 is on): %LOCALAPPDATA%\FilesKmp\History
+ * The program itself is installed in %LOCALAPPDATA%\Programs\FilesKmp, apart from both.
+ */
+object AppDirs {
+    private fun env(name: String) = System.getenv(name)?.takeIf { it.isNotBlank() }
+    val settings: File = File(env("APPDATA") ?: System.getProperty("user.home"), "FilesKmp")
+    val cache: File = File(File(env("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir"), "FilesKmp"), "Cache")
+    /** Per-machine records that can't be rebuilt (disk usage history): %LOCALAPPDATA%\FilesKmp\History. */
+    val history: File = System.getProperty("fileskmp.history")?.let { File(it) } ?: File(cache.parentFile, "History") // property: tests only
+
+    /** Call first thing in main(), before Compose loads Skia (which otherwise unpacks into %USERPROFILE%\.skiko). */
+    fun init() {
+        if (System.getProperty("skiko.data.path") == null) System.setProperty("skiko.data.path", File(cache, "skiko").path)
+        // Thumbnails used to live in %LOCALAPPDATA%\FilesKmp\thumbs, which was also the install folder.
+        Thread {
+            runCatching { File(cache.parentFile, "thumbs").takeIf { it.isDirectory }?.deleteRecursively() }
+        }.apply { isDaemon = true; start() }
+    }
+}
+
 /** Where the app keeps its settings, tags and last session (%APPDATA%\FilesKmp). */
 object Prefs {
-    val dir: File = File(System.getenv("APPDATA") ?: System.getProperty("user.home"), "FilesKmp").apply { mkdirs() }
+    val dir: File = AppDirs.settings.apply { mkdirs() }
     private val file = File(dir, "settings.properties")
     private val props = Properties()
 
@@ -18,7 +42,11 @@ object Prefs {
     fun bool(key: String, def: Boolean): Boolean = props.getProperty(key)?.toBooleanStrictOrNull() ?: def
     fun int(key: String, def: Int): Int = props.getProperty(key)?.toIntOrNull() ?: def
 
+    /** Screenshot / test runs: change nothing on disk, so tests never touch the person's settings or session. */
+    @Volatile var readOnly = false
+
     fun put(values: Map<String, Any?>) {
+        if (readOnly) return
         values.forEach { (k, v) -> if (v == null) props.remove(k) else props.setProperty(k, v.toString()) }
         try { file.writer(Charsets.UTF_8).use { props.store(it, "FilesKmp settings") } } catch (_: Exception) {}
     }
@@ -60,10 +88,12 @@ class TagStore {
     } catch (_: Exception) { emptyMap() }
 
     private fun saveDefs() {
+        if (Prefs.readOnly) return
         try { defsFile.writeText(defs.joinToString("\n") { "${it.name}\t${java.lang.Long.toHexString(it.color)}" }, Charsets.UTF_8) } catch (_: Exception) {}
     }
 
     private fun saveMap() {
+        if (Prefs.readOnly) return
         try { mapFile.writeText(byPath.entries.joinToString("\n") { "${it.key}\t${it.value.joinToString("|")}" }, Charsets.UTF_8) } catch (_: Exception) {}
     }
 

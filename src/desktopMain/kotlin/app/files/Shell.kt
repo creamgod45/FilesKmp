@@ -36,6 +36,9 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowState
 import java.awt.Cursor
 import java.io.File
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.graphics.graphicsLayer
 
 class WindowControls(
     val state: WindowState?,
@@ -53,7 +56,8 @@ fun TabStrip(s: AppState) {
     val p = LocalPalette.current
     val wc = LocalWindowControls.current
     Row(
-        Modifier.fillMaxWidth().padding(top = M.TAB_STRIP_TOP_MARGIN.dp).height(M.TAB_HEIGHT.dp),
+        Modifier.fillMaxWidth().padding(top = M.TAB_STRIP_TOP_MARGIN.dp).height(M.TAB_HEIGHT.dp)
+            .onGloballyPositioned { s.tabStripRect = it.boundsInRoot() },
         verticalAlignment = Alignment.Bottom,
     ) {
         Spacer(Modifier.width(4.dp))
@@ -61,10 +65,16 @@ fun TabStrip(s: AppState) {
             IconBtn(Icons.Outlined.Tab, "Tab actions", { s.newTab() }, width = M.TAB_BUTTON.dp, height = M.TAB_BUTTON.dp, iconSize = 16.dp)
         }
         Spacer(Modifier.width(2.dp))
-        s.tabs.forEachIndexed { i, t ->
+        s.tabs.forEachIndexed { i, t -> key(t) {
             val sel = i == s.tabIndex
+            var coords by remember { mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
+            val dragging = s.tabDrag?.tab === t
             Box(
                 Modifier.widthIn(min = 120.dp, max = 240.dp).fillMaxHeight()
+                    .onGloballyPositioned { coords = it; s.tabRects[t] = it.boundsInRoot() }
+                    // Drag sideways to reorder, or down into the file area to split (TabDrag.kt).
+                    .tabDragSource(s, t) { coords }
+                    .graphicsLayer { alpha = if (dragging) 0.6f else 1f }
                     .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
                     .background(if (sel) p.tabSelected else Color.Transparent)
                     .contextMenu {
@@ -87,7 +97,7 @@ fun TabStrip(s: AppState) {
             if (i != s.tabIndex && i + 1 != s.tabIndex && i < s.tabs.size - 1) {
                 Box(Modifier.align(Alignment.CenterVertically).width(1.dp).height(16.dp).background(p.divider))
             }
-        }
+        } }
         Box(Modifier.size(M.TAB_BUTTON.dp).align(Alignment.CenterVertically)) {
             IconBtn(Icons.Outlined.Add, "New tab (Ctrl+T)", { s.newTab() }, width = M.TAB_BUTTON.dp, height = M.TAB_BUTTON.dp, iconSize = 12.dp)
         }
@@ -176,7 +186,7 @@ fun Omnibar(s: AppState, modifier: Modifier) {
                 Hover(Modifier.height(34.dp).width(40.dp), onClick = { s.navigate(HOME) }, shape = RoundedCornerShape(17.dp)) {
                     Icon(Icons.Filled.Home, S.home, Modifier.size(16.dp).align(Alignment.Center), tint = Color(0xFFF7630C))
                 }
-                if (t.isVirtual && !t.isHome) {
+                if (t.isVirtual && !t.isHome && !t.isServer) {
                     Icon(Icons.Outlined.ChevronRight, null, Modifier.size(14.dp), tint = p.textSecondary)
                     Hover(Modifier.height(30.dp), onClick = {}) { T(t.title, Modifier.align(Alignment.Center).padding(horizontal = 8.dp)) }
                 } else if (!t.isHome) {
@@ -197,7 +207,7 @@ fun Omnibar(s: AppState, modifier: Modifier) {
                 }
                 Spacer(Modifier.weight(1f))
             }
-            if (!t.isHome && !t.isTag) {
+            if (!t.isHome && !t.isTag && !t.isNetwork && !t.isServer) {
                 IconBtn(Icons.Outlined.Search, S.search + " (Ctrl+F)", { searching = true }, width = 34.dp, height = 34.dp, iconSize = 16.dp)
             }
         }
@@ -212,7 +222,11 @@ suspend fun androidx.compose.ui.input.pointer.PointerInputScope.detectTapGesture
 
 @Composable
 fun PathEditor(s: AppState) {
-    val start = if (s.tab.isVirtual) S.home else s.tab.location
+    val start = when {
+        s.tab.isNetwork -> S.network
+        s.tab.isVirtual && !s.tab.isServer -> S.home
+        else -> s.tab.location
+    }
     EditBox(
         initial = start,
         selectStem = false,
@@ -222,6 +236,9 @@ fun PathEditor(s: AppState) {
             when {
                 v.equals("Home", true) || v == S.home || v.isEmpty() -> if (!s.tab.isHome) s.navigate(HOME)
                 v == start -> {}
+                v.equals("Network", true) || v == S.network -> s.navigate(NETWORK)
+                // \\server, \\server\share, smb://..., nfs://...: opened here even when unreachable (the pane says why).
+                NetworkFs.isUnc(v) || v.startsWith("//") || Regex("^(?i)(smb|cifs|nfs)://").containsMatchIn(v) -> s.navigate(v)
                 File(v).exists() -> s.navigate(File(v).absolutePath)
                 else -> s.toast = "Can't find \"$v\". Check the spelling and try again."
             }
@@ -252,9 +269,6 @@ fun CommandToolbar(s: AppState) {
     val p = LocalPalette.current
     val t = s.tab
     val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
-    val hasSel = t.selection.isNotEmpty() && !t.isHome
-    val zipSelected = t.selection.any { it.endsWith(".zip", true) }
-    var newOpen by remember { mutableStateOf(false) }
     var selOpen by remember { mutableStateOf(false) }
     var sortOpen by remember { mutableStateOf(false) }
     var layoutOpen by remember { mutableStateOf(false) }
@@ -301,6 +315,7 @@ fun CommandToolbar(s: AppState) {
                     }
                     FlyoutSeparator()
                     FlyoutItem(S.showHidden, if (s.showHidden) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "Ctrl+H") { s.showHidden = !s.showHidden }
+                    FlyoutItem(S.showSystem, if (s.showSystem) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showSystem = !s.showSystem }
                     FlyoutItem(S.fileExtensions, if (s.showExtensions) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showExtensions = !s.showExtensions }
                     FlyoutItem(S.showThumbnails, if (s.showThumbnails) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showThumbnails = !s.showThumbnails }
                 }
@@ -408,11 +423,11 @@ fun Sidebar(s: AppState, modifier: Modifier) {
                         MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(f.path) },
                         MenuEntry(S.unpinFromSidebar, Icons.Outlined.PushPin, separatorBefore = true) { s.unpin(f.path) },
                     ) },
-                    onClick = { s.navigate(f.path) }) { KnownFolderGlyph(knownKind(f), M.SIDEBAR_ICON.dp) }
+                    onClick = { s.navigate(f.path) }) { KnownFolderGlyph(knownKindOf(f), M.SIDEBAR_ICON.dp) }
             }
             item { SidebarSection(S.drives, "drives", drivesOpen) { drivesOpen = !drivesOpen } }
             if (drivesOpen) items(s.drives) { d ->
-                SidebarTree(s, d.root, d.title) { DriveGlyph(driveKind(d), M.SIDEBAR_ICON.dp) }
+                SidebarTree(s, d.root, d.title) { DriveGlyph(driveKindOf(d), M.SIDEBAR_ICON.dp) }
             }
             if (s.cloud.isNotEmpty()) {
                 item { SidebarSection(S.cloudDrives, "cloud", cloudOpen) { cloudOpen = !cloudOpen } }
@@ -425,7 +440,7 @@ fun Sidebar(s: AppState, modifier: Modifier) {
             }
             item { SidebarSection(S.network, "network", networkOpen) { networkOpen = !networkOpen } }
             if (networkOpen) item {
-                SidebarRow(S.network, 1, false, onClick = { Fs.open("shell:NetworkPlacesFolder") }) {
+                SidebarRow(S.network, 1, loc == NETWORK, onClick = { s.navigate(NETWORK) }) {
                     Icon(Icons.Filled.Computer, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFF2B88D8))
                 }
             }
@@ -434,8 +449,7 @@ fun Sidebar(s: AppState, modifier: Modifier) {
                 if (wslOpen) items(s.wsl) { d ->
                     val path = "\\\\wsl.localhost\\$d"
                     SidebarRow(d, 1, loc == path, onClick = { s.navigate(path) }) {
-                        if (d.contains("ubuntu", true)) Icon(Icons.Filled.TripOrigin, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFFE95420))
-                        else Icon(Icons.Filled.Terminal, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFF2B2B2B))
+                        WslGlyph(d, s.wslIcons[d], M.SIDEBAR_ICON.dp)
                     }
                 }
             }
@@ -455,7 +469,7 @@ fun Sidebar(s: AppState, modifier: Modifier) {
     }
 }
 
-fun driveKind(d: DriveInfo): DriveKind = when {
+fun driveKindOf(d: DriveInfo): DriveKind = when {
     d.isSystem -> DriveKind.System
     CopyEngine.isUsb(d.root) -> DriveKind.Usb
     else -> DriveKind.Hdd

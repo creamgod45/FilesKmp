@@ -50,9 +50,10 @@ fun T(
     color: Color = LocalPalette.current.text,
     weight: FontWeight = FontWeight.Normal,
     maxLines: Int = 1,
+    fontFamily: androidx.compose.ui.text.font.FontFamily? = null,
 ) {
     Text(
-        text, modifier = modifier, fontSize = size, color = color, fontWeight = weight,
+        text, modifier = modifier, fontSize = size, color = color, fontWeight = weight, fontFamily = fontFamily,
         maxLines = maxLines, overflow = TextOverflow.Ellipsis, softWrap = maxLines > 1,
     )
 }
@@ -149,6 +150,8 @@ fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, color: Color = L
 // ------------------------------------------------------------------ icons for files
 
 fun iconFor(item: FileItem): ImageVector = when {
+    item.isDir && NetworkFs.isServer(item.path) -> Icons.Filled.Dns
+    item.isDir && item.typeLabel != null -> Icons.Filled.FolderShared
     item.isDir -> Icons.Filled.Folder
     else -> iconForExt(item.ext)
 }
@@ -170,6 +173,7 @@ fun iconForExt(ext: String): ImageVector = when (ext) {
 fun fileTint(item: FileItem): Color {
     val p = LocalPalette.current
     return when {
+        item.isDir && NetworkFs.isServer(item.path) -> Color(0xFF2B88D8)
         item.isDir -> p.folder
         item.ext in setOf("png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "heic") -> Color(0xFF2E9E6B)
         item.ext in setOf("mp4", "mkv", "avi", "mov", "wmv", "webm") -> Color(0xFF8A4FD8)
@@ -187,7 +191,7 @@ fun FileIcon(item: FileItem, size: Dp) {
     val px = with(androidx.compose.ui.platform.LocalDensity.current) { size.roundToPx() } * 2
     val thumb = rememberThumbnail(item, px, app?.showThumbnails == true)
     if (thumb != null) {
-        androidx.compose.foundation.Image(
+        Image(
             thumb, null,
             Modifier.size(size).clip(RoundedCornerShape(M.THUMB_RADIUS.dp)),
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,

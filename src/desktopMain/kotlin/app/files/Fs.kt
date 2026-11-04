@@ -11,6 +11,10 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
+
+/** OS-protected item: System attribute, or a "$" name ($Recycle.Bin, $WinREAgent, …). */
+fun isSystemItem(systemAttr: Boolean, name: String?) = systemAttr || name?.startsWith("$") == true
 
 class FileItem(
     val path: String,
@@ -19,11 +23,17 @@ class FileItem(
     val size: Long,
     val modified: Long,
     val created: Long,
+    /** Hidden attribute set (ordinary hidden item), see [system] for OS-protected items. */
     val hidden: Boolean,
+    /** System attribute set, or a "$" name such as $Recycle.Bin: protected operating-system item. */
+    val system: Boolean = false,
+    /** Shown in the 類型 column instead of the file type (network servers, shares, exports). */
+    val typeLabel: String? = null,
 ) {
     val ext: String get() = if (isDir) "" else name.substringAfterLast('.', "").lowercase()
     val typeName: String
         get() = when {
+            typeLabel != null -> typeLabel
             isDir -> S.fileFolder
             ext.isEmpty() -> S.file
             else -> if (S.zh) "${ext.uppercase()} 檔案" else "${ext.uppercase()} File"
@@ -122,7 +132,8 @@ object Fs {
                         size = if (a.isDirectory) 0 else a.size(),
                         modified = a.lastModifiedTime().toMillis(),
                         created = a.creationTime().toMillis(),
-                        hidden = a.isHidden || a.isSystem,
+                        hidden = a.isHidden,
+                        system = isSystemItem(a.isSystem, p.fileName?.toString()),
                     )
                 } catch (_: Exception) {
                 }
@@ -149,7 +160,7 @@ object Fs {
         File.listRoots().map { root ->
             async(Dispatchers.IO) {
                 val r = root.path
-                val info = withTimeoutOrNull(M.DRIVE_QUERY_TIMEOUT_MS) {
+                val info = withTimeoutOrNull(M.DRIVE_QUERY_TIMEOUT_MS.milliseconds) {
                     runInterruptible {
                         val store = try { Files.getFileStore(root.toPath()) } catch (_: Exception) { null }
                         DriveInfo(
@@ -167,13 +178,14 @@ object Fs {
     }
 
     /** Runs PowerShell once and returns its UTF-8 output, or null after the time limit. */
-    fun powershell(script: String, timeoutMs: Long): String? {
+    /** Runs [script]; [env] values reach it as $env:NAME, so data never has to be quoted into the script. */
+    fun powershell(script: String, timeoutMs: Long, env: Map<String, String> = emptyMap()): String? {
         return try {
             val full = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $script"
             // -EncodedCommand avoids every quoting problem with quotes and tabs in the script.
             val encoded = java.util.Base64.getEncoder().encodeToString(full.toByteArray(StandardCharsets.UTF_16LE))
             val p = ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
-                .redirectErrorStream(false).start()
+                .redirectErrorStream(false).also { it.environment().putAll(env) }.start()
             p.outputStream.close()
             val text = StringBuilder()
             val t = Thread.ofVirtual().start {
@@ -199,7 +211,7 @@ object Fs {
             KnownKind.Desktop to "Desktop", KnownKind.Downloads to "Downloads", KnownKind.Documents to "Documents",
             KnownKind.Pictures to "Pictures", KnownKind.Music to "Music", KnownKind.Videos to "Videos",
         )
-        return (if (S.zh) zh else en)[knownKind(f)] ?: f.name
+        return (if (S.zh) zh else en)[knownKindOf(f)] ?: f.name
     }
 
     /** Windows' own Quick access pins (the original mirrors these), with known folders as the fallback. */
@@ -241,6 +253,41 @@ object Fs {
             .lines().map { it.replace("\u0000", "").trim() }.filter { it.isNotEmpty() && !it.contains(' ') }
     } catch (_: Exception) {
         emptyList()
+    }
+
+    /**
+     * The icon WSL registered for each distribution: HKCU\…\Lxss\{id} holds DistributionName and
+     * BasePath, and WSL puts shortcut.ico there (the Start-menu and Windows Terminal icon).
+     * Distributions without one (docker-desktop, older imports) are simply missing from the map.
+     */
+    fun wslIconFiles(): Map<String, File> = try {
+        val p = ProcessBuilder("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss", "/s")
+            .redirectErrorStream(true).start()
+        p.outputStream.close()
+        val bytes = java.util.concurrent.CompletableFuture.supplyAsync { p.inputStream.readAllBytes() }
+        if (!p.waitFor(4, TimeUnit.SECONDS)) { p.destroyForcibly(); emptyMap() }
+        else {
+            val charset = runCatching { java.nio.charset.Charset.forName(System.getProperty("native.encoding")) }.getOrDefault(Charsets.UTF_8)
+            val out = HashMap<String, File>()
+            var name: String? = null; var base: String? = null
+            fun flush() {
+                val n = name; val b = base
+                if (n != null && b != null) File(b.removePrefix("\\\\?\\"), "shortcut.ico").takeIf { it.isFile }?.let { out[n] = it }
+                name = null; base = null
+            }
+            for (line in String(bytes.get(1, TimeUnit.SECONDS), charset).lines()) {
+                if (line.startsWith("HKEY_")) { flush(); continue }
+                val parts = line.trim().split(Regex("\\s{2,}|\\t"), limit = 3)
+                if (parts.size == 3 && parts[1].startsWith("REG_")) when (parts[0]) {
+                    "DistributionName" -> name = parts[2]
+                    "BasePath" -> base = parts[2]
+                }
+            }
+            flush()
+            out
+        }
+    } catch (_: Exception) {
+        emptyMap()
     }
 
     /** Recent files from Windows' Recent folder (shortcut names, newest first), capped. */
@@ -303,11 +350,25 @@ object Fs {
     }
 
     fun parent(path: String): String? {
+        if (NetworkFs.isServer(path)) return if (NetworkFs.isWslHost(NetworkFs.hostOf(path))) HOME else NETWORK
+        if (NetworkFs.isShareRoot(path)) return NetworkFs.serverPath(NetworkFs.hostOf(path))
         val p = Paths.get(path).parent ?: return null
         return p.toString()
     }
 
     fun breadcrumbs(path: String): List<Pair<String, String>> {
+        // Network paths start at 網路 > server, then the share and its folders.
+        if (NetworkFs.isUnc(path)) {
+            val host = NetworkFs.hostOf(path)
+            // WSL paths read WSL > distribution > …, other servers 網路 > server > share > ….
+            val head = if (NetworkFs.isWslHost(host)) listOf(S.wsl to NetworkFs.serverPath(host))
+                else listOf(S.network to NETWORK, host to NetworkFs.serverPath(host))
+            return if (NetworkFs.isServer(path)) head else head + localCrumbs(path)
+        }
+        return localCrumbs(path)
+    }
+
+    private fun localCrumbs(path: String): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>()
         var p: Path? = Paths.get(path)
         while (p != null) {

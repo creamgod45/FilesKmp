@@ -25,6 +25,7 @@ private enum class SettingsSection(val label: () -> String, val icon: ImageVecto
     Layout({ S.layoutSettings }, Icons.Outlined.ViewQuilt),
     Folders({ S.filesFolders }, Icons.Outlined.Folder),
     Tags({ S.tagsSettings }, Icons.Outlined.LocalOffer),
+    Storage({ S.storage }, Icons.Outlined.Storage),
     About({ S.about }, Icons.Outlined.Info),
 }
 
@@ -32,7 +33,8 @@ private enum class SettingsSection(val label: () -> String, val icon: ImageVecto
 @Composable
 fun SettingsPage(s: AppState) {
     val p = LocalPalette.current
-    var section by remember { mutableStateOf(SettingsSection.General) }
+    var section by remember { mutableStateOf(if (s.settingsStorageRequest) SettingsSection.Storage else SettingsSection.General) }
+    LaunchedEffect(Unit) { s.settingsStorageRequest = false }
     Box(Modifier.fillMaxSize().background(Color(0x66000000)).pointerInput(Unit) { detectTapGestures2 { s.settingsOpen = false } }, contentAlignment = Alignment.Center) {
         Row(
             Modifier.fillMaxWidth(0.82f).fillMaxHeight(0.86f).widthIn(max = 1000.dp).shadow8()
@@ -64,6 +66,7 @@ fun SettingsPage(s: AppState) {
                             ToggleCard(S.networkLocations, s.showNetworkWidget) { s.showNetworkWidget = it }
                             ToggleCard(S.tags, s.showTagsWidget) { s.showTagsWidget = it }
                             ToggleCard(S.recentFiles, s.showRecentWidget) { s.showRecentWidget = it }
+                            ToggleCard(S.storageAnalysis, s.showStorageWidget) { s.showStorageWidget = it }
                         }
                         SettingsSection.Appearance -> {
                             ChoiceCard(S.theme, listOf(ThemeMode.System to S.themeSystem, ThemeMode.Light to S.themeLight, ThemeMode.Dark to S.themeDark), s.theme) { s.theme = it }
@@ -105,6 +108,7 @@ fun SettingsPage(s: AppState) {
                         }
                         SettingsSection.Folders -> {
                             ToggleCard(S.showHidden, s.showHidden) { s.showHidden = it }
+                            ToggleCard(S.showSystem, s.showSystem) { s.showSystem = it }
                             ToggleCard(S.fileExtensions, s.showExtensions) { s.showExtensions = it }
                             ToggleCard(S.showThumbnails, s.showThumbnails) { s.showThumbnails = it }
                             ToggleCard(S.calcFolderSizes, s.calculateFolderSizes) { s.calculateFolderSizes = it }
@@ -112,6 +116,7 @@ fun SettingsPage(s: AppState) {
                             ToggleCard(S.confirmDelete, s.confirmDeleteAlways) { s.confirmDeleteAlways = it }
                         }
                         SettingsSection.Tags -> TagSettings(s)
+                        SettingsSection.Storage -> StorageSettings(s)
                         SettingsSection.About -> {
                             SettingCard("FilesKmp 1.0") { }
                             T(S.aboutText, Modifier.padding(8.dp), color = p.textSecondary, maxLines = 6)
@@ -267,7 +272,7 @@ private fun BackgroundPictures(s: AppState) {
 }
 
 @Composable
-private fun GroupTitle(text: String) {
+fun GroupTitle(text: String) {
     T(text, Modifier.padding(top = 16.dp, bottom = 4.dp, start = 2.dp), size = 14.sp, weight = FontWeight.SemiBold)
 }
 
