@@ -115,7 +115,18 @@ object Updates {
     private val reportFile get() = File(Prefs.dir, "last-update-report.json")
 
     /** Settings migrations, oldest first. Add one whenever a release renames or reshapes a setting. */
-    internal var migrations: List<SettingMigration> = emptyList()
+    internal var migrations: List<SettingMigration> = listOf(
+        // 1.2.0: "How pictures change" was one choice (one picture / timer / each start); now each trigger is its own switch.
+        SettingMigration("1.2.0-background-triggers", { tr("Background pictures: “How pictures change” became separate switches you can combine",
+            "背景圖片：「切換方式」改成可以同時開啟的多個選項") }) { p ->
+            when (p["bgMode"]) {
+                null -> emptyMap()
+                "Timer" -> mapOf("bgOnTimer" to "true", "bgMode" to null)
+                "OnStartup" -> mapOf("bgOnStart" to "true", "bgMode" to null)
+                else -> mapOf("bgMode" to null)
+            }
+        },
+    )
 
     /** Settings people see (and whose defaults an update may change), with the names the settings page uses. */
     private val settingLabels: Map<String, () -> String> = mapOf(
@@ -127,6 +138,11 @@ object Updates {
         "showToolbar" to { S.showToolbar }, "showStatusBar" to { S.showStatusBar }, "sidebarWidth" to { S.sidebarWidth },
         "translucentWindow" to { S.translucentWindow }, "w.quickAccess" to { S.quickAccess }, "w.drives" to { S.drives },
         "w.network" to { S.networkLocations }, "w.tags" to { S.tags }, "w.recent" to { S.recentFiles }, "w.storage" to { S.storageAnalysis },
+        "bgOnStart" to { tr("Background: change each time Files opens", "背景：每次開啟時切換") },
+        "bgOnTimer" to { tr("Background: change on a timer", "背景：定時切換") },
+        "bgOnRestore" to { tr("Background: change when restored from minimized", "背景：從最小化還原時切換") },
+        "bgShuffle" to { tr("Background: random order", "背景：隨機順序") },
+        "shellMenu" to { tr("Windows right-click menu", "Windows 右鍵選單") },
     )
 
     private fun value(v: String?) = when (v) { null, "" -> tr("(empty)", "（空白）"); "true" -> tr("On", "開"); "false" -> tr("Off", "關"); else -> v }

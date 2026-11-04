@@ -324,9 +324,10 @@ size={item.size}`
   Input: *text* → Output: *files*
   - `path` (path) File, default `{desktop}\output.txt`
   - `append` (bool) Append, default `false`
-- **`file.hash`** — Hash / 計算雜湊值. Each file's hash (SHA-256 / SHA-1 / MD5).  
+- **`file.hash`** — Hash / 計算雜湊值. Each file's hash (SHA-256 / SHA-1 / MD5) in lowercase hex: the hash alone (for comparing) or with the file name.  
   Input: *files* → Output: *text*
   - `algorithm` (choice: SHA-256|SHA-1|MD5) Algorithm, default `SHA-256`
+  - `format` (choice: hash|hash+name) Result, default `hash`
 - **`file.info`** — File info / 檔案資訊. Name, size and date of each item (tab separated).  
   Input: *files* → Output: *text*
 - **`app.navigate`** — Show in FilesKmp / 在 FilesKmp 中顯示. Opens the first item's folder here and selects the items.  

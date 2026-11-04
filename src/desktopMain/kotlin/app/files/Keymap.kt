@@ -133,6 +133,7 @@ object Keymap {
     fun dispatch(s: AppState, key: String): Boolean {
         val list = actionsFor(key)
         if (list.isEmpty()) return false
+        ErrorLog.crumb("key $key → ${list.firstOrNull { it.enabled(s) }?.id ?: "(nothing enabled)"}")
         list.firstOrNull { it.enabled(s) }?.run?.invoke(s)
         return true
     }

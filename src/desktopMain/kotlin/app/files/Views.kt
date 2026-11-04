@@ -258,7 +258,7 @@ fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
         ) else if (t.isVirtual) listOf(
             MenuEntry(S.selectAll, Icons.Outlined.SelectAll, "Ctrl+A") { s.selectAll() },
             MenuEntry(S.refresh, Icons.Outlined.Refresh, "F5") { s.refresh() },
-        ) else listOf(
+        ) else listOfNotNull(
             MenuEntry(S.newFolder, Icons.Filled.Folder, "Ctrl+Shift+N") { s.newFolder() },
             MenuEntry(S.textDocument, Icons.Outlined.Description) { s.newFile() },
             MenuEntry(S.paste, Icons.Outlined.ContentPaste, "Ctrl+V", enabled = s.clipboard != null, separatorBefore = true) { s.paste() },
@@ -267,6 +267,8 @@ fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
             MenuEntry(S.pinToSidebar, Icons.Outlined.PushPin) { s.pin(t.location) },
             MenuEntry(S.openInTerminal, Icons.Outlined.Terminal, "Ctrl+`") { Fs.openInTerminal(t.location) },
             MenuEntry(S.copyPath, Icons.Outlined.Link, "Ctrl+Shift+C") { copyText(t.location) },
+            // Windows' own menu for the folder's empty space (New ▸, Open in Terminal, …).
+            systemMenuEntry(s, emptyList(), background = t.location),
         )
     }
     Box(
@@ -357,6 +359,8 @@ fun itemMenu(s: AppState, item: FileItem): List<MenuEntry> {
         MenuEntry(S.editProperties, Icons.Outlined.EditNote, "Ctrl+Shift+M") { s.openMetadata() },
         MenuEntry(S.delete, Icons.Outlined.Delete, "Delete") { s.requestDelete() },
         MenuEntry(S.properties, Icons.Outlined.Info, "Alt+Enter", separatorBefore = true) { s.infoPaneOpen = true },
+        // Windows' own menu (the Windows 11 one, or the classic one): loads while the menu is open.
+        systemMenuEntry(s, s.tab.selection.toList().ifEmpty { listOf(item.path) }),
     )
 }
 

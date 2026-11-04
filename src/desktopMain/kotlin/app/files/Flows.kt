@@ -482,13 +482,16 @@ object FlowActions {
             if (dryRun) log("   ${text.length} chars → ${f.path}") else { f.parentFile?.mkdirs(); if (bool(st, "append")) f.appendText(text + "\r\n") else f.writeText(text) }
             items = listOf(f.path)
         },
-        FlowAction("file.hash", "計算雜湊值", "Hash", CAT_FILES, "每個檔案的雜湊值（SHA-256 / SHA-1 / MD5）。", "Each file's hash (SHA-256 / SHA-1 / MD5).",
-            listOf(ArgSpec("algorithm", "演算法", "Algorithm", "choice", "SHA-256", listOf("SHA-256", "SHA-1", "MD5")))) { st ->
+        FlowAction("file.hash", "計算雜湊值", "Hash", CAT_FILES, "每個檔案的雜湊值（SHA-256 / SHA-1 / MD5），小寫十六進位；可只要雜湊值（拿來比對）或附上檔名。",
+            "Each file's hash (SHA-256 / SHA-1 / MD5) in lowercase hex: the hash alone (for comparing) or with the file name.",
+            listOf(ArgSpec("algorithm", "演算法", "Algorithm", "choice", "SHA-256", listOf("SHA-256", "SHA-1", "MD5")),
+                ArgSpec("format", "結果", "Result", "choice", "hash", listOf("hash", "hash+name")))) { st ->
             val algo = arg(st, "algorithm")
+            val withName = arg(st, "format") == "hash+name"
             items = files().filter { File(it).isFile }.map { p ->
                 val md = java.security.MessageDigest.getInstance(algo)
                 File(p).inputStream().use { inp -> val buf = ByteArray(1 shl 20); while (true) { val n = inp.read(buf); if (n < 0) break; md.update(buf, 0, n) } }
-                md.digest().joinToString("") { "%02x".format(it) } + "  " + File(p).name
+                md.digest().joinToString("") { "%02x".format(it) } + if (withName) "  " + File(p).name else ""
             }
         },
         FlowAction("file.info", "檔案資訊", "File info", CAT_FILES, "每個項目的名稱、大小與修改日期（以 Tab 分隔）。", "Name, size and date of each item (tab separated).") {
@@ -801,7 +804,7 @@ object FlowStore {
                 ), builtIn = true),
             Flow("builtin:hash", if (zh) "計算 SHA-256 並複製" else "Copy SHA-256 hashes",
                 if (zh) "計算選取檔案的 SHA-256，複製到剪貼簿。" else "Hashes the selected files and copies the list.", "fingerprint",
-                steps = listOf(FlowStep("files.selected"), FlowStep("file.hash"), FlowStep("text.join"), FlowStep("clipboard.set"),
+                steps = listOf(FlowStep("files.selected"), FlowStep("file.hash", mapOf("format" to "hash+name")), FlowStep("text.join"), FlowStep("clipboard.set"),
                     FlowStep("notify", mapOf("title" to "SHA-256", "text" to if (zh) "已複製到剪貼簿" else "Copied to the clipboard"))), builtIn = true),
             Flow("builtin:webp", if (zh) "圖片縮小並轉成 WebP" else "Shrink pictures to WebP",
                 if (zh) "最長邊縮到 1920 像素，轉成 WebP 存到「webp」資料夾。" else "Longest side 1920 px, saved as WebP in a webp folder.", "image",

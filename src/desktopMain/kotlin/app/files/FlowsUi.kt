@@ -180,7 +180,8 @@ private fun FlowEditor(f: Flow, onChange: (Flow) -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 PlainField(prm.id, { v -> onChange(f.copy(params = f.params.toMutableList().also { it[i] = FlowParam(v, prm.label, prm.type, prm.default) })) }, Modifier.width(90.dp), placeholder = "id")
                 PlainField(prm.label, { v -> onChange(f.copy(params = f.params.toMutableList().also { it[i] = FlowParam(prm.id, v, prm.type, prm.default) })) }, Modifier.width(160.dp), placeholder = S.flowLabel)
-                PlainField(prm.default, { v -> onChange(f.copy(params = f.params.toMutableList().also { it[i] = FlowParam(prm.id, prm.label, prm.type, v) })) }, Modifier.weight(1f), placeholder = S.flowDefault)
+                // Defaults may use tokens like {clipboard} or {date:…} (not variables: nothing has run yet).
+                TokenField(prm.default, { v -> onChange(f.copy(params = f.params.toMutableList().also { it[i] = FlowParam(prm.id, prm.label, prm.type, v) })) }, Modifier.weight(1f), placeholder = S.flowDefault)
                 IconBtn(Icons.Outlined.Close, S.remove, { onChange(f.copy(params = f.params.filterIndexed { j, _ -> j != i })) }, width = 28.dp, height = 26.dp, iconSize = 13.dp)
             }
         }
@@ -189,24 +190,21 @@ private fun FlowEditor(f: Flow, onChange: (Flow) -> Unit) {
         }
         GroupTitle(S.flowSteps)
         val start = FlowActions.startType(f.accepts)
-        StepList(f.steps, 0, start, start, flowVariables(f.steps)) { onChange(f.copy(steps = it)) }
+        CompositionLocalProvider(LocalFlowFields provides FlowFieldContext(f.params.map { it.id }.filter { it.isNotBlank() }, emptyList())) {
+            StepList(f.steps, 0, start, start, emptyList()) { onChange(f.copy(steps = it)) }
+        }
     }
 }
 
-/** Every variable name a shortcut sets (saveAs, var.set), for the input pickers. */
-private fun flowVariables(steps: List<FlowStep>): List<String> = steps.flatMap { st ->
-    val own = listOfNotNull(st.saveAs.trim().takeIf { it.isNotEmpty() }, if (st.action == "var.set") (st.args["name"] ?: "saved").toString() else null)
-    @Suppress("UNCHECKED_CAST") val inner = st.args.values.filterIsInstance<List<*>>().filter { l -> l.all { it is FlowStep } }.flatMap { flowVariables(it as List<FlowStep>) }
-    own + inner
-}.distinct()
-
 @Composable
-private fun StepList(steps: List<FlowStep>, depth: Int, start: VType, shortcutType: VType, vars: List<String>, onChange: (List<FlowStep>) -> Unit) {
+private fun StepList(steps: List<FlowStep>, depth: Int, start: VType, shortcutType: VType, varsBefore: List<String>, onChange: (List<FlowStep>) -> Unit) {
     val p = LocalPalette.current
     val types = remember(steps, start, shortcutType) { FlowActions.typeFlow(steps, start, shortcutType) }
     Column(Modifier.padding(start = (depth * 18).dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         steps.forEachIndexed { i, st ->
-            StepCard(st, i, steps.size, depth, types.getOrNull(i), shortcutType, vars,
+            // Variables this step can use: those set before it (here and in the steps around this list).
+            val here = (varsBefore + FlowTokens.varsSetBy(steps.take(i))).distinct()
+            StepCard(st, i, steps.size, depth, types.getOrNull(i), shortcutType, here,
                 onChange = { n -> onChange(steps.toMutableList().also { it[i] = n }) },
                 onMove = { d -> val j = i + d; if (j in steps.indices) onChange(steps.toMutableList().also { val x = it[i]; it[i] = it[j]; it[j] = x }) },
                 onDelete = { onChange(steps.filterIndexed { j, _ -> j != i }) })
@@ -294,6 +292,8 @@ private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, type: Flo
     val p = LocalPalette.current
     val a = FlowActions.byId[st.action]
     val warn = type?.warning
+    val outer = LocalFlowFields.current
+    CompositionLocalProvider(LocalFlowFields provides FlowFieldContext(outer.params, vars)) {
     Column(Modifier.fillMaxWidth().background(p.card, RoundedCornerShape(6.dp)).border(1.dp, if (a == null || warn != null) p.danger else p.cardStroke, RoundedCornerShape(6.dp)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -316,14 +316,14 @@ private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, type: Flo
             if (g.type == "steps") {
                 @Suppress("UNCHECKED_CAST") val inner = (cur as? List<FlowStep>).orEmpty()
                 T(g.label, size = 12.sp, color = p.textSecondary)
-                StepList(inner, depth + 1, type?.incoming ?: VType.Anything, shortcutType, vars) { set(it) }
+                StepList(inner, depth + 1, type?.incoming ?: VType.Anything, shortcutType, vars + FlowTokens.insideOf[st.action].orEmpty()) { set(it) }
                 return@forEach
             }
             Row(verticalAlignment = if (g.type == "multiline") Alignment.Top else Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 T(g.label, Modifier.width(150.dp), size = 12.sp, color = p.textSecondary, maxLines = 2)
                 when (g.type) {
                     "bool" -> FlowCheck(cur == true || cur.toString() == "true", "") { set(!(cur == true || cur.toString() == "true")) }
-                    "multiline" -> MultiField(cur.toString(), { set(it) }, Modifier.weight(1f).heightIn(min = 70.dp), mono = st.action == "shell.run")
+                    "multiline" -> TokenField(cur.toString(), { set(it) }, Modifier.weight(1f), multiline = true, mono = st.action == "shell.run")
                     "choice" -> {
                         var open by remember { mutableStateOf(false) }
                         Box {
@@ -341,7 +341,7 @@ private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, type: Flo
                         val old = (st.args["args"] ?: a.args.firstOrNull { it.id == "args" }?.default ?: "").toString()
                         onChange(st.with(args = st.args + ("app" to cur.toString()) + ("args" to (if (old.isBlank() || old == "{input}") opt else "$old $opt"))))
                     }, Modifier.weight(1f))
-                    else -> PlainField(cur.toString(), { set(it) }, Modifier.weight(1f))
+                    else -> TokenField(cur.toString(), { set(it) }, Modifier.weight(1f))
                 }
             }
         }
@@ -356,6 +356,8 @@ private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, type: Flo
             T(S.flowSaveAs, size = 12.sp, color = p.textSecondary)
             PlainField(st.saveAs, { onChange(st.with(saveAs = it.filter { c -> c.isLetterOrDigit() || c == '_' || c == '-' || c == '.' })) }, Modifier.width(140.dp), placeholder = "{var.…}")
         }
+        if (st.saveAs.isNotBlank()) T(tr("Later steps can use {var.${st.saveAs}}", "之後的步驟可以用 {var.${st.saveAs}}"), Modifier.padding(start = 158.dp), size = 11.sp, color = p.textTertiary)
+    }
     }
 }
 

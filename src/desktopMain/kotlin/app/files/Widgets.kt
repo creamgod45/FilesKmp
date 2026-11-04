@@ -209,6 +209,12 @@ class MenuEntry(
     val hotkey: String = "",
     val enabled: Boolean = true,
     val separatorBefore: Boolean = false,
+    /** A submenu: choosing the entry shows these in the same menu (with a way back). */
+    val children: List<MenuEntry> = emptyList(),
+    /** A picture instead of [icon] (Windows' own menu items). */
+    val image: androidx.compose.ui.graphics.ImageBitmap? = null,
+    /** Entries that take a moment to get (Windows' menu): shown in place once loaded. */
+    val loader: (suspend () -> List<MenuEntry>)? = null,
     val action: () -> Unit = {},
 )
 

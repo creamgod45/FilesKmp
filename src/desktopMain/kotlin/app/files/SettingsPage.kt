@@ -29,6 +29,7 @@ private enum class SettingsSection(val label: () -> String, val icon: ImageVecto
     Storage({ S.storage }, Icons.Outlined.Storage),
     Search({ S.searchSettings }, Icons.Outlined.Search),
     Shortcuts({ S.shortcuts }, Icons.Outlined.Keyboard),
+    Errors({ tr("Error reports", "錯誤報告") }, Icons.Outlined.BugReport),
     About({ S.about }, Icons.Outlined.Info),
 }
 
@@ -125,10 +126,12 @@ fun SettingsPage(s: AppState) {
                             ToggleCard(S.calcFolderSizes, s.calculateFolderSizes) { s.calculateFolderSizes = it }
                             ToggleCard(S.showCheckboxes, s.showCheckboxes) { s.showCheckboxes = it }
                             ToggleCard(S.confirmDelete, s.confirmDeleteAlways) { s.confirmDeleteAlways = it }
+                            ShellMenuSettings(s)
                         }
                         SettingsSection.Tags -> TagSettings(s)
                         SettingsSection.Storage -> StorageSettings(s)
                         SettingsSection.Shortcuts -> KeymapEditor(s)
+                        SettingsSection.Errors -> ErrorReportsSettings(s)
                         SettingsSection.Search -> SearchSettings(s)
                         SettingsSection.About -> {
                             SettingCard("FilesKmp ${AppInfo.version}") {
@@ -322,17 +325,23 @@ private fun BackgroundPictures(s: AppState) {
             }
         }
     }
-    // Switching
-    ChoiceCard(S.bgSwitchMode, BgMode.entries.map { it to it.text }, s.bgMode) { s.bgMode = it }
-    if (s.bgMode == BgMode.Timer) SettingCard(S.bgInterval) {
+    // When to change (any of them together) and in which order.
+    if (s.bgImages.size < 2) T(tr("Add two or more pictures to have them change.", "加入兩張以上的圖片，就能設定自動切換。"), Modifier.padding(start = 2.dp, top = 6.dp), size = 12.sp, color = p.textSecondary)
+    else {
+    T(tr("When to change the picture (any of these together):", "何時切換圖片（可以同時開啟多個）："), Modifier.padding(start = 2.dp, top = 8.dp), size = 13.sp, color = p.textSecondary)
+    ToggleCard(tr("Each time Files opens", "每次開啟 Files 時"), s.bgOnStart) { s.bgOnStart = it }
+    ToggleCard(tr("On a timer", "定時切換"), s.bgOnTimer) { s.bgOnTimer = it }
+    if (s.bgOnTimer) SettingCard(S.bgInterval) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             IconBtn(Icons.Outlined.Remove, "-", { s.bgIntervalMin = (s.bgIntervalMin - if (s.bgIntervalMin > 10) 5 else 1).coerceIn(1, 1440) })
             T(S.minutes(s.bgIntervalMin), Modifier.width(72.dp))
             IconBtn(Icons.Outlined.Add, "+", { s.bgIntervalMin = (s.bgIntervalMin + if (s.bgIntervalMin >= 10) 5 else 1).coerceIn(1, 1440) })
         }
     }
-    if (s.bgMode != BgMode.Single) ToggleCard(S.bgShuffle, s.bgShuffle) { s.bgShuffle = it }
-    if (s.bgImages.size > 1) SettingCard(S.nextPicture) { DialogButton(S.nextPicture, primary = false) { s.nextBackground() } }
+    ToggleCard(tr("When the window comes back after being minimized", "視窗從最小化還原時"), s.bgOnRestore) { s.bgOnRestore = it }
+    ChoiceCard(tr("Order", "順序"), listOf(false to tr("List order", "依清單順序"), true to tr("Random (each once before any repeats)", "隨機（每張都輪過一次才重複）")), s.bgShuffle) { s.bgShuffle = it }
+    SettingCard(S.nextPicture) { DialogButton(S.nextPicture, primary = false) { s.nextBackground() } }
+    }
     // Per-folder pictures
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(p.card).border(1.dp, p.cardStroke, RoundedCornerShape(6.dp)).padding(12.dp),

@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "app.files"
-version = providers.gradleProperty("appVersion").getOrElse("1.1.0")
+version = providers.gradleProperty("appVersion").getOrElse("1.2.0")
 val windowsArch = when (System.getProperty("os.arch").lowercase()) {
     "amd64", "x86_64" -> "x64"
     "aarch64", "arm64" -> "arm64"

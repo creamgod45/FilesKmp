@@ -17,6 +17,8 @@ object AppDirs {
     val cache: File = File(File(env("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir"), "FilesKmp"), "Cache")
     /** Per-machine records that can't be rebuilt (disk usage history): %LOCALAPPDATA%\FilesKmp\History. */
     val history: File = System.getProperty("fileskmp.history")?.let { File(it) } ?: File(cache.parentFile, "History") // property: tests only
+    /** 錯誤報告: error reports, kept on this computer only (ErrorLog.kt). */
+    val logs: File = File(cache.parentFile, "Logs")
 
     /** Call first thing in main(), before Compose loads Skia (which otherwise unpacks into %USERPROFILE%\.skiko). */
     fun init() {

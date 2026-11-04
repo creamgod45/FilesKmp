@@ -36,6 +36,32 @@ class Release(val version: String, val features: List<Feature>)
 
 /** What each version brought, newest first. Add the next version at the top. */
 val releases: List<Release> = listOf(
+    Release("1.2.0", listOf(
+        Feature(Icons.Outlined.Menu, "Windows' own right-click menu" to "Windows 系統右鍵選單",
+            ("Right-click shows the Windows 11 menu's commands (from apps like VS Code, Terminal, PowerToys) under the app's own, and “Show more options” " +
+                "opens the full classic menu. If this Windows' new menu can't be read, the classic one is used instead.") to
+                ("右鍵選單下方會顯示 Windows 11 新版選單的指令（VS Code、終端機、PowerToys 等 App 加入的），「顯示更多選項」則是完整的舊版選單。" +
+                    "讀不到這台 Windows 的新版選單時，會自動改用舊版選單。"),
+            open = { it.settingsOpen = true }),
+        Feature(Icons.Outlined.Wallpaper, "Background pictures: combine when they change" to "背景圖片：切換時機可以同時選",
+            ("Change at each start, on a timer and when the window comes back from being minimized — any of them together. " +
+                "Random order now shows every picture once before repeating.") to
+                ("每次開啟時、定時、以及視窗從最小化還原時，可以任意同時開啟；隨機順序會讓每張圖片都輪過一次才重複。")),
+        Feature(Icons.Outlined.BugReport, "Error reports, kept on your computer" to "錯誤報告（只存在你的電腦）",
+            ("Errors are recorded with what led to them, so problems can be found and fixed. Nothing is uploaded: " +
+                "Settings › Error reports shows them, and can export a ZIP for you to share.") to
+                ("發生錯誤時會記錄錯誤內容與之前的操作，方便找出問題；不會上傳。可在「設定 › 錯誤報告」查看，並匯出 ZIP 自行提供。"),
+            open = { it.settingsSectionRequest = "Errors"; it.settingsOpen = true }),
+        Feature(Icons.Outlined.DataObject, "Shortcuts: tokens and variables as you type" to "捷徑：輸入時提示標記與變數",
+            ("Type { in a step's text to pick from the variables earlier steps set, the parameters and every token, each explained. " +
+                "Unknown variables, parameters or tokens, and a missing }, are pointed out under the field.") to
+                ("在步驟的文字欄輸入 {，就會列出前面步驟設定的變數、參數與所有標記，並附說明；用了不存在的變數、參數或標記，或少了 }，欄位下方會直接提醒。"),
+            key = "OpenFlows", open = { it.flowsOpen = true }),
+        Feature(Icons.Outlined.Fingerprint, "Shortcuts: comparing hashes works" to "捷徑：雜湊值比對修正",
+            ("“Hash” now gives the hash alone by default (choose “hash+name” for the old list), and “equals” ignores spaces " +
+                "and line breaks around the text, such as the one a copied hash ends with.") to
+                ("「計算雜湊值」預設只輸出雜湊值（要附檔名請選 hash+name）；「相等」比對會忽略前後的空白與換行（例如複製來的雜湊值結尾的換行）。")),
+    )),
     Release("1.1.0", listOf(
         Feature(Icons.Outlined.Keyboard, "Your own keyboard shortcuts" to "自訂鍵盤快速鍵",
             ("Give any command one key, several, or none. Keys given to two commands are marked, with a one-click fix. " +

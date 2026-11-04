@@ -46,6 +46,10 @@ import androidx.compose.ui.layout.boundsInRoot
 
 fun main(args: Array<String>) {
     AppDirs.init()
+    // 錯誤報告: every uncaught error is written to %LOCALAPPDATA%\FilesKmp\Logs (this computer only).
+    ErrorLog.install()
+    // Tests and screenshots don't add to the person's error reports (except the error-report test itself).
+    if (args.any { it.startsWith("--test") || it == "--screenshot" || it.startsWith("--bench") } && "--test-errorlog" !in args) ErrorLog.enabled = false
     // Test and screenshot runs never write settings, tags or the toolbar (session, remembered servers, reminders, …).
     if ("--test-titlebar" in args || "--screenshot" in args) Prefs.readOnly = true
     val shotIdx = args.indexOf("--screenshot")
@@ -481,6 +485,11 @@ fun main(args: Array<String>) {
         exitProcess(0)
     }
     if ("--test-custom-persist" in args) { customPersistTest(write = "write" in args); exitProcess(0) }
+    args.indexOf("--test-shell-menu").takeIf { it >= 0 && it + 1 < args.size }?.let { shellMenuTest(File(args[it + 1])); exitProcess(0) }
+    args.indexOf("--test-errorlog").takeIf { it >= 0 && it + 1 < args.size }?.let { errorLogTest(File(args[it + 1])); exitProcess(0) }
+    args.indexOf("--test-background").takeIf { it >= 0 && it + 1 < args.size }?.let { backgroundTest(File(args[it + 1])); exitProcess(0) }
+    args.indexOf("--test-sha-flow").takeIf { it >= 0 && it + 2 < args.size }?.let { shaFlowTest(File(args[it + 1]), File(args[it + 2])); exitProcess(0) }
+    if ("--test-tokens" in args) { tokensTest(); exitProcess(0) }
     args.indexOf("--test-keymap").takeIf { it >= 0 && it + 1 < args.size }?.let { keymapTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-update-fresh").takeIf { it >= 0 && it + 1 < args.size }?.let { updateFreshTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-custom-command").takeIf { it >= 0 && it + 1 < args.size }?.let { customCommandTest(File(args[it + 1])); exitProcess(0) }
@@ -503,9 +512,18 @@ fun main(args: Array<String>) {
             AppState(scope).also { s ->
                 s.translucentActive = translucent; startPath?.let { s.navigate(File(it).absolutePath) }
                 // After an update (or on a new install): carry settings over and show 更新資訊 (Updates.kt).
-                runCatching { Updates.onStart(s) }.onFailure { it.printStackTrace() }.getOrNull()?.let { r -> s.updateReport = r; s.openUpdates() }
+                runCatching { Updates.onStart(s) }.onFailure { ErrorLog.record(it, "update check at start") }.getOrNull()?.let { r -> s.updateReport = r; s.openUpdates() }
+                if (ErrorLog.takeLastCrash() != null) s.toast = tr("Files closed unexpectedly last time. The error was recorded in Settings › Error reports.",
+                    "Files 上次意外結束，錯誤已記錄在「設定 › 錯誤報告」。")
+                // The Windows 11 menu's app commands, read in the background for the first right-click.
+                if (s.shellMenuMode == ShellMenuMode.Auto || s.shellMenuMode == ShellMenuMode.Modern) ModernHandlers.preload()
             }
         }
+        // An error while drawing the window ends the app: record it first.
+        @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+        CompositionLocalProvider(androidx.compose.ui.window.LocalWindowExceptionHandlerFactory provides androidx.compose.ui.window.WindowExceptionHandlerFactory {
+            androidx.compose.ui.window.WindowExceptionHandler { e -> ErrorLog.record(e, "window", fatal = true); throw e }
+        }) {
         val windowState = rememberWindowState(size = DpSize(M.WINDOW_W.dp, M.WINDOW_H.dp), position = WindowPosition(Alignment.Center))
         Window(
             onCloseRequest = ::exitApplication,
@@ -523,6 +541,12 @@ fun main(args: Array<String>) {
                 if (translucent) {
                     state.applyWindowBlur = { WindowBlur.set(window, state.blurBehind) }
                     state.applyWindowBlur?.invoke()
+                }
+                ShellMenu.ownerHwnd = WindowCorners.hwnd(window) ?: 0L
+                // Back from the taskbar: the background may change (設定 › 外觀 › 視窗從最小化還原時).
+                launch {
+                    var wasMinimized = windowState.isMinimized
+                    snapshotFlow { windowState.isMinimized }.collect { m -> if (wasMinimized && !m) state.onWindowRestored(); wasMinimized = m }
                 }
                 // "全螢幕" (F11) toggles between full screen and the normal window.
                 state.toggleFullScreen = {
@@ -545,6 +569,7 @@ fun main(args: Array<String>) {
                     if (windowState.placement != WindowPlacement.Maximized) ResizeEdges(windowState)
                 }
             }
+        }
         }
     }
 }
@@ -676,28 +701,6 @@ fun Root(s: AppState, systemDark: Boolean, accent: androidx.compose.ui.graphics.
                             T(msg)
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ContextMenuPopup(req: MenuRequest, onDismiss: () -> Unit) {
-    val p = LocalPalette.current
-    Popup(
-        offset = IntOffset(req.at.x.toInt(), req.at.y.toInt()),
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true),
-    ) {
-        Column(
-            Modifier.width(IntrinsicSize.Max).widthIn(min = 240.dp).shadow8()
-                .background(p.flyout, RoundedCornerShape(8.dp)).border(1.dp, p.controlStroke, RoundedCornerShape(8.dp)).padding(4.dp)
-        ) {
-            req.entries.forEach { e ->
-                if (e.separatorBefore) FlyoutSeparator()
-                FlyoutItem(e.label, e.icon, e.hotkey, enabled = e.enabled, iconTint = if (e.icon == Icons.Filled.Folder) p.folder else null) {
-                    onDismiss(); e.action()
                 }
             }
         }

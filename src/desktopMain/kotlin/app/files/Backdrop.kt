@@ -56,15 +56,6 @@ enum class ImageAlign { TopLeft, Top, Center, Bottom, BottomRight;
     }
 }
 
-/** How the background picture changes when several are chosen. */
-enum class BgMode { Single, Timer, OnStartup;
-    val text: String get() = when (this) {
-        Single -> if (S.zh) "固定一張" else "One picture"
-        Timer -> if (S.zh) "定時切換" else "Change on a timer"
-        OnStartup -> if (S.zh) "每次開啟時切換" else "Change each time the app opens"
-    }
-}
-
 /** "Show this picture in this folder" (optionally its subfolders too). */
 data class BgRule(val folder: String, val image: String, val includeSubfolders: Boolean)
 

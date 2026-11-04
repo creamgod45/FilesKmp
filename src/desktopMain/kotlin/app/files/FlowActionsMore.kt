@@ -37,8 +37,9 @@ internal object FlowCompare {
         fun cmp(): Int = if (x != null && y != null) x.compareTo(y) else a.compareTo(b, ignoreCase)
         return when (op) {
             "contains" -> a.contains(b, ignoreCase); "notContains" -> !a.contains(b, ignoreCase)
-            "equals", "==" -> if (x != null && y != null) x == y else a.equals(b, ignoreCase)
-            "notEquals", "!=" -> !(if (x != null && y != null) x == y else a.equals(b, ignoreCase))
+            // Spaces and line breaks around the text don't count (a hash copied from a web page often ends in one).
+            "equals", "==" -> if (x != null && y != null) x == y else a.trim().equals(b.trim(), ignoreCase)
+            "notEquals", "!=" -> !(if (x != null && y != null) x == y else a.trim().equals(b.trim(), ignoreCase))
             "startsWith" -> a.startsWith(b, ignoreCase); "endsWith" -> a.endsWith(b, ignoreCase)
             "matches" -> Regex(b, if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()).containsMatchIn(a)
             "isEmpty" -> a.isBlank(); "notEmpty" -> a.isNotBlank()
