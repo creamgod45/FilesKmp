@@ -40,6 +40,12 @@ object NetworkFs {
     /** `\\wsl.localhost` / `\\wsl$`: WSL's own file system (not SMB); its "shares" are the distributions. */
     fun isWslHost(host: String) = host.equals("wsl.localhost", true) || host.equals("wsl$", true)
 
+    /**
+     * A plain host name or IPv4 address (letters, digits, '.', '-', '_', and a trailing '$' as in wsl$).
+     * Anything else is never remembered or handed to a shell.
+     */
+    fun isValidHost(host: String) = Regex("""^[A-Za-z0-9][A-Za-z0-9._-]{0,252}\$?$""").matches(host)
+
     /** `\\server\share\dir` → `server`. */
     fun hostOf(path: String) = path.removePrefix("\\\\").substringBefore('\\').substringBefore('/')
 
@@ -72,10 +78,10 @@ object NetworkFs {
     private const val SEP = "\u0001"
 
     // WSL is never a 網路 server (it has its own sidebar section), even if an older build saved it.
-    fun rememberedServers(): List<String> = Prefs.str("netServers", "").split(SEP).filter { it.isNotBlank() && !isWslHost(it) }
+    fun rememberedServers(): List<String> = Prefs.str("netServers", "").split(SEP).filter { isValidHost(it) && !isWslHost(it) }
 
     fun remember(host: String) {
-        if (isWslHost(host)) return
+        if (isWslHost(host) || !isValidHost(host)) return
         val list = (listOf(host) + rememberedServers().filter { !it.equals(host, true) }).take(20)
         Prefs.put(mapOf("netServers" to list.joinToString(SEP)))
     }
@@ -209,9 +215,12 @@ object NetworkFs {
 
     /** The folders the Windows Shell shows under `\\host` (null when it can't open the host). */
     private fun shellChildren(host: String): List<FileItem>? {
-        val script = "\$f = (New-Object -ComObject Shell.Application).NameSpace('\\\\${host.replace("'", "''")}'); " +
+        if (!isValidHost(host)) return null
+        // The host reaches PowerShell as an environment variable and is never part of the script text
+        // (quoting alone isn't enough: PowerShell also treats the Unicode quotes ‘ ’ ‚ ‛ as quotes).
+        val script = "\$f = (New-Object -ComObject Shell.Application).NameSpace('\\\\' + \$env:FILESKMP_HOST); " +
             "if (\$f) { 'OK'; \$f.Items() | Where-Object { \$_.IsFolder -and \$_.Path -like '\\\\*' } | ForEach-Object { \$_.Name + [char]9 + \$_.Path } }"
-        val out = Fs.powershell(script, M.NET_SHARE_TIMEOUT_MS)?.lines()?.map { it.trim() } ?: return null
+        val out = Fs.powershell(script, M.NET_SHARE_TIMEOUT_MS, mapOf("FILESKMP_HOST" to host))?.lines()?.map { it.trim() } ?: return null
         if (out.firstOrNull() != "OK") return null
         return out.drop(1).mapNotNull { line ->
             val parts = line.split('\t')
@@ -242,21 +251,27 @@ object NetworkFs {
         val buf = arena.allocate(ValueLayout.ADDRESS)
         val read = arena.allocate(ValueLayout.JAVA_INT)
         val total = arena.allocate(ValueLayout.JAVA_INT)
-        val resume = arena.allocate(ValueLayout.JAVA_INT)
-        val status = enum.invokeWithArguments(server, 1, buf, -1, read, total, resume) as Int
-        if (status != 0 && status != 234) throw IllegalStateException(netError(status)) // 234 = ERROR_MORE_DATA
-        val base = buf.get(ValueLayout.ADDRESS, 0)
-        try {
-            val n = read.get(ValueLayout.JAVA_INT, 0)
-            // SHARE_INFO_1 on x64: LPWSTR shi1_netname; DWORD shi1_type; (pad); LPWSTR shi1_remark = 24 bytes
-            val entries = base.reinterpret(24L * n)
-            (0 until n).map { i ->
-                val name = entries.get(ValueLayout.ADDRESS, i * 24L).reinterpret(Long.MAX_VALUE).getString(0, Charsets.UTF_16LE)
-                Share(name, entries.get(ValueLayout.JAVA_INT, i * 24L + 8))
+        val resume = arena.allocate(ValueLayout.JAVA_INT).also { it.set(ValueLayout.JAVA_INT, 0, 0) }
+        val out = ArrayList<Share>()
+        // MAX_PREFERRED_LENGTH (-1) normally returns everything at once; ERROR_MORE_DATA (234) is still
+        // followed with the resume handle, so a server with many shares is never cut short.
+        do {
+            val status = enum.invokeWithArguments(server, 1, buf, -1, read, total, resume) as Int
+            if (status != 0 && status != 234) throw IllegalStateException(netError(status))
+            val base = buf.get(ValueLayout.ADDRESS, 0)
+            try {
+                val n = read.get(ValueLayout.JAVA_INT, 0)
+                // SHARE_INFO_1 on x64: LPWSTR shi1_netname; DWORD shi1_type; (pad); LPWSTR shi1_remark = 24 bytes
+                val entries = base.reinterpret(24L * n)
+                for (i in 0 until n) {
+                    val name = entries.get(ValueLayout.ADDRESS, i * 24L).reinterpret(Long.MAX_VALUE).getString(0, Charsets.UTF_16LE)
+                    out += Share(name, entries.get(ValueLayout.JAVA_INT, i * 24L + 8))
+                }
+            } finally {
+                if (base != MemorySegment.NULL) free.invokeWithArguments(base)
             }
-        } finally {
-            if (base != MemorySegment.NULL) free.invokeWithArguments(base)
-        }
+        } while (status == 234 && read.get(ValueLayout.JAVA_INT, 0) > 0)
+        out
     }
 
     private fun netError(code: Int) = when (code) {

@@ -106,6 +106,14 @@ fun main(args: Array<String>) {
         exitProcess(0)
     }
     if ("--test-titlebar" in args) { titleBarTest(); exitProcess(0) }
+    // The way NetworkFs lists a non-SMB host: the host passed as an environment variable.
+    if ("--test-ps-env" in args) {
+        val out = Fs.powershell("\$f = (New-Object -ComObject Shell.Application).NameSpace('\\\\' + \$env:FILESKMP_HOST); if (\$f) { \$f.Items() | ForEach-Object { \$_.Path } }",
+            10_000, mapOf("FILESKMP_HOST" to "wsl.localhost"))
+        println("PS ENV TEST: " + out?.lines()?.filter { it.isNotBlank() } + " valid(wsl$)=" + NetworkFs.isValidHost("wsl$") +
+            " valid(evil)=" + NetworkFs.isValidHost("a‘;calc;‘"))
+        exitProcess(0)
+    }
     if ("--test-custom-persist" in args) { customPersistTest(write = "write" in args); exitProcess(0) }
     args.indexOf("--test-custom-command").takeIf { it >= 0 && it + 1 < args.size }?.let { customCommandTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-safe-cleaner").takeIf { it >= 0 && it + 1 < args.size }?.let { safeCleanerTest(File(args[it + 1])); exitProcess(0) }
@@ -529,11 +537,6 @@ suspend fun toolbarDragTest(scene: ImageComposeScene, s: AppState) {
 }
 
 /**
- * Screenshot-mode regression test: in 自訂工具列, remove rows from the middle of 新增選項 with ×.
- * The preview toolbar below used to crash with "Index n out of bounds for length n".
- * Nothing is saved: the dialog stays open for the picture and the run then exits.
- */
-/**
  * Screenshot-mode test for tab dragging: drag a second tab onto the right edge of the file area
  * (= split side by side), print the result, then hold a drag over the bottom edge so the picture
  * shows the 水平分割 preview.
@@ -556,15 +559,22 @@ suspend fun tabDragTest(scene: ImageComposeScene, s: AppState) {
     val second = s.tabs.last()
     val before = s.tabs.size
     val area = s.paneAreaRect
-    drag(s.tabRects[second]!!.center, androidx.compose.ui.geometry.Offset(area.right - 30f, area.center.y), release = true)
+    val from = s.tabRects[second]?.center ?: run { println("TAB DRAG TEST skipped: tab not laid out"); return }
+    drag(from, androidx.compose.ui.geometry.Offset(area.right - 30f, area.center.y), release = true)
     val ct = s.currentTab
     println("TAB DRAG TEST tabs $before -> ${s.tabs.size} split=${ct.right != null} arrangement=${ct.arrangement} " +
         "left=${ct.left.location} right=${ct.right?.location} (expect one tab fewer, split=true Vertical, right = home folder)")
     repeat(10) { frame() }
     // Hold a second drag over the bottom edge for the picture.
-    drag(s.tabRects[s.tabs[0]]!!.center, androidx.compose.ui.geometry.Offset(area.center.x, area.bottom - 30f), release = false)
+    val held = s.tabRects[s.tabs[0]]?.center ?: return
+    drag(held, androidx.compose.ui.geometry.Offset(area.center.x, area.bottom - 30f), release = false)
 }
 
+/**
+ * Screenshot-mode regression test: in 自訂工具列, remove rows from the middle of 新增選項 with ×.
+ * The preview toolbar below used to crash with "Index n out of bounds for length n".
+ * Nothing is saved: the dialog stays open for the picture and the run then exits.
+ */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 suspend fun toolbarDeleteTest(scene: ImageComposeScene, s: AppState) {
     val P = androidx.compose.ui.input.pointer.PointerEventType

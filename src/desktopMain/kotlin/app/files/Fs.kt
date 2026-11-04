@@ -178,13 +178,14 @@ object Fs {
     }
 
     /** Runs PowerShell once and returns its UTF-8 output, or null after the time limit. */
-    fun powershell(script: String, timeoutMs: Long): String? {
+    /** Runs [script]; [env] values reach it as $env:NAME, so data never has to be quoted into the script. */
+    fun powershell(script: String, timeoutMs: Long, env: Map<String, String> = emptyMap()): String? {
         return try {
             val full = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $script"
             // -EncodedCommand avoids every quoting problem with quotes and tabs in the script.
             val encoded = java.util.Base64.getEncoder().encodeToString(full.toByteArray(StandardCharsets.UTF_16LE))
             val p = ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
-                .redirectErrorStream(false).start()
+                .redirectErrorStream(false).also { it.environment().putAll(env) }.start()
             p.outputStream.close()
             val text = StringBuilder()
             val t = Thread.ofVirtual().start {
