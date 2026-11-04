@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -26,6 +27,8 @@ private enum class SettingsSection(val label: () -> String, val icon: ImageVecto
     Folders({ S.filesFolders }, Icons.Outlined.Folder),
     Tags({ S.tagsSettings }, Icons.Outlined.LocalOffer),
     Storage({ S.storage }, Icons.Outlined.Storage),
+    Search({ S.searchSettings }, Icons.Outlined.Search),
+    Shortcuts({ S.shortcuts }, Icons.Outlined.Keyboard),
     About({ S.about }, Icons.Outlined.Info),
 }
 
@@ -71,6 +74,11 @@ fun SettingsPage(s: AppState) {
                         SettingsSection.Appearance -> {
                             ChoiceCard(S.theme, listOf(ThemeMode.System to S.themeSystem, ThemeMode.Light to S.themeLight, ThemeMode.Dark to S.themeDark), s.theme) { s.theme = it }
                             ChoiceCard(S.backdropMaterial, Backdrop.entries.map { it to it.text }, s.backdrop) { s.backdrop = it }
+                            ChoiceCard(S.cardShadow, ShadowLevel.entries.map { it to it.text }, s.cardShadow) { s.cardShadow = it }
+                            GroupTitle(S.translucentWindow)
+                            TranslucentSettings(s)
+                            GroupTitle(S.gradientBackground)
+                            GradientSettings(s)
                             GroupTitle(S.backgroundColor)
                             TintGrid(s)
                             GroupTitle(S.backgroundImage)
@@ -117,6 +125,8 @@ fun SettingsPage(s: AppState) {
                         }
                         SettingsSection.Tags -> TagSettings(s)
                         SettingsSection.Storage -> StorageSettings(s)
+                        SettingsSection.Shortcuts -> ShortcutList()
+                        SettingsSection.Search -> SearchSettings(s)
                         SettingsSection.About -> {
                             SettingCard("FilesKmp 1.0") { }
                             T(S.aboutText, Modifier.padding(8.dp), color = p.textSecondary, maxLines = 6)
@@ -125,6 +135,85 @@ fun SettingsPage(s: AppState) {
                     }
                 }
             }
+        }
+    }
+}
+
+/** 搜尋: the instant-search index (folders, status, rebuild) and the query syntax. */
+@Composable
+private fun SearchSettings(s: AppState) {
+    val p = LocalPalette.current
+    ToggleCard(S.searchRegexMode, s.searchRegex) { s.searchRegex = it }
+    ToggleCard(S.searchCaseMode, s.searchCase) { s.searchCase = it }
+    GroupTitle(S.searchIndex)
+    T(S.searchIndexHint, Modifier.padding(horizontal = 8.dp, vertical = 4.dp), size = 12.sp, color = p.textSecondary, maxLines = 4)
+    s.indexRoots.toList().forEach { root ->
+        SettingCard(root) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val st = s.indexStatus.entries.firstOrNull { it.key.equals(root, true) }?.value
+                T(st?.let { S.indexState(it.first, it.second) } ?: S.loading, size = 12.sp, color = p.textSecondary)
+                DialogButton(S.rebuild, primary = false) { s.rebuildIndex(root) }
+                DialogButton(S.remove, primary = false) { s.removeIndexRoot(root) }
+            }
+        }
+    }
+    Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        DialogButton(S.addIndexFolder, primary = true) { pickFolder()?.let { s.addIndexRoot(it) } }
+    }
+    GroupTitle(S.searchSyntax)
+    T(S.searchSyntaxHelp, Modifier.padding(8.dp), size = 12.sp, color = p.textSecondary, maxLines = 8)
+}
+
+/** 半透明視窗: on/off (applies at the next start), how opaque, and blur of what is behind. */
+@Composable
+private fun TranslucentSettings(s: AppState) {
+    val p = LocalPalette.current
+    ToggleCard(S.translucentWindow, s.translucentWindow) { s.translucentWindow = it }
+    T(if (s.translucentWindow != s.translucentActive) S.restartNeeded else S.translucentHint,
+        Modifier.padding(start = 8.dp, bottom = 4.dp), size = 12.sp,
+        color = if (s.translucentWindow != s.translucentActive) p.accentText else p.textSecondary, maxLines = 2)
+    if (s.translucentWindow) {
+        SettingCard(S.windowOpacity) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FluentSlider(s.windowOpacity, { s.windowOpacity = it }, range = 0.3f..1f, steps = 14, width = 200.dp)
+                T("${(s.windowOpacity * 100).toInt()}%", Modifier.width(48.dp).padding(start = 8.dp))
+            }
+        }
+        ToggleCard(S.blurBehind, s.blurBehind) { s.blurBehind = it; s.applyWindowBlur?.invoke() }
+    }
+}
+
+/** 漸層背景: preset swatches, direction and how strongly it shows. */
+@Composable
+private fun GradientSettings(s: AppState) {
+    val p = LocalPalette.current
+    ToggleCard(S.gradientBackground, s.gradientOn) { s.gradientOn = it }
+    if (!s.gradientOn) return
+    androidx.compose.foundation.layout.FlowRow(Modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        GradientChoices.forEachIndexed { i, g ->
+            val sel = i == s.gradientIndex
+            val colors = g.colors.map { Color(it) }
+            Column(Modifier.width(88.dp).clip(RoundedCornerShape(6.dp)).clickable { s.gradientIndex = i }.padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    Modifier.size(80.dp, 48.dp).clip(RoundedCornerShape(6.dp))
+                        .drawBehind { drawRect(angledGradient(colors, s.gradientAngle, size)) }
+                        .border(if (sel) 2.dp else 1.dp, if (sel) p.accent else p.cardStroke, RoundedCornerShape(6.dp))
+                )
+                Spacer(Modifier.height(4.dp))
+                T(g.name, size = 11.sp)
+            }
+        }
+    }
+    SettingCard(S.gradientAngle) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FluentSlider(s.gradientAngle, { s.gradientAngle = it }, range = 0f..360f, steps = 24, width = 200.dp)
+            T("${s.gradientAngle.toInt()}°", Modifier.width(48.dp).padding(start = 8.dp))
+        }
+    }
+    SettingCard(S.gradientStrength) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FluentSlider(s.gradientStrength, { s.gradientStrength = it }, range = 0.1f..1f, steps = 18, width = 200.dp)
+            T("${(s.gradientStrength * 100).toInt()}%", Modifier.width(48.dp).padding(start = 8.dp))
         }
     }
 }

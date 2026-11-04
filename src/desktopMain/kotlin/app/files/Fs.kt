@@ -119,7 +119,50 @@ object Fs {
     }
 
     /** Reads a folder on the caller's (IO) thread. Attributes come with the listing, one pass. */
+    /**
+     * Lists [dir] in chunks so a folder with hundreds of thousands of entries shows its first items
+     * at once: the first [firstChunk] entries go out immediately, then whatever has been read every
+     * [intervalMs]. Attributes come from the directory read itself (Windows' FindNextFile data,
+     * which the JDK caches on each path), so there is no extra disk access per file.
+     */
+    fun listChunked(dir: String, cancelled: () -> Boolean, firstChunk: Int = 300, intervalMs: Long = 120, onChunk: (List<FileItem>) -> Unit) {
+        var chunk = ArrayList<FileItem>(firstChunk)
+        var sentFirst = false
+        var last = System.nanoTime()
+        fun add(item: FileItem) {
+            chunk.add(item)
+            val now = System.nanoTime()
+            if ((!sentFirst && chunk.size >= firstChunk) || (sentFirst && (now - last) / 1_000_000 >= intervalMs)) {
+                onChunk(chunk); chunk = ArrayList(4096); sentFirst = true; last = now
+            }
+        }
+        // Native directory read first (FastDir); the JDK's per-file stat only when that isn't available.
+        val native = FastDir.available && FastDir.forEach(dir, cancelled) { add(FastDir.toItem(dir, it)) }
+        if (!native) {
+            if (FastDir.available && !File(dir).isDirectory) throw java.io.FileNotFoundException(dir)
+            Files.newDirectoryStream(Paths.get(dir)).use { stream ->
+                for (p in stream) {
+                    if (cancelled()) return
+                    toItem(p)?.let { add(it) }
+                }
+            }
+        }
+        if (!cancelled()) onChunk(chunk)
+    }
+
+    private fun toItem(p: Path): FileItem? = try {
+        val a = Files.readAttributes(p, DosFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        val name = p.fileName?.toString() ?: p.toString()
+        FileItem(
+            path = p.toString(), name = name, isDir = a.isDirectory,
+            size = if (a.isDirectory) 0 else a.size(),
+            modified = a.lastModifiedTime().toMillis(), created = a.creationTime().toMillis(),
+            hidden = a.isHidden, system = isSystemItem(a.isSystem, name),
+        )
+    } catch (_: Exception) { null }
+
     fun list(dir: String): List<FileItem> {
+        FastDir.list(dir)?.let { return it }
         val out = ArrayList<FileItem>()
         Files.newDirectoryStream(Paths.get(dir)).use { stream ->
             for (p in stream) {

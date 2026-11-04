@@ -16,9 +16,32 @@ data class GitInfo(
     val remotes: List<String>,
     /** Repo-relative path (with '/') → two-letter porcelain code, e.g. " M", "??", "A ". */
     val status: Map<String, String>,
-)
+) {
+    /**
+     * Folder → summary of everything changed inside it ("??" when only untracked files), built once
+     * per status read, so each folder row is one lookup instead of a scan over every changed path.
+     */
+    val folderStatus: Map<String, String> by lazy {
+        val m = HashMap<String, String>()
+        for ((path, code) in status) {
+            var i = path.lastIndexOf('/')
+            while (i > 0) {
+                val dir = path.substring(0, i)
+                val prev = m[dir]
+                val next = if (code == "??" && (prev == null || prev == "??")) "??" else " M"
+                if (prev == next) break          // ancestors already carry this summary
+                m[dir] = next
+                i = path.lastIndexOf('/', i - 1)
+            }
+        }
+        m
+    }
+}
 
 class GitResult(val ok: Boolean, val output: String)
+
+/** One line of `git log`. */
+data class GitCommit(val hash: String, val short: String, val author: String, val date: String, val isMerge: Boolean, val subject: String)
 
 /**
  * Git through the git command line installed on this PC, so it uses the person's own
@@ -44,6 +67,16 @@ object Git {
         val r = run(f, 5, "rev-parse", "--show-toplevel")
         return if (r.ok && r.output.isNotBlank()) File(r.output.lines().first()).path else null
     }
+
+    private val infoCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, GitInfo>>()
+
+    /** [info], reused for a few seconds: moving between folders of one big repository doesn't re-run git status each time. */
+    fun cachedInfo(root: String, maxAgeMs: Long = 4000): GitInfo {
+        infoCache[root]?.let { (at, g) -> if (System.currentTimeMillis() - at < maxAgeMs) return g }
+        return info(root).also { infoCache[root] = System.currentTimeMillis() to it }
+    }
+
+    fun forget(root: String) { infoCache.remove(root) }
 
     fun info(root: String): GitInfo {
         val d = File(root)
@@ -77,12 +110,7 @@ object Git {
     fun statusOf(info: GitInfo, path: String, isDir: Boolean): String? {
         val rel = File(info.root).toPath().relativize(File(path).toPath()).toString().replace('\\', '/')
         info.status[rel]?.let { return it }
-        if (isDir) {
-            val prefix = "$rel/"
-            val inside = info.status.filterKeys { it.startsWith(prefix) }.values
-            if (inside.isNotEmpty()) return if (inside.all { it == "??" }) "??" else " M"
-        }
-        return null
+        return if (isDir) info.folderStatus[rel] else null
     }
 
     fun fetch(root: String) = run(File(root), 300, "fetch", "--all", "--prune")
@@ -98,6 +126,61 @@ object Git {
     fun init(dir: String) = run(File(dir), 30, "init")
     fun clone(url: String, intoDir: String) = run(File(intoDir), 1800, "clone", "--", url)
     fun isValidBranchName(name: String) = name.isNotBlank() && run(File("."), 5, "check-ref-format", "--branch", name).ok
+
+    /** Recent commits on HEAD, newest first (for 從提交紀錄建立 .patch). */
+    fun log(root: String, limit: Int = 300): List<GitCommit> {
+        val r = run(File(root), 20, "log", "-n", limit.toString(), "--date=short", "--format=%H%x1f%h%x1f%an%x1f%ad%x1f%P%x1f%s%x1e")
+        if (!r.ok) return emptyList()
+        return r.output.split('\u001e').mapNotNull { rec ->
+            val f = rec.trim('\n', '\r').split('\u001f')
+            if (f.size < 6) null else GitCommit(f[0], f[1], f[2], f[3], f[4].split(' ').count { it.isNotBlank() } > 1, f[5])
+        }
+    }
+
+    /**
+     * `git apply` from the repository root. [check] = only test it (`--check`, nothing changes:
+     * the dry run); otherwise apply it. `-v` lists every file so the person sees what it touches.
+     */
+    fun applyPatch(root: String, patch: String, check: Boolean, threeWay: Boolean): GitResult {
+        val args = ArrayList(listOf("apply", "-v"))
+        if (check) args += "--check"
+        if (threeWay) args += "--3way"
+        args += listOf("--", File(patch).absolutePath)
+        return run(File(root), 120, *args.toTypedArray())
+    }
+
+    /**
+     * Writes the chosen commits (oldest first) as `git format-patch` mail patches: all into [out]
+     * (one file, which `git am` / `git apply` take as is), or one numbered file per commit when
+     * [out] is a folder and [perCommit] is set. Returns the files written.
+     */
+    fun formatPatch(root: String, commits: List<String>, out: File, perCommit: Boolean): Pair<GitResult, List<File>> {
+        val written = ArrayList<File>()
+        try {
+            if (perCommit) {
+                out.mkdirs()
+                commits.forEachIndexed { i, sha ->
+                    val r = run(File(root), 60, "format-patch", "-1", "--binary", "--start-number=${i + 1}", "-o", out.absolutePath, sha)
+                    if (!r.ok) return r to written
+                    r.output.lines().map { it.trim() }.filter { it.endsWith(".patch") }.forEach { written += File(it).let { f -> if (f.isAbsolute) f else File(root, it) } }
+                }
+            } else {
+                out.parentFile?.mkdirs()
+                out.writeBytes(ByteArray(0))
+                for (sha in commits) {
+                    val p = ProcessBuilder("git", "-c", "core.quotepath=off", "format-patch", "-1", "--binary", "--stdout", sha)
+                        .directory(File(root)).redirectOutput(ProcessBuilder.Redirect.appendTo(out)).redirectErrorStream(false)
+                        .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" }.start()
+                    p.outputStream.close()
+                    val err = String(p.errorStream.readAllBytes(), StandardCharsets.UTF_8)
+                    if (!p.waitFor(60, TimeUnit.SECONDS)) { p.destroyForcibly(); return GitResult(false, "timeout") to written }
+                    if (p.exitValue() != 0) return GitResult(false, err.trim()) to written
+                }
+                written += out
+            }
+        } catch (e: Exception) { return GitResult(false, e.message ?: "error") to written }
+        return GitResult(true, "") to written
+    }
 
     /** Short text for a status code, in the app language. */
     fun label(code: String): String = when {

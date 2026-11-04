@@ -175,6 +175,10 @@ fun Omnibar(s: AppState, modifier: Modifier) {
                         },
                 )
             }
+            // .* regex and Aa case switches (they apply to the quick filter and to Enter's deep search).
+            SearchSwitch(".*", S.searchRegexMode, s.searchRegex) { s.searchRegex = !s.searchRegex }
+            SearchSwitch("Aa", S.searchCaseMode, s.searchCase) { s.searchCase = !s.searchCase }
+            IconBtn(Icons.Outlined.HelpOutline, S.searchSyntax + "\n" + S.searchSyntaxHelp, {}, width = 30.dp, height = 34.dp, iconSize = 15.dp)
             IconBtn(Icons.Outlined.Close, "Close search", { searching = false; s.searchText = "" }, width = 34.dp, height = 34.dp, iconSize = 14.dp)
         } else {
             // Breadcrumb (Path mode, the omnibar's default)
@@ -207,12 +211,27 @@ fun Omnibar(s: AppState, modifier: Modifier) {
                 }
                 Spacer(Modifier.weight(1f))
             }
-            if (!t.isHome && !t.isTag && !t.isNetwork && !t.isServer) {
+            if (!t.isHome && !t.isTag && !t.isNetwork && !t.isServer && !t.isRecycleBin) {
                 IconBtn(Icons.Outlined.Search, S.search + " (Ctrl+F)", { searching = true }, width = 34.dp, height = 34.dp, iconSize = 16.dp)
             }
         }
     }
     LaunchedEffect(s.searchRequest) { if (s.searchRequest > 0 && !t.isHome) searching = true }
+}
+
+/** A small toggle with a text glyph (.* / Aa), lit when on. */
+@Composable
+fun SearchSwitch(glyph: String, tip: String, on: Boolean, onToggle: () -> Unit) {
+    val p = LocalPalette.current
+    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+    TooltipArea(tooltip = {
+        Box(Modifier.background(p.flyout, RoundedCornerShape(4.dp)).border(1.dp, p.controlStroke, RoundedCornerShape(4.dp)).padding(8.dp, 5.dp)) { T(tip, size = 12.sp) }
+    }, delayMillis = 500) {
+        Hover(Modifier.size(30.dp, 26.dp), onClick = onToggle, selected = on, selectedColor = p.accent.copy(alpha = 0.22f)) {
+            T(glyph, Modifier.align(Alignment.Center), size = 12.sp, weight = FontWeight.SemiBold, color = if (on) p.accentText else p.textSecondary,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+        }
+    }
 }
 
 /** Tap on the empty part of the breadcrumb switches to typing a path. */
@@ -273,12 +292,17 @@ fun CommandToolbar(s: AppState) {
     var sortOpen by remember { mutableStateOf(false) }
     var layoutOpen by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().height(M.TOOLBAR_HEIGHT.dp).clip(shape).background(p.toolbar, shape).border(1.dp, p.cardStroke, shape).padding(horizontal = 6.dp),
+        Modifier.fillMaxWidth().height(M.TOOLBAR_HEIGHT.dp).cardShadow(s, shape, 0.6f).clip(shape).background(p.toolbar, shape).border(1.dp, p.cardStroke, shape).padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Left part: the customizable toolbar (自訂工具列).
+        if (t.isRecycleBin) {
+            ToolButton(Icons.Outlined.RestoreFromTrash, S.recycleRestore, { s.restoreSelected() }, enabled = t.selection.isNotEmpty())
+            ToolButton(Icons.Outlined.DeleteForever, S.recycleDeleteForever, { s.requestDelete() }, enabled = t.selection.isNotEmpty())
+            ToolButton(Icons.Outlined.DeleteSweep, S.recycleEmpty, { s.confirmEmptyRecycle = true }, enabled = t.raw.isNotEmpty() && !s.emptyingRecycle)
+            VDivider()
+        }
         CustomToolbar(s, Modifier.weight(1f))
-        if (!t.isVirtual) GitMenu(s)
         if (!t.isHome) {
             Box {
                 IconBtn(Icons.Outlined.Checklist, "Selection options", { selOpen = true }, width = 46.dp, height = 36.dp)
@@ -292,7 +316,7 @@ fun CommandToolbar(s: AppState) {
                 ToolButton(Icons.Outlined.Sort, S.sort, { sortOpen = true })
                 Flyout(sortOpen, { sortOpen = false }) {
                     SortBy.entries.forEach { sb ->
-                        FlyoutItem(sb.text, if (s.sortBy == sb) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortBy = sb }
+                        FlyoutItem(sb.text, if (s.sortBy == sb) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortBy = sb; s.extraSort = null }
                     }
                     FlyoutSeparator()
                     FlyoutItem(S.ascending, if (s.sortAscending) Icons.Outlined.Check else null, "") { sortOpen = false; s.sortAscending = true }
@@ -372,7 +396,15 @@ fun offsetDp(x: Int, y: Int): androidx.compose.ui.unit.IntOffset {
     return with(d) { androidx.compose.ui.unit.IntOffset(x.dp.roundToPx(), y.dp.roundToPx()) }
 }
 
-fun Modifier.shadow8(): Modifier = this.shadow(8.dp, RoundedCornerShape(8.dp), clip = false)
+/** Menus and dialogs: a feathered shadow (SoftShadow.kt) instead of a hard-edged one. */
+fun Modifier.shadow8(): Modifier = this.softShadow(RoundedCornerShape(8.dp), elevation = 14.dp, strength = 1.3f)
+
+/** The file area, toolbar and details pane: the 卡片陰影 setting (stronger in dark mode, where it shows less). */
+@Composable
+fun Modifier.cardShadow(s: AppState, shape: androidx.compose.ui.graphics.Shape, scale: Float = 1f): Modifier {
+    val p = LocalPalette.current
+    return this.softShadow(shape, s.cardShadow.elevation * scale, strength = if (p.dark) 1.8f else 1f)
+}
 
 @Composable
 fun FlyoutItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector?, hotkey: String, enabled: Boolean = true, iconTint: Color? = null, onClick: () -> Unit) {
@@ -412,6 +444,18 @@ fun Sidebar(s: AppState, modifier: Modifier) {
             item {
                 SidebarRow(S.home, 0, loc == HOME, onClick = { s.navigate(HOME) }) {
                     Icon(Icons.Filled.Home, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFFF7630C))
+                }
+            }
+            item {
+                val full = (s.recycleInfo?.first ?: 0L) > 0
+                SidebarRow(S.recycleBin, 0, loc == RECYCLE_BIN,
+                    menu = { listOf(
+                        MenuEntry(S.open, Icons.Outlined.OpenInNew) { s.navigate(RECYCLE_BIN) },
+                        MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(RECYCLE_BIN) },
+                        MenuEntry(S.recycleEmpty, Icons.Outlined.DeleteSweep, enabled = full && !s.emptyingRecycle, separatorBefore = true) { s.confirmEmptyRecycle = true },
+                    ) },
+                    onClick = { s.navigate(RECYCLE_BIN) }) {
+                    Icon(if (full) Icons.Filled.Delete else Icons.Outlined.Delete, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = if (full) Color(0xFF6A8CAF) else p.textSecondary)
                 }
             }
             item { Spacer(Modifier.height(6.dp)) }
@@ -552,7 +596,7 @@ fun StatusBar(s: AppState, items: List<FileItem>, t: TabState = s.tab) {
             if (t.isHome) {
                 T(S.items(s.pinned.size + s.drives.size + s.recent.size), size = 12.sp, color = p.textSecondary)
             } else {
-                T(S.items(items.size), size = 12.sp, color = p.textSecondary)
+                T(S.items(items.size) + if (t.loading && !t.isSearch && !t.isNetwork) "  ·  " + S.loading else "", size = 12.sp, color = p.textSecondary)
                 if (selected.isNotEmpty()) {
                     VDivider()
                     T(S.selected(selected.size), size = 12.sp, color = p.textSecondary)
@@ -566,12 +610,33 @@ fun StatusBar(s: AppState, items: List<FileItem>, t: TabState = s.tab) {
             }
             Spacer(Modifier.weight(1f))
             s.gitBusy?.let { T(it, Modifier.widthIn(max = 300.dp), size = 12.sp, color = p.accentText) }
+            s.deleteBusy?.let { T(it, Modifier.widthIn(max = 300.dp), size = 12.sp, color = p.accentText) }
+            if (t.isSearch) t.searchInfo?.let { T(it, Modifier.widthIn(max = 420.dp), size = 12.sp, color = p.textTertiary) }
             t.git?.let { g ->
                 T("${g.branch}  ↑${g.ahead} ↓${g.behind}", size = 12.sp, color = p.textSecondary)
             }
             s.clipboard?.let { T("${it.paths.size} on clipboard (${if (it.cut) "cut" else "copy"})", size = 12.sp, color = p.textTertiary) }
+            if (!t.isHome) IconSizeSlider(s)
         }
     }
+}
+
+/**
+ * 圖示大小 in the status bar (like Explorer's zoom slider): the item size of the current layout —
+ * the 12 grid widths in 圖示, the 5 row sizes in the other layouts. Ctrl+wheel and Ctrl +/- do the same.
+ */
+@Composable
+fun IconSizeSlider(s: AppState) {
+    val p = LocalPalette.current
+    val grid = s.layout == LayoutMode.Grid
+    val max = if (grid) M.GRID_ITEM_WIDTH.size - 1 else 4
+    val value = if (grid) s.gridStep else s.detailsSize
+    fun set(v: Int) { if (grid) s.gridStep = v.coerceIn(0, max) else s.detailsSize = v.coerceIn(0, max) }
+    VDivider()
+    IconBtn(Icons.Outlined.ZoomOut, S.iconSize + " (Ctrl+-)", { set(value - 1) }, enabled = value > 0, width = 26.dp, height = 24.dp, iconSize = 14.dp)
+    FluentSlider(value.toFloat(), { set(it.toInt()) }, range = 0f..max.toFloat(), steps = max, width = 110.dp)
+    IconBtn(Icons.Outlined.ZoomIn, S.iconSize + " (Ctrl++)", { set(value + 1) }, enabled = value < max, width = 26.dp, height = 24.dp, iconSize = 14.dp)
+    T(if (grid) "${M.GRID_ITEM_WIDTH[value]}px" else "${M.DETAILS_ICON[value]}px", Modifier.width(40.dp), size = 11.sp, color = p.textTertiary)
 }
 
 // ====================================================================== status center (copy jobs)
@@ -629,10 +694,41 @@ fun JobCard(job: CopyJob) {
 
 // ====================================================================== dialogs
 
+/** 清空資源回收筒: asks once, with how much will go. */
+@Composable
+fun EmptyRecycleDialog(s: AppState) {
+    val p = LocalPalette.current
+    Box(Modifier.fillMaxSize().background(Color(0x66000000)).pointerInput(Unit) { detectTapGestures2 { s.confirmEmptyRecycle = false } }, contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.width(440.dp).softShadow(RoundedCornerShape(8.dp), elevation = 18.dp).background(p.flyout, RoundedCornerShape(8.dp))
+                .border(1.dp, p.controlStroke, RoundedCornerShape(8.dp)).pointerInput(Unit) { detectTapGestures2 { } }
+        ) {
+            Column(Modifier.padding(24.dp)) {
+                T(S.recycleEmpty, size = 20.sp, weight = FontWeight.SemiBold)
+                Spacer(Modifier.height(12.dp))
+                T(S.recycleConfirm, maxLines = 3)
+                s.recycleInfo?.let { (n, bytes) ->
+                    Spacer(Modifier.height(8.dp))
+                    T(S.recycleSummary(n, Fs.sizeText(bytes)), size = 12.sp, color = p.textSecondary)
+                }
+            }
+            Row(Modifier.fillMaxWidth().background(p.layer).padding(24.dp, 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.weight(1f).height(32.dp).clip(RoundedCornerShape(4.dp)).background(p.danger).clickable { s.emptyRecycleBin() }) {
+                    T(S.recycleEmpty, Modifier.align(Alignment.Center), color = if (p.dark) Color.Black else Color.White)
+                }
+                Box(Modifier.weight(1f).height(32.dp).clip(RoundedCornerShape(4.dp)).background(p.control).border(1.dp, p.controlStroke, RoundedCornerShape(4.dp)).clickable { s.confirmEmptyRecycle = false }) {
+                    T(if (S.zh) "取消" else "Cancel", Modifier.align(Alignment.Center))
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun DeleteDialog(s: AppState, paths: List<String>) {
     val p = LocalPalette.current
-    var permanent by remember { mutableStateOf(false) }
+    val inBin = s.tab.isRecycleBin
+    var permanent by remember { mutableStateOf(inBin) }
     Box(Modifier.fillMaxSize().background(Color(0x66000000)).pointerInput(Unit) { detectTapGestures2 { } }, contentAlignment = Alignment.Center) {
         Column(
             Modifier.width(440.dp).shadow8().background(p.flyout, RoundedCornerShape(8.dp)).border(1.dp, p.controlStroke, RoundedCornerShape(8.dp))
@@ -645,7 +741,8 @@ fun DeleteDialog(s: AppState, paths: List<String>) {
                     maxLines = 3,
                 )
                 Spacer(Modifier.height(12.dp))
-                Row(Modifier.clickable { permanent = !permanent }, verticalAlignment = Alignment.CenterVertically) {
+                if (inBin) T(S.cannotUndo, size = 12.sp, color = p.textSecondary)
+                else Row(Modifier.clickable { permanent = !permanent }, verticalAlignment = Alignment.CenterVertically) {
                     Icon(if (permanent) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, null, Modifier.size(18.dp), tint = if (permanent) p.accent else p.textSecondary)
                     Spacer(Modifier.width(8.dp))
                     T("Permanently delete (skip the Recycle Bin)")
