@@ -45,6 +45,7 @@ fun main(args: Array<String>) {
         val interact: (suspend (ImageComposeScene, AppState) -> Unit)? = when {
             "--test-checkbox" in args -> ::checkboxTest
             "--test-toolbar-drag" in args -> ::toolbarDragTest
+            "--test-sidebar" in args -> ::sidebarTreeTest
             else -> null
         }
         screenshot(File(args[shotIdx + 1]), start, layout, "--info-pane" in args, interact) { s ->
@@ -53,6 +54,7 @@ fun main(args: Array<String>) {
             if ("--sizes" in args) s.calculateFolderSizes = true
             if ("--customize" in args) s.customizeToolbarOpen = true
             if ("--settings" in args) s.settingsOpen = true
+            if ("--clone-dialog" in args) s.cloneDialogOpen = true
             if ("--select-first" in args) s.scope.launch { delay(1200); s.tab.raw.firstOrNull()?.let { s.tab.selection = setOf(it.path) } }
         }
         exitProcess(0)
@@ -154,6 +156,7 @@ fun Root(s: AppState, systemDark: Boolean, accent: androidx.compose.ui.graphics.
                 s.tagEditorFor?.let { TagEditorDialog(s, it) }
                 if (s.settingsOpen) SettingsPage(s)
                 if (s.customizeToolbarOpen) CustomizeToolbarDialog(s)
+                if (s.cloneDialogOpen) GitCloneDialog(s)
                 s.toast?.let { msg ->
                     LaunchedEffect(msg) { delay(2500); if (s.toast == msg) s.toast = null }
                     Box(Modifier.fillMaxSize().padding(bottom = 48.dp), contentAlignment = Alignment.BottomCenter) {

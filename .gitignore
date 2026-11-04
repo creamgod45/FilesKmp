@@ -1,6 +1,7 @@
 .gradle
 build
 dist
+artifacts
 .idea
 .junie
 .kotlin

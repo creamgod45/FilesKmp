@@ -34,7 +34,7 @@ object Git {
         val out = StringBuilder()
         val reader = Thread.ofVirtual().start { out.append(String(p.inputStream.readAllBytes(), StandardCharsets.UTF_8)) }
         if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) { p.destroyForcibly(); GitResult(false, "timeout") }
-        else { reader.join(2000); GitResult(p.exitValue() == 0, out.toString().trim()) }
+        else { reader.join(); GitResult(p.exitValue() == 0, out.toString().trimEnd('\r', '\n')) }
     } catch (e: Exception) { GitResult(false, e.message ?: "git not found") }
 
     /** The repository root for [dir], or null when it isn't inside one. */
@@ -47,7 +47,9 @@ object Git {
 
     fun info(root: String): GitInfo {
         val d = File(root)
-        val branch = run(d, 5, "rev-parse", "--abbrev-ref", "HEAD").let { if (it.ok) it.output else "?" }
+        val branch = run(d, 5, "symbolic-ref", "--short", "HEAD").let {
+            if (it.ok) it.output else run(d, 5, "rev-parse", "--short", "HEAD").output
+        }
         val counts = run(d, 5, "rev-list", "--left-right", "--count", "HEAD...@{u}")
         val (ahead, behind) = if (counts.ok) counts.output.split(Regex("\\s+")).let { (it.getOrNull(0)?.toIntOrNull() ?: 0) to (it.getOrNull(1)?.toIntOrNull() ?: 0) } else 0 to 0
         val locals = run(d, 5, "for-each-ref", "--format=%(refname:short)", "refs/heads").output.lines().filter { it.isNotBlank() }
@@ -63,7 +65,7 @@ object Git {
                 if (e.length > 3) {
                     val code = e.substring(0, 2)
                     status[e.substring(3).trimEnd('/')] = code
-                    if (code.startsWith("R") || code.startsWith("C")) i++   // the next field is the old name
+                    if (code.any { it == 'R' || it == 'C' }) i++   // the next field is the old name
                 }
                 i++
             }
@@ -92,9 +94,9 @@ object Git {
     /** Remote branch "origin/x": make a local tracking branch x. */
     fun checkoutRemote(root: String, remoteBranch: String) = run(File(root), 60, "checkout", "--track", remoteBranch)
     fun createBranch(root: String, name: String) = run(File(root), 30, "checkout", "-b", name)
-    fun deleteBranch(root: String, name: String) = run(File(root), 30, "branch", "-D", name)
+    fun deleteBranch(root: String, name: String) = run(File(root), 30, "branch", "-d", "--", name)
     fun init(dir: String) = run(File(dir), 30, "init")
-    fun clone(url: String, intoDir: String) = run(File(intoDir), 1800, "clone", url)
+    fun clone(url: String, intoDir: String) = run(File(intoDir), 1800, "clone", "--", url)
     fun isValidBranchName(name: String) = name.isNotBlank() && run(File("."), 5, "check-ref-format", "--branch", name).ok
 
     /** Short text for a status code, in the app language. */

@@ -330,6 +330,7 @@ class AppState(val scope: CoroutineScope) {
 
     fun refresh(t: TabState = tab) {
         if (t.isHome) loadHome() else load(t, keepSelection = true)
+        treeExpanded.filterValues { it }.keys.toList().forEach { loadTreeChildren(it) }
     }
 
     fun searchDeep(query: String) {
@@ -341,6 +342,7 @@ class AppState(val scope: CoroutineScope) {
 
     fun load(t: TabState, keepSelection: Boolean = false) {
         t.loadJob?.cancel()
+        t.git = null
         if (!keepSelection) t.selection = emptySet()
         t.renaming = null
         t.error = null
@@ -536,9 +538,12 @@ class AppState(val scope: CoroutineScope) {
     /** "初始化 Git 儲存庫" for the current folder. */
     fun gitInit() {
         val t = tab
-        if (t.isVirtual || t.git != null) return
+        if (t.isVirtual || t.git != null || gitBusy != null) return
+        val path = t.location
+        gitBusy = if (S.zh) "正在初始化儲存庫…" else "Initializing repository…"
         scope.launch {
-            val r = withContext(Dispatchers.IO) { Git.init(t.location) }
+            val r = withContext(Dispatchers.IO) { Git.init(path) }
+            gitBusy = null
             toast = if (r.ok) (if (S.zh) "已將此資料夾初始化為 Git 儲存庫" else "Initialized a Git repository here")
                     else (if (S.zh) "Files 無法將此目錄初始化為 Git 儲存庫" else "Can't initialize this folder as a Git repository")
             load(t, keepSelection = true)
@@ -549,11 +554,12 @@ class AppState(val scope: CoroutineScope) {
     fun gitClone(url: String) {
         val t = tab
         val u = url.trim()
-        if (u.isEmpty() || t.isVirtual) return
+        if (u.isEmpty() || t.isVirtual || gitBusy != null) return
+        val destination = t.location
         val name = u.trimEnd('/').substringAfterLast('/').removeSuffix(".git")
         gitBusy = if (S.zh) "正在將儲存庫「$name」複製到「${Fs.displayName(t.location)}」…" else "Cloning \"$name\" to \"${Fs.displayName(t.location)}\"…"
         scope.launch {
-            val r = withContext(Dispatchers.IO) { Git.clone(u, t.location) }
+            val r = withContext(Dispatchers.IO) { Git.clone(u, destination) }
             gitBusy = null
             toast = if (r.ok) (if (S.zh) "已成功將儲存庫「$name」複製到「${Fs.displayName(t.location)}」" else "Cloned \"$name\" to \"${Fs.displayName(t.location)}\"")
                     else (if (S.zh) "無法建立儲存庫副本\n" else "Cannot clone repo\n") + r.output.lines().takeLast(3).joinToString("\n")
@@ -570,7 +576,7 @@ class AppState(val scope: CoroutineScope) {
     fun toggleTree(path: String) {
         val open = treeExpanded[path] != true
         treeExpanded[path] = open
-        if (open && treeChildren[path] == null) loadTreeChildren(path)
+        if (open) loadTreeChildren(path)
     }
 
     fun loadTreeChildren(path: String) {

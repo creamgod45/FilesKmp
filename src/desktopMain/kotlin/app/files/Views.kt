@@ -347,7 +347,12 @@ fun NameCell(s: AppState, t: TabState, item: FileItem, modifier: Modifier) {
     if (t.renaming == item.path) {
         EditBox(item.name, onCommit = { s.commitRename(item.path, it) }, onCancel = { t.renaming = null }, modifier = modifier)
     } else {
-        T(s.displayName(item), modifier)
+        Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+            T(s.displayName(item), Modifier.weight(1f))
+            t.git?.let { g -> Git.statusOf(g, item.path, item.isDir)?.let { code ->
+                T(Git.label(code), Modifier.padding(start = 4.dp, end = 6.dp), size = 11.sp, color = Color(Git.color(code)))
+            } }
+        }
     }
 }
 

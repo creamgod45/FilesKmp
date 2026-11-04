@@ -1,0 +1,158 @@
+name: Windows Packages
+
+on:
+  pull_request:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本號 x.y.z（例如 1.0.0）'
+        required: true
+        type: string
+      draft:
+        description: '建立為草稿 Release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-version:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - id: resolve
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = switch ($env:EVENT_NAME) {
+            'workflow_dispatch' { $env:INPUT_VERSION }
+            'push' { $env:REF_NAME -replace '^v', '' }
+            default { '1.0.0' }
+          }
+          if ($version -notmatch '^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,4})$') {
+            throw '版本須為 x.y.z，且不可含前導零'
+          }
+          $parts = $version.Split('.') | ForEach-Object { [int]$_ }
+          if ($parts[0] -lt 1 -or $parts[0] -gt 255 -or $parts[1] -gt 255 -or $parts[2] -gt 65535) {
+            throw 'MSI 版本範圍：major 1..255、minor 0..255、patch 0..65535'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+  package:
+    name: Windows ${{ matrix.arch }}
+    needs: resolve-version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: ${{ vars.WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      APP_VERSION: ${{ needs.resolve-version.outputs.version }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安裝原生 JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '25'
+          architecture: ${{ matrix.arch }}
+      - uses: gradle/actions/setup-gradle@v4
+      - name: 安裝 WiX 3.14.1
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'wix.zip'
+          $wix = Join-Path $env:RUNNER_TEMP 'wix'
+          Invoke-WebRequest 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip' -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $wix
+          $wix >> $env:GITHUB_PATH
+      - name: 建置免安裝程式與 MSI
+        run: |
+          ./gradlew.bat windowsMsi "-PappVersion=$env:APP_VERSION" --stacktrace --console=plain
+          if ($LASTEXITCODE -ne 0) { throw 'Gradle build failed' }
+      - name: 驗證 launcher 與 runtime 架構並測試啟動
+        run: |
+          $expected = if ($env:TARGET_ARCH -eq 'arm64') { 0xAA64 } else { 0x8664 }
+          foreach ($file in @('build/FilesKmp/FilesKmp.exe', 'build/FilesKmp/runtime/bin/server/jvm.dll')) {
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path $file))
+            $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+            $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+            if ($machine -ne $expected) { throw "Wrong architecture: $file ($machine)" }
+          }
+          $screenshot = Join-Path $env:RUNNER_TEMP 'fileskmp-smoke.png'
+          $process = Start-Process -FilePath './build/FilesKmp/FilesKmp.exe' -ArgumentList @('--screenshot', "`"$screenshot`"") -PassThru -WindowStyle Hidden
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'App startup timed out' }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path $screenshot)) { throw 'App startup failed' }
+          if ((Get-Item $screenshot).Length -lt 1000) { throw 'Screenshot is empty' }
+      - name: 收集產物
+        run: |
+          New-Item artifacts -ItemType Directory -Force | Out-Null
+          $prefix = "FilesKmp-$env:APP_VERSION-windows-$env:TARGET_ARCH"
+          Copy-Item "build/installers/$prefix.msi" artifacts/
+          Compress-Archive -Path build/FilesKmp -DestinationPath "artifacts/$prefix-portable.zip"
+          $packages = @(Get-ChildItem artifacts -File)
+          $packages | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)" | Add-Content "artifacts/$prefix-SHA256SUMS.txt"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: github.event_name != 'pull_request'
+    needs: [resolve-version, package]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*
+          path: dist
+          merge-multiple: true
+      - name: 建立或更新 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve-version.outputs.tag }}
+          APP_VERSION: ${{ needs.resolve-version.outputs.version }}
+          REPO: ${{ github.repository }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          (Get-Content .github/release-notes-template.md -Raw).Replace('{{VERSION}}', $env:APP_VERSION) | Set-Content notes.md
+          $files = @(Get-ChildItem dist -File | ForEach-Object { $_.FullName })
+          if ($files.Count -ne 6) { throw 'Expected MSI, ZIP and checksums for both architectures' }
+          gh release view $env:TAG -R $env:REPO *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @files --clobber -R $env:REPO
+          } else {
+            $extra = @()
+            if ($env:DRAFT -eq 'true') { $extra += '--draft' }
+            gh release create $env:TAG @files -R $env:REPO --title "FilesKmp $env:APP_VERSION" --notes-file notes.md --target $env:GITHUB_SHA @extra
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }

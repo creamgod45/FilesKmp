@@ -1,3 +1,5 @@
+import java.nio.file.Files
+
 plugins {
     kotlin("multiplatform") version "2.4.21"
     id("org.jetbrains.compose") version "1.12.2"
@@ -5,7 +7,12 @@ plugins {
 }
 
 group = "app.files"
-version = "1.0.0"
+version = providers.gradleProperty("appVersion").getOrElse("1.0.0")
+val windowsArch = when (System.getProperty("os.arch").lowercase()) {
+    "amd64", "x86_64" -> "x64"
+    "aarch64", "arm64" -> "arm64"
+    else -> error("Only Windows x64 and ARM64 are supported")
+}
 
 kotlin {
     // Windows-only desktop target (Compose Multiplatform on the JVM).
@@ -14,7 +21,7 @@ kotlin {
     sourceSets {
         val desktopMain by getting {
             dependencies {
-                implementation("org.jetbrains.compose.desktop:desktop-jvm-windows-x64:1.12.2")
+                implementation("org.jetbrains.compose.desktop:desktop-jvm-windows-$windowsArch:1.12.2")
                 implementation("org.jetbrains.compose.material3:material3:1.9.0")
                 implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
@@ -53,7 +60,7 @@ val windowsApp by tasks.registering {
             jpackage.absolutePath,
             "--type", "app-image",
             "--name", "FilesKmp",
-            "--app-version", "1.0.0",
+            "--app-version", project.version.toString(),
             "--input", input.absolutePath,
             "--main-jar", "FilesKmp.jar",
             "--main-class", "app.files.MainKt",
@@ -70,5 +77,32 @@ val windowsApp by tasks.registering {
         File(out, "FilesKmp").copyRecursively(dest, overwrite = true)
         work.deleteRecursively()
         println("Windows app: ${File(dest, "FilesKmp.exe")}")
+    }
+}
+
+// Build an MSI from the same launcher/runtime used by the portable ZIP.
+val windowsMsi by tasks.registering {
+    group = "distribution"
+    dependsOn(windowsApp)
+    doLast {
+        val work = Files.createTempDirectory("fileskmp-msi-").toFile()
+        val staged = File(work, "FilesKmp")
+        layout.buildDirectory.dir("FilesKmp").get().asFile.copyRecursively(staged)
+        val out = File(work, "out")
+        val cmd = listOf(
+            File(System.getProperty("java.home"), "bin/jpackage.exe").absolutePath,
+            "--type", "msi", "--name", "FilesKmp", "--app-version", project.version.toString(),
+            "--app-image", staged.absolutePath, "--dest", out.absolutePath,
+            "--win-menu", "--win-shortcut", "--win-dir-chooser", "--win-per-user-install",
+            "--win-upgrade-uuid", if (windowsArch == "arm64") "a816d2b1-9605-43ab-b441-70ae0e83e548" else "1ab430d5-5393-48a5-9bbb-5f98bf171a14",
+        )
+        val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        val log = p.inputStream.bufferedReader().readText()
+        if (p.waitFor() != 0) throw GradleException("MSI packaging failed: $log")
+        val msi = out.listFiles()?.singleOrNull { it.extension == "msi" }
+            ?: throw GradleException("jpackage did not produce one MSI: $log")
+        val dest = layout.buildDirectory.dir("installers").get().asFile.apply { mkdirs() }
+        msi.copyTo(File(dest, "FilesKmp-${project.version}-windows-$windowsArch.msi"), overwrite = true)
+        work.deleteRecursively()
     }
 }

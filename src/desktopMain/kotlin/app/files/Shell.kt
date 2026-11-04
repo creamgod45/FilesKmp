@@ -264,6 +264,7 @@ fun CommandToolbar(s: AppState) {
     ) {
         // Left part: the customizable toolbar (自訂工具列).
         CustomToolbar(s, Modifier.weight(1f))
+        if (!t.isVirtual) GitMenu(s)
         if (!t.isHome) {
             Box {
                 IconBtn(Icons.Outlined.Checklist, "Selection options", { selOpen = true }, width = 46.dp, height = 36.dp)
@@ -411,14 +412,12 @@ fun Sidebar(s: AppState, modifier: Modifier) {
             }
             item { SidebarSection(S.drives, "drives", drivesOpen) { drivesOpen = !drivesOpen } }
             if (drivesOpen) items(s.drives) { d ->
-                SidebarRow(d.title, 1, loc.equals(d.root, true), chevron = true,
-                    menu = { listOf(MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(d.root) }) },
-                    onClick = { s.navigate(d.root) }) { DriveGlyph(driveKind(d), M.SIDEBAR_ICON.dp) }
+                SidebarTree(s, d.root, d.title) { DriveGlyph(driveKind(d), M.SIDEBAR_ICON.dp) }
             }
             if (s.cloud.isNotEmpty()) {
                 item { SidebarSection(S.cloudDrives, "cloud", cloudOpen) { cloudOpen = !cloudOpen } }
                 if (cloudOpen) items(s.cloud) { c ->
-                    SidebarRow(c.name, 1, loc == c.path, chevron = !c.name.contains("Photos"), onClick = { s.navigate(c.path) }) {
+                    SidebarTree(s, c.path, c.name) {
                         if (c.name.contains("Photos")) Icon(Icons.Filled.LocalFlorist, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFFF29B38))
                         else Icon(Icons.Filled.Cloud, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFF2F95F0))
                     }
@@ -487,6 +486,8 @@ fun SidebarRow(
     indent: Int,
     selected: Boolean,
     chevron: Boolean = false,
+    expanded: Boolean = false,
+    onToggle: (() -> Unit)? = null,
     menu: (() -> List<MenuEntry>)? = null,
     onClick: () -> Unit,
     icon: @Composable () -> Unit,
@@ -499,7 +500,9 @@ fun SidebarRow(
                 Box(Modifier.width(M.SIDEBAR_INDICATOR_W.dp).height(M.SIDEBAR_INDICATOR_H.dp).clip(RoundedCornerShape(2.dp)).background(if (selected) p.accent else Color.Transparent))
                 Spacer(Modifier.width((3 + indent * 14).dp))
                 Box(Modifier.width(16.dp)) {
-                    if (chevron) Icon(Icons.Outlined.ChevronRight, null, Modifier.size(14.dp), tint = p.textSecondary)
+                    if (chevron) IconBtn(if (expanded) Icons.Outlined.ExpandMore else Icons.Outlined.ChevronRight,
+                        if (expanded) "Collapse $label" else "Expand $label", { onToggle?.invoke() },
+                        width = 16.dp, height = 28.dp, iconSize = 14.dp)
                 }
                 Spacer(Modifier.width(6.dp))
                 Box(Modifier.size(M.SIDEBAR_ICON.dp)) { icon() }
@@ -548,6 +551,10 @@ fun StatusBar(s: AppState, items: List<FileItem>, t: TabState = s.tab) {
                 }
             }
             Spacer(Modifier.weight(1f))
+            s.gitBusy?.let { T(it, Modifier.widthIn(max = 300.dp), size = 12.sp, color = p.accentText) }
+            t.git?.let { g ->
+                T("${g.branch}  ↑${g.ahead} ↓${g.behind}", size = 12.sp, color = p.textSecondary)
+            }
             s.clipboard?.let { T("${it.paths.size} on clipboard (${if (it.cut) "cut" else "copy"})", size = 12.sp, color = p.textTertiary) }
         }
     }
