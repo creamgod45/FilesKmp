@@ -57,8 +57,17 @@ fun shellMenuTest(dir: File) {
     c.check("folder: read", f.source != ShellMenuResult.Source.Unavailable, f.note)
     val bg = run("folder background", emptyList(), bg = dir.path)
     c.check("background: read", bg.source != ShellMenuResult.Source.Unavailable && (bg.top + bg.more).isNotEmpty(), bg.note)
+    // Running an item inside a submenu: 新增 ▸ 資料夾 in this test's own folder (makes one empty folder there).
+    val newMenu = (bg.top + bg.more).firstOrNull { i -> i.children.any { it.verb.equals("NewFolder", true) } }
+    c.check("background: 新增 ▸ submenu read", newMenu != null)
+    val before = dir.listFiles { f -> f.isDirectory }!!.map { it.name }.toSet()
+    newMenu?.children?.first { it.verb.equals("NewFolder", true) }?.run?.invoke()
+    var made: List<String> = emptyList()
+    repeat(40) { if (made.isEmpty()) { Thread.sleep(100); made = dir.listFiles { f -> f.isDirectory }!!.map { it.name }.filter { it !in before } } }
+    c.check("submenu item runs (a new folder appeared)", made.size == 1, made)
     val classic = run("classic only", listOf(txt.path), mode = ShellMenuMode.Classic)
     c.check("classic mode", classic.source == ShellMenuResult.Source.Classic && classic.top.size >= 3)
+    c.check("classic submenus are read (Send to, Open with, 7-Zip…)", classic.top.count { it.children.size >= 2 } >= 2, classic.top.filter { it.children.isNotEmpty() }.map { it.label })
 
     // The Windows 11 menu can't be read (handlers registered, none can be created): fall back to classic.
     ModernHandlers.testSet(listOf(ModernHandlers.Handler("Broken", "*", "x", "00000000-1111-2222-3333-444444444444")))

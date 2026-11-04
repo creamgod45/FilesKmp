@@ -87,6 +87,7 @@ object ShellMenu {
     private const val IID_IContextMenu3 = "BCFCE0A0-EC17-11D0-8D10-00A0C90F2719"
     private const val IID_IExplorerCommand = "A08CE4D0-FA25-44AB-B57C-C7B1C323E0B9"
     private const val IID_IShellItemArray = "B63EA76D-1F85-456F-A19C-48159EFA858B"
+    private val debug = System.getProperty("fileskmp.debugMenu") != null
     private const val FIRST_ID = 1
     private const val LAST_ID = 0x7FFF
 
@@ -298,6 +299,10 @@ object ShellMenu {
             mii.set(I, 0, 80); mii.set(I, 4, 0x1C7)                               // STRING | ID | SUBMENU | FTYPE | STATE | BITMAP
             if (getMenuItemInfo.invokeWithArguments(menu, i, 1, mii) as Int == 0) continue
             val type = mii.get(I, 8); val state = mii.get(I, 12); val id = mii.get(I, 16)
+            // Read the submenu and picture now: the call that fetches the text below doesn't keep them.
+            val sub = MemorySegment.ofAddress(mii.get(A, 24).address())
+            val bmp = MemorySegment.ofAddress(mii.get(A, 72).address())
+            if (debug) System.err.println("MENU d=$depth i=$i type=0x${type.toString(16)} state=0x${state.toString(16)} id=$id sub=0x${sub.address().toString(16)} cch=${mii.get(I, 64)}")
             if (type and 0x800 != 0) { if (out.isNotEmpty() && !out.last().separator) out += ShellItem("", null, separator = true); continue }
             var label = ""
             val cch = mii.get(I, 64)
@@ -308,10 +313,8 @@ object ShellMenu {
                 mii.set(I, 4, 0x1C7)
             }
             label = cleanLabel(label)
-            val sub = mii.get(A, 24)
             val verb = if (sub.address() == 0L && id in FIRST_ID..LAST_ID) verbOf(cm, id - FIRST_ID, arena) else null
             if (label.isEmpty()) label = verb ?: continue
-            val bmp = mii.get(A, 72)
             val icon = if (bmp.address() > 11) runCatching { bitmapImage(bmp) }.getOrNull() else null
             val children = if (sub.address() != 0L && depth < 4) {
                 // Submenus like "Send to" and "Open with" fill themselves when they are about to open.

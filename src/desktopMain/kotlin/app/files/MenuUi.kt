@@ -23,6 +23,7 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Places the menu at the pointer, moved left / up when it would leave the window. */
@@ -43,6 +44,19 @@ private class MenuPosition(val at: IntOffset) : PopupPositionProvider {
 fun ContextMenuPopup(req: MenuRequest, onDismiss: () -> Unit) {
     val p = LocalPalette.current
     val stack = remember(req) { mutableStateListOf<MenuEntry>() }
+    // Loaded once per menu, here rather than in the list: opening a submenu and coming back keeps
+    // what Windows answered (the items still belong to that one menu, so they can still run).
+    val loaded = remember(req) { mutableStateMapOf<MenuEntry, List<MenuEntry>>() }
+    LaunchedEffect(req) {
+        req.entries.filter { it.loader != null }.forEach { e ->
+            launch {
+                loaded[e] = runCatching { withContext(Dispatchers.IO) { e.loader!!() } }.getOrElse { ex ->
+                    ErrorLog.record(ex, "menu: loading entries")
+                    listOf(MenuEntry(tr("Windows menu unavailable", "無法讀取 Windows 選單"), enabled = false, separatorBefore = true))
+                }
+            }
+        }
+    }
     Popup(
         popupPositionProvider = remember(req) { MenuPosition(IntOffset(req.at.x.toInt(), req.at.y.toInt())) },
         onDismissRequest = onDismiss,
@@ -57,34 +71,27 @@ fun ContextMenuPopup(req: MenuRequest, onDismiss: () -> Unit) {
             if (sub != null) {
                 FlyoutItem(sub.label, Icons.AutoMirrored.Outlined.ArrowBack, "") { stack.removeAt(stack.size - 1) }
                 FlyoutSeparator()
-                MenuList(sub.children, onDismiss) { stack.add(it) }
-            } else MenuList(req.entries, onDismiss) { stack.add(it) }
+                MenuList(sub.children, loaded, onDismiss) { stack.add(it) }
+            } else MenuList(req.entries, loaded, onDismiss) { stack.add(it) }
         }
     }
 }
 
 @Composable
-private fun MenuList(entries: List<MenuEntry>, onDismiss: () -> Unit, openSub: (MenuEntry) -> Unit) {
+private fun MenuList(entries: List<MenuEntry>, loaded: Map<MenuEntry, List<MenuEntry>>, onDismiss: () -> Unit, openSub: (MenuEntry) -> Unit) {
     entries.forEach { e ->
-        if (e.loader != null) { LoadedEntries(e, onDismiss, openSub); return@forEach }
+        if (e.loader != null) {
+            val list = loaded[e]
+            if (list != null) MenuList(list, loaded, onDismiss, openSub)
+            else {
+                if (e.separatorBefore) FlyoutSeparator()
+                FlyoutItem(tr("Loading Windows menu…", "正在讀取 Windows 選單…"), Icons.Outlined.MoreHoriz, "", enabled = false) {}
+            }
+            return@forEach
+        }
         if (e.separatorBefore) FlyoutSeparator()
         MenuRow(e) { if (e.children.isNotEmpty()) openSub(e) else { onDismiss(); e.action() } }
     }
-}
-
-@Composable
-private fun LoadedEntries(e: MenuEntry, onDismiss: () -> Unit, openSub: (MenuEntry) -> Unit) {
-    val loaded by produceState<List<MenuEntry>?>(null, e) {
-        value = runCatching { withContext(Dispatchers.IO) { e.loader!!() } }.getOrElse { ex ->
-            ErrorLog.record(ex, "menu: loading entries")
-            listOf(MenuEntry(tr("Windows menu unavailable", "無法讀取 Windows 選單"), enabled = false, separatorBefore = true))
-        }
-    }
-    val list = loaded
-    if (list == null) {
-        if (e.separatorBefore) FlyoutSeparator()
-        FlyoutItem(tr("Loading Windows menu…", "正在讀取 Windows 選單…"), Icons.Outlined.MoreHoriz, "", enabled = false) {}
-    } else MenuList(list, onDismiss, openSub)
 }
 
 @Composable
