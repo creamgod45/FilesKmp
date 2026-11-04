@@ -179,10 +179,17 @@ fun CustomizeToolbarDialog(s: AppState) {
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
     val list = work[ctx] ?: emptyList()
 
-    fun setList(l: List<TbEntry>) { work[ctx] = l; changed = true }
+    fun setList(l: List<TbEntry>) {
+        // Remove stale rowRects entries that are now out of bounds.
+        val newSize = l.size
+        rowRects.keys.filter { it >= newSize }.forEach { rowRects.remove(it) }
+        work[ctx] = l
+        changed = true
+    }
     fun insertIndexFor(y: Float): Int {
-        val rows = rowRects.entries.filter { it.key < list.size }.sortedBy { it.key }
-        return rows.firstOrNull { y < it.value.center.y }?.key ?: list.size
+        val size = list.size
+        val rows = rowRects.entries.filter { it.key < size }.sortedBy { it.key }
+        return rows.firstOrNull { y < it.value.center.y }?.key?.coerceIn(0, size) ?: size
     }
     /** Inside the 新增選項 list, or just under its last row (= add at the end). */
     fun inList(pos: Offset) = pos.x in listRect.left..listRect.right && pos.y in listRect.top..(listRect.bottom + 48f)
@@ -225,7 +232,7 @@ fun CustomizeToolbarDialog(s: AppState) {
                         }
                     }
                     Flyout(open, { open = false }) {
-                        TbContext.entries.forEach { c -> FlyoutItem(c.text, if (c == ctx) Icons.Outlined.Check else null, "") { open = false; ctx = c } }
+                        TbContext.entries.forEach { c -> FlyoutItem(c.text, if (c == ctx) Icons.Outlined.Check else null, "") { open = false; ctx = c; rowRects.clear() } }
                     }
                 }
             }
@@ -302,7 +309,9 @@ fun CustomizeToolbarDialog(s: AppState) {
                             .onGloballyPositioned { listRect = it.boundsInRoot().translate(-rootOrigin) }
                     ) {
                         LazyColumn(Modifier.fillMaxSize()) {
-                            itemsIndexed(list) { i, e ->
+                            // Use the current list snapshot for each item to avoid index-capture bugs.
+                            // Each lambda re-reads `work[ctx]` (via `list`) at the time it fires.
+                            itemsIndexed(list, key = { idx, e -> "$idx:${e.id}" }) { i, e ->
                                 val cmd = TbCommands.get(e.id)
                                 val hoverSrc = remember { MutableInteractionSource() }
                                 val hovered by hoverSrc.collectIsHoveredAsState()
@@ -329,14 +338,24 @@ fun CustomizeToolbarDialog(s: AppState) {
                                         } else {
                                             T(cmd?.listLabel ?: e.id, Modifier.weight(1f))
                                             Box(Modifier.width(56.dp)) {
-                                                TinyCheck(e.showIcon, enabled = cmd?.icon != null, tip = S.showIconTip) { v -> setList(list.toMutableList().also { it[i] = e.copy(showIcon = v) }) }
+                                                // Use the captured index only if it is still in bounds.
+                                                TinyCheck(e.showIcon, enabled = cmd?.icon != null, tip = S.showIconTip) { v ->
+                                                    val cur = work[ctx] ?: return@TinyCheck
+                                                    if (i < cur.size) setList(cur.toMutableList().also { it[i] = cur[i].copy(showIcon = v) })
+                                                }
                                             }
                                             Box(Modifier.width(72.dp)) {
-                                                TinyCheck(e.showLabel, enabled = true, tip = S.showLabelTip) { v -> setList(list.toMutableList().also { it[i] = e.copy(showLabel = v) }) }
+                                                TinyCheck(e.showLabel, enabled = true, tip = S.showLabelTip) { v ->
+                                                    val cur = work[ctx] ?: return@TinyCheck
+                                                    if (i < cur.size) setList(cur.toMutableList().also { it[i] = cur[i].copy(showLabel = v) })
+                                                }
                                             }
                                         }
                                         Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
-                                            IconBtn(Icons.Outlined.Close, S.remove, { setList(list.filterIndexed { j, _ -> j != i }) }, width = 28.dp, height = 28.dp, iconSize = 12.dp,
+                                            IconBtn(Icons.Outlined.Close, S.remove, {
+                                                val cur = work[ctx] ?: return@IconBtn
+                                                if (i < cur.size) setList(cur.filterIndexed { j, _ -> j != i })
+                                            }, width = 28.dp, height = 28.dp, iconSize = 12.dp,
                                                 tint = if (hovered) p.danger else p.textSecondary)
                                         }
                                     }
