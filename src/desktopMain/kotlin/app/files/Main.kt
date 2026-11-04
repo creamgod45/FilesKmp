@@ -78,6 +78,17 @@ fun main(args: Array<String>) {
                         }
                     }
                 }
+            // --shift-wheel x,y: three notches of Shift + mouse wheel there (scrolls a wide table sideways).
+            args.indexOf("--shift-wheel") >= 0 -> args.getOrNull(args.indexOf("--shift-wheel") + 1)?.split(',')?.mapNotNull { it.toFloatOrNull() }
+                ?.takeIf { it.size == 2 }?.let { (x, y) ->
+                    { scene: ImageComposeScene, _: AppState ->
+                        delay(1500.milliseconds)
+                        @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+                        scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Scroll, androidx.compose.ui.geometry.Offset(x, y),
+                            scrollDelta = androidx.compose.ui.geometry.Offset(0f, 3f),
+                            keyboardModifiers = androidx.compose.ui.input.pointer.PointerKeyboardModifiers(isShiftPressed = true))
+                    }
+                }
             // --hover x,y: rest the pointer there for the picture (tooltips, hover states).
             args.indexOf("--hover") >= 0 -> args.getOrNull(args.indexOf("--hover") + 1)?.split(',')?.mapNotNull { it.toFloatOrNull() }
                 ?.takeIf { it.size == 2 }?.let { (x, y) ->

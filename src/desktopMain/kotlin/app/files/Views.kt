@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -429,7 +430,22 @@ fun DetailsLayout(s: AppState, t: TabState, items: List<FileItem>) {
         val fixed = 12 + 4 + 20 + icon.value + 6 + s.nameColumnWidth + 6 + cols.sumOf { s.widthOf(it).toDouble() }.toFloat() + custom.size * CUSTOM_COL_W + 24
         val tableW = maxOf(fixed.dp, maxWidth)
         val hs = rememberScrollState()
-        Column(Modifier.fillMaxSize().horizontalScroll(hs)) {
+        // Wider than the pane: a scrollbar along the bottom, and Shift + wheel scrolls sideways.
+        val overflow = fixed.dp > maxWidth
+        Column(Modifier.fillMaxSize().padding(bottom = if (overflow) 10.dp else 0.dp)
+            .pointerInput(overflow) {
+                if (!overflow) return@pointerInput
+                awaitPointerEventScope {
+                    while (true) {
+                        val e = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                        if (e.type != androidx.compose.ui.input.pointer.PointerEventType.Scroll || !e.keyboardModifiers.isShiftPressed || e.keyboardModifiers.isCtrlPressed) continue
+                        val d = e.changes.firstOrNull()?.scrollDelta ?: continue
+                        hs.dispatchRawDelta((if (d.x != 0f) d.x else d.y) * 64f)
+                        e.changes.forEach { it.consume() }
+                    }
+                }
+            }
+            .horizontalScroll(hs)) {
             // Header (40): click to sort, drag the edges to resize, right-click to choose columns.
             Row(Modifier.width(tableW).height(M.DETAILS_HEADER.dp).contextMenu(entries = headerMenu).padding(start = 12.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.width(4.dp))
@@ -444,7 +460,7 @@ fun DetailsLayout(s: AppState, t: TabState, items: List<FileItem>) {
                 custom.forEach { name -> T(name, Modifier.width(CUSTOM_COL_W.dp).padding(start = 12.dp), size = 13.sp, color = p.textSecondary) }
             }
             Box(Modifier.width(tableW).height(1.dp).background(p.divider))
-            ScrollList(state, Modifier.weight(1f).width(tableW)) {
+            Box(Modifier.weight(1f).width(tableW)) {
                 LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)) {
                     items(items, key = { it.path }) { item ->
                         ItemBox(s, t, item, items, Modifier.fillMaxWidth().height(rowH)) { selected ->
@@ -465,6 +481,10 @@ fun DetailsLayout(s: AppState, t: TabState, items: List<FileItem>) {
                 }
             }
         }
+        // Scrollbars stay on the visible edges while the table scrolls sideways.
+        VerticalScrollbar(rememberScrollbarAdapter(state), Modifier.align(Alignment.TopEnd).fillMaxHeight()
+            .padding(top = (M.DETAILS_HEADER + 5).dp, bottom = if (overflow) 14.dp else 4.dp))
+        if (overflow) HorizontalScrollbar(rememberScrollbarAdapter(hs), Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 4.dp, end = 14.dp, bottom = 2.dp))
         // Column chooser at the header's right end (stays in place while the table scrolls sideways).
         Box(Modifier.align(Alignment.TopEnd).padding(end = 4.dp, top = 6.dp)) { ColumnChooser(s) }
     }
