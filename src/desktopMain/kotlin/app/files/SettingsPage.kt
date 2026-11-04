@@ -36,8 +36,11 @@ private enum class SettingsSection(val label: () -> String, val icon: ImageVecto
 @Composable
 fun SettingsPage(s: AppState) {
     val p = LocalPalette.current
-    var section by remember { mutableStateOf(if (s.settingsStorageRequest) SettingsSection.Storage else SettingsSection.General) }
-    LaunchedEffect(Unit) { s.settingsStorageRequest = false }
+    var section by remember { mutableStateOf(when {
+        s.settingsStorageRequest -> SettingsSection.Storage
+        else -> SettingsSection.entries.firstOrNull { it.name == s.settingsSectionRequest } ?: SettingsSection.General
+    }) }
+    LaunchedEffect(Unit) { s.settingsStorageRequest = false; s.settingsSectionRequest = null }
     Box(Modifier.fillMaxSize().background(Color(0x66000000)).pointerInput(Unit) { detectTapGestures2 { s.settingsOpen = false } }, contentAlignment = Alignment.Center) {
         Row(
             Modifier.fillMaxWidth(0.82f).fillMaxHeight(0.86f).widthIn(max = 1000.dp).shadow8()
@@ -125,10 +128,15 @@ fun SettingsPage(s: AppState) {
                         }
                         SettingsSection.Tags -> TagSettings(s)
                         SettingsSection.Storage -> StorageSettings(s)
-                        SettingsSection.Shortcuts -> ShortcutList()
+                        SettingsSection.Shortcuts -> KeymapEditor(s)
                         SettingsSection.Search -> SearchSettings(s)
                         SettingsSection.About -> {
-                            SettingCard("FilesKmp 1.0") { }
+                            SettingCard("FilesKmp ${AppInfo.version}") {
+                                DialogButton(tr("What's new", "更新資訊與介紹"), primary = false) { s.settingsOpen = false; s.openUpdates() }
+                            }
+                            SettingCard(tr("Settings backups (made before each update)", "設定備份（每次更新前自動建立）") + " · ${SettingsBackup.list().size}") {
+                                DialogButton(tr("Open folder", "開啟資料夾"), primary = false) { s.settingsOpen = false; SettingsBackup.root.mkdirs(); s.newTab(SettingsBackup.root.path) }
+                            }
                             T(S.aboutText, Modifier.padding(8.dp), color = p.textSecondary, maxLines = 6)
                             T("Settings: ${Prefs.dir.path}", Modifier.padding(8.dp), size = 12.sp, color = p.textTertiary, maxLines = 2)
                         }

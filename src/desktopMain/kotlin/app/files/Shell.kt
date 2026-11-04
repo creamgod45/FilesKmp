@@ -87,7 +87,8 @@ fun TabStrip(s: AppState) {
             ) {
                 Hover(Modifier.fillMaxSize(), onClick = { s.tabIndex = i }, shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp), enabled = !sel) {
                     Row(Modifier.fillMaxSize().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (t.isHome) Icons.Filled.Home else Icons.Filled.Folder, null, Modifier.size(16.dp), tint = if (t.isHome) Color(0xFFF7630C) else p.folder)
+                        Icon(when { t.isHome -> Icons.Filled.Home; t.left.isUpdates -> Icons.Filled.NewReleases; else -> Icons.Filled.Folder }, null, Modifier.size(16.dp),
+                            tint = when { t.isHome -> Color(0xFFF7630C); t.left.isUpdates -> p.accent; else -> p.folder })
                         Spacer(Modifier.width(10.dp))
                         T(t.title, Modifier.weight(1f), size = 12.sp)
                         IconBtn(Icons.Outlined.Close, "Close tab", { s.closeTab(i) }, width = 28.dp, height = 24.dp, iconSize = 12.dp)

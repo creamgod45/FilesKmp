@@ -114,6 +114,10 @@ fun main(args: Array<String>) {
                 s.scope.launch { delay(1500.milliseconds); s.quickLook = args[i + 1] }
             }
             if ("--shortcuts" in args) s.shortcutsOpen = true
+            if ("--updates-demo" in args) { s.updateReport = demoUpdateReport(); s.openUpdates() }
+            if ("--welcome" in args) { s.updateReport = UpdateReport(null, AppInfo.version, true, emptyList(), null, ""); s.openUpdates() }
+            if ("--keymap" in args) s.openKeymap()
+            args.firstOrNull { it.startsWith("--keymap=") }?.let { s.openKeymap(it.substringAfter('=')) }
             if ("--flows" in args) s.flowsOpen = true
             args.firstOrNull { it.startsWith("--flows=") }?.let { s.flowsInitial = it.substringAfter('='); s.flowsOpen = true }
             if ("--delete-report" in args) s.deleteReport = DeleteReport(0, listOf(System.getProperty("user.home") + "\\example-folder"), emptyList())
@@ -477,6 +481,8 @@ fun main(args: Array<String>) {
         exitProcess(0)
     }
     if ("--test-custom-persist" in args) { customPersistTest(write = "write" in args); exitProcess(0) }
+    args.indexOf("--test-keymap").takeIf { it >= 0 && it + 1 < args.size }?.let { keymapTest(File(args[it + 1])); exitProcess(0) }
+    args.indexOf("--test-update-fresh").takeIf { it >= 0 && it + 1 < args.size }?.let { updateFreshTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-custom-command").takeIf { it >= 0 && it + 1 < args.size }?.let { customCommandTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-safe-cleaner").takeIf { it >= 0 && it + 1 < args.size }?.let { safeCleanerTest(File(args[it + 1])); exitProcess(0) }
     val benchIdx = args.indexOf("--bench-copy")
@@ -493,7 +499,13 @@ fun main(args: Array<String>) {
         ?.use { loadSvgPainter(it, Density(1f)) }
     application {
         val scope = rememberCoroutineScope()
-        val state = remember { AppState(scope).also { s -> s.translucentActive = translucent; startPath?.let { s.navigate(File(it).absolutePath) } } }
+        val state = remember {
+            AppState(scope).also { s ->
+                s.translucentActive = translucent; startPath?.let { s.navigate(File(it).absolutePath) }
+                // After an update (or on a new install): carry settings over and show 更新資訊 (Updates.kt).
+                runCatching { Updates.onStart(s) }.onFailure { it.printStackTrace() }.getOrNull()?.let { r -> s.updateReport = r; s.openUpdates() }
+            }
+        }
         val windowState = rememberWindowState(size = DpSize(M.WINDOW_W.dp, M.WINDOW_H.dp), position = WindowPosition(Alignment.Center))
         Window(
             onCloseRequest = ::exitApplication,
@@ -774,7 +786,11 @@ fun PaneCard(s: AppState, pane: TabState, modifier: Modifier, active: Boolean) {
             .border(1.dp, if (dual && active) p.accent.copy(alpha = 0.6f) else p.cardStroke, shape)
     ) {
         Box(Modifier.weight(1f)) {
-            if (pane.isHome) HomePage(s) else FolderView(s, pane, items)
+            when {
+                pane.isHome -> HomePage(s)
+                pane.isUpdates -> UpdatesPage(s)
+                else -> FolderView(s, pane, items)
+            }
             // Split view: each pane has its own close button floating in its top-left corner.
             if (dual) PaneCloseButton(Modifier.align(Alignment.TopStart).padding(6.dp)) { s.closePane(pane) }
         }
@@ -808,6 +824,13 @@ fun handleKey(s: AppState, e: KeyEvent): Boolean {
     val ctrl = e.isCtrlPressed
     val shift = e.isShiftPressed
     val alt = e.isAltPressed
+    // 鍵盤快速鍵 editor recording a key: the next key (not a lone modifier) is the answer; Esc cancels.
+    s.keyCapture?.let { done ->
+        if (Hotkeys.isModifier(e)) return true
+        s.keyCapture = null
+        done(if (e.key == Key.Escape && !ctrl && !alt && !shift) null else Hotkeys.specOf(e))
+        return true
+    }
     // 捷徑「等待（按任意鍵略過）」: any key continues.
     s.flowPrompt?.takeIf { it.kind == "wait" }?.let { q -> s.flowPrompt = null; q.answer.complete("skip"); return true }
     val editing = s.textFocus || s.editingPath || s.tab.renaming != null
@@ -837,66 +860,20 @@ fun handleKey(s: AppState, e: KeyEvent): Boolean {
     }
     if (s.dialogOpen) {
         if (e.key == Key.Escape) return s.closeTopDialog()
-        if (e.key == Key.F1) { s.shortcutsOpen = !s.shortcutsOpen; return true }
+        val key = Hotkeys.specOf(e)
+        if (key != null && Keymap.actionsFor(key).firstOrNull()?.id == "ShowShortcuts") { s.shortcutsOpen = !s.shortcutsOpen; return true }
         return false
     }
-    // Every shortcut a command declares (toolbar commands, exact modifiers), then the others below.
+    // Every key the keymap knows (the person's own keys, then the defaults; Keymap.kt).
     if (Hotkeys.dispatch(s, e)) return true
+    // Moving around the list: these keys are fixed (Hotkeys.isReserved).
     when {
-        e.key == Key.Spacebar && !ctrl && !alt -> s.toggleQuickLook()
-        e.key == Key.F1 || (ctrl && e.key == Key.Slash) -> s.shortcutsOpen = true
-        ctrl && !shift && e.key == Key.Z && s.tab.isRecycleBin -> s.restoreSelected()
+        ctrl || alt -> return false
         e.key == Key.MoveHome || e.key == Key.MoveEnd -> jumpSelection(s, e.key == Key.MoveEnd, shift)
-        e.key == Key.DirectionLeft && !alt && s.layout == LayoutMode.Grid -> moveSelection(s, -1, shift)
-        e.key == Key.DirectionRight && !alt && s.layout == LayoutMode.Grid -> moveSelection(s, 1, shift)
-        ctrl && shift && e.key == Key.S -> s.toggleDualPane()
-        ctrl && shift && e.key == Key.T -> s.reopenClosedTab()
-        ctrl && shift && e.key == Key.W -> s.closeAllTabs()
-        ctrl && e.key == Key.Comma -> s.settingsOpen = true
-        ctrl && shift && e.key == Key.N -> s.newFolder()
-        ctrl && shift && e.key == Key.C -> s.copyPath()
-        ctrl && shift && e.key == Key.K -> s.newTab(s.tab.location)
-        ctrl && shift && e.key == Key.One -> s.layout = LayoutMode.Details
-        ctrl && shift && e.key == Key.Two -> s.layout = LayoutMode.List
-        ctrl && shift && e.key == Key.Three -> s.layout = LayoutMode.Cards
-        ctrl && shift && e.key == Key.Four -> s.layout = LayoutMode.Grid
-        ctrl && shift && e.key == Key.Tab -> s.tabIndex = (s.tabIndex - 1 + s.tabs.size) % s.tabs.size
-        ctrl && alt && e.key == Key.I -> s.infoPaneOpen = !s.infoPaneOpen
-        ctrl && e.key == Key.Tab -> s.tabIndex = (s.tabIndex + 1) % s.tabs.size
-        ctrl && e.key == Key.C -> s.copy()
-        ctrl && e.key == Key.X -> s.copy(cut = true)
-        ctrl && e.key == Key.V -> s.paste()
-        ctrl && e.key == Key.A -> s.selectAll()
-        ctrl && e.key == Key.D -> s.requestDelete()
-        ctrl && e.key == Key.T -> s.newTab()
-        ctrl && (e.key == Key.W || e.key == Key.F4) -> s.closeTab(s.tabIndex)
-        ctrl && e.key == Key.R -> s.refresh()
-        ctrl && e.key == Key.H -> s.showHidden = !s.showHidden
-        ctrl && e.key == Key.B -> s.sidebarOpen = !s.sidebarOpen
-        ctrl && (e.key == Key.F || e.key == Key.E) -> s.searchRequest++
-        ctrl && e.key == Key.L -> s.editingPath = true
-        ctrl && (e.key == Key.Minus || e.key == Key.NumPadSubtract) -> s.gridSmaller()
-        ctrl && (e.key == Key.Equals || e.key == Key.NumPadAdd || e.key == Key.Plus) -> s.gridLarger()
-        ctrl && e.key.keyCode in Key.One.keyCode..Key.Nine.keyCode -> {
-            val i = (e.key.keyCode - Key.One.keyCode).toInt()
-            if (i < s.tabs.size) s.tabIndex = i
-        }
-        alt && e.key == Key.DirectionLeft -> s.back()
-        alt && e.key == Key.DirectionRight -> s.forward()
-        alt && e.key == Key.DirectionUp -> s.up()
-        alt && e.key == Key.D -> s.editingPath = true
-        alt && e.key == Key.Enter -> s.infoPaneOpen = true
-        shift && !ctrl && e.key == Key.Delete -> { val sel = s.tab.selection.toList(); if (sel.isNotEmpty()) s.doDelete(sel, true) }
-        !ctrl && e.key == Key.Delete -> s.requestDelete()
-        e.key == Key.F2 -> s.startRename()
-        e.key == Key.F5 -> s.refresh()
-        e.key == Key.F11 -> s.toggleFullScreen?.invoke()
-        e.key == Key.F3 -> s.searchRequest++
-        e.key == Key.Backspace -> s.back()
-        e.key == Key.Enter -> s.openSelected()
+        e.key == Key.DirectionLeft && s.layout == LayoutMode.Grid -> moveSelection(s, -1, shift)
+        e.key == Key.DirectionRight && s.layout == LayoutMode.Grid -> moveSelection(s, 1, shift)
         e.key == Key.Escape -> if (!s.closeTopDialog()) s.clearSelection()
         e.key == Key.DirectionDown || e.key == Key.DirectionUp -> moveSelection(s, if (e.key == Key.DirectionDown) 1 else -1, shift)
-        // Everything else a toolbar command names as its shortcut (Ctrl+Alt+T, Ctrl+Shift+B, Ctrl+`, …).
         else -> return false
     }
     return true

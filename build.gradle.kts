@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "app.files"
-version = providers.gradleProperty("appVersion").getOrElse("1.0.0")
+version = providers.gradleProperty("appVersion").getOrElse("1.1.0")
 val windowsArch = when (System.getProperty("os.arch").lowercase()) {
     "amd64", "x86_64" -> "x64"
     "aarch64", "arm64" -> "arm64"
@@ -23,12 +23,22 @@ val windowJvmOptions = listOf(
     "--enable-native-access=ALL-UNNAMED",
 )
 
+// fileskmp-version.txt in the jar: the app compares it with the last run's version (Updates.kt).
+val versionResource by tasks.registering {
+    val out = layout.buildDirectory.dir("generated/version")
+    val v = project.version.toString()
+    inputs.property("version", v)
+    outputs.dir(out)
+    doLast { out.get().file("fileskmp-version.txt").asFile.apply { parentFile.mkdirs(); writeText(v) } }
+}
+
 kotlin {
     // Windows-only desktop target (Compose Multiplatform on the JVM).
     jvm("desktop")
 
     sourceSets {
         val desktopMain by getting {
+            resources.srcDir(versionResource)
             dependencies {
                 implementation("org.jetbrains.compose.desktop:desktop-jvm-windows-$windowsArch:1.12.2")
                 implementation("org.jetbrains.compose.material3:material3:1.9.0")

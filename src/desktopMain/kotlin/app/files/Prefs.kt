@@ -33,14 +33,25 @@ object Prefs {
     val dir: File = AppDirs.settings.apply { mkdirs() }
     private val file = File(dir, "settings.properties")
     private val props = Properties()
+    /** Settings were already there when the app started (an upgrade or a later run, not a fresh install). */
+    val existedAtStart: Boolean = file.exists()
 
     init {
         try { if (file.exists()) file.reader(Charsets.UTF_8).use { props.load(it) } } catch (_: Exception) {}
     }
 
-    fun str(key: String, def: String): String = props.getProperty(key) ?: def
-    fun bool(key: String, def: Boolean): Boolean = props.getProperty(key)?.toBooleanStrictOrNull() ?: def
-    fun int(key: String, def: Int): Int = props.getProperty(key)?.toIntOrNull() ?: def
+    /** Every default the app asked for this run (key → default): an update compares them with the last version's (Updates.kt). */
+    val requestedDefaults = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun str(key: String, def: String): String { requestedDefaults.putIfAbsent(key, def); return props.getProperty(key) ?: def }
+    fun bool(key: String, def: Boolean): Boolean { requestedDefaults.putIfAbsent(key, def.toString()); return props.getProperty(key)?.toBooleanStrictOrNull() ?: def }
+    fun int(key: String, def: Int): Int { requestedDefaults.putIfAbsent(key, def.toString()); return props.getProperty(key)?.toIntOrNull() ?: def }
+    /** The person's own value for [key], or null when they never set it. */
+    fun raw(key: String): String? = props.getProperty(key)
+    /** Every key the person has a value for. */
+    fun keys(): Set<String> = props.stringPropertyNames()
+    /** Re-reads settings.properties (after a restore wrote it). */
+    fun reload() { props.clear(); try { if (file.exists()) file.reader(Charsets.UTF_8).use { props.load(it) } } catch (_: Exception) {} }
 
     /** Screenshot / test runs: change nothing on disk, so tests never touch the person's settings or session. */
     @Volatile var readOnly = false

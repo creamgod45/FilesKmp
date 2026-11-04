@@ -22,109 +22,93 @@ import androidx.compose.ui.unit.sp
  * "Ctrl++", "Ctrl+`"): one parser, so every command that names a shortcut also answers to it.
  */
 object Hotkeys {
-    private fun keysFor(name: String): List<Key> = when (name.lowercase()) {
-        "left" -> listOf(Key.DirectionLeft); "right" -> listOf(Key.DirectionRight)
-        "up" -> listOf(Key.DirectionUp); "down" -> listOf(Key.DirectionDown)
-        "enter" -> listOf(Key.Enter, Key.NumPadEnter); "delete" -> listOf(Key.Delete)
-        "tab" -> listOf(Key.Tab); "space" -> listOf(Key.Spacebar); "esc" -> listOf(Key.Escape)
-        "backspace" -> listOf(Key.Backspace); "home" -> listOf(Key.MoveHome); "end" -> listOf(Key.MoveEnd)
-        "+" -> listOf(Key.Equals, Key.Plus, Key.NumPadAdd); "-" -> listOf(Key.Minus, Key.NumPadSubtract)
-        "," -> listOf(Key.Comma); "`" -> listOf(Key.Grave); "/" -> listOf(Key.Slash)
-        else -> when {
-            name.length == 1 && name[0].isLetter() -> listOfNotNull(letter(name[0].uppercaseChar()))
-            name.length == 1 && name[0].isDigit() -> listOf(digit(name[0] - '0'))
-            name.matches(Regex("(?i)f\\d{1,2}")) -> listOfNotNull(fkey(name.substring(1).toInt()))
-            else -> emptyList()
+    /** One key as shortcuts write it: its canonical name, other spellings people use, and the keys that produce it. */
+    private class Named(val name: String, val keys: List<Key>, val aliases: Set<String> = emptySet())
+
+    private val table: List<Named> = buildList {
+        add(Named("Left", listOf(Key.DirectionLeft), setOf("←"))); add(Named("Right", listOf(Key.DirectionRight), setOf("→")))
+        add(Named("Up", listOf(Key.DirectionUp), setOf("↑"))); add(Named("Down", listOf(Key.DirectionDown), setOf("↓")))
+        add(Named("Enter", listOf(Key.Enter, Key.NumPadEnter), setOf("return"))); add(Named("Delete", listOf(Key.Delete), setOf("del")))
+        add(Named("Insert", listOf(Key.Insert), setOf("ins"))); add(Named("Tab", listOf(Key.Tab)))
+        add(Named("Space", listOf(Key.Spacebar), setOf("spacebar"))); add(Named("Esc", listOf(Key.Escape), setOf("escape")))
+        add(Named("Backspace", listOf(Key.Backspace))); add(Named("Home", listOf(Key.MoveHome))); add(Named("End", listOf(Key.MoveEnd)))
+        add(Named("PageUp", listOf(Key.PageUp), setOf("pgup"))); add(Named("PageDown", listOf(Key.PageDown), setOf("pgdn")))
+        add(Named("+", listOf(Key.Equals, Key.Plus, Key.NumPadAdd), setOf("plus", "="))); add(Named("-", listOf(Key.Minus, Key.NumPadSubtract), setOf("minus")))
+        add(Named(",", listOf(Key.Comma))); add(Named(".", listOf(Key.Period))); add(Named("`", listOf(Key.Grave)))
+        add(Named("/", listOf(Key.Slash))); add(Named(";", listOf(Key.Semicolon))); add(Named("'", listOf(Key.Apostrophe)))
+        add(Named("[", listOf(Key.LeftBracket))); add(Named("]", listOf(Key.RightBracket))); add(Named("\\", listOf(Key.Backslash)))
+        val letters = listOf(Key.A, Key.B, Key.C, Key.D, Key.E, Key.F, Key.G, Key.H, Key.I, Key.J, Key.K, Key.L, Key.M, Key.N, Key.O, Key.P,
+            Key.Q, Key.R, Key.S, Key.T, Key.U, Key.V, Key.W, Key.X, Key.Y, Key.Z)
+        letters.forEachIndexed { i, k -> add(Named(('A' + i).toString(), listOf(k))) }
+        listOf(Key.Zero, Key.One, Key.Two, Key.Three, Key.Four, Key.Five, Key.Six, Key.Seven, Key.Eight, Key.Nine)
+            .forEachIndexed { i, k -> add(Named(i.toString(), listOf(k))) }
+        listOf(Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12)
+            .forEachIndexed { i, k -> add(Named("F${i + 1}", listOf(k))) }
+    }
+    private val byName: Map<String, Named> = buildMap {
+        table.forEach { n -> put(n.name.lowercase(), n); n.aliases.forEach { put(it.lowercase(), n) } }
+    }
+    private val modifierKeys = setOf(Key.CtrlLeft, Key.CtrlRight, Key.ShiftLeft, Key.ShiftRight, Key.AltLeft, Key.AltRight,
+        Key.MetaLeft, Key.MetaRight, Key.CapsLock, Key.NumLock, Key.Function)
+
+    /** Splits "Ctrl+Shift+N" into modifiers and key; "Ctrl++" ends in the "+" key itself. */
+    private fun split(spec: String): Pair<List<String>, String>? {
+        val t = spec.trim()
+        if (t.isEmpty()) return null
+        if (t == "+") return emptyList<String>() to "+"
+        val parts = if (t.endsWith("++")) t.dropLast(2).split('+').map { it.trim() } + "+" else t.split('+').map { it.trim() }
+        if (parts.any { it.isEmpty() }) return null
+        return parts.dropLast(1) to parts.last()
+    }
+
+    /**
+     * The one way a shortcut is written ("Ctrl+Alt+Shift+Key", canonical key names), or null when
+     * [spec] isn't a shortcut this app can read. "ctrl+shift+n", "Shift+Control+N" → "Ctrl+Shift+N".
+     */
+    fun normalize(spec: String): String? {
+        val (mods, key) = split(spec) ?: return null
+        val named = byName[key.lowercase()] ?: return null
+        val m = mods.map { it.lowercase() }
+        if (m.any { it !in setOf("ctrl", "control", "alt", "shift") }) return null
+        val ctrl = "ctrl" in m || "control" in m
+        // Shift is part of how "+" is typed on many layouts: never part of its name.
+        val shift = "shift" in m && named.name != "+"
+        return buildString {
+            if (ctrl) append("Ctrl+"); if ("alt" in m) append("Alt+"); if (shift) append("Shift+")
+            append(named.name)
         }
     }
 
-    private fun letter(c: Char): Key? = listOf(Key.A, Key.B, Key.C, Key.D, Key.E, Key.F, Key.G, Key.H, Key.I, Key.J, Key.K, Key.L, Key.M, Key.N, Key.O, Key.P,
-            Key.Q, Key.R, Key.S, Key.T, Key.U, Key.V, Key.W, Key.X, Key.Y, Key.Z).getOrNull(c - 'A')
+    /** The shortcut [e] is, written like [normalize] writes it; null for a lone modifier or a key with no name here. */
+    fun specOf(e: KeyEvent): String? {
+        if (e.key in modifierKeys) return null
+        val named = table.firstOrNull { e.key in it.keys } ?: return null
+        return buildString {
+            if (e.isCtrlPressed) append("Ctrl+"); if (e.isAltPressed) append("Alt+")
+            if (e.isShiftPressed && named.name != "+") append("Shift+")
+            append(named.name)
+        }
+    }
 
-    private fun digit(d: Int): Key = listOf(Key.Zero, Key.One, Key.Two, Key.Three, Key.Four, Key.Five, Key.Six, Key.Seven, Key.Eight, Key.Nine)[d]
-    private fun fkey(n: Int): Key? = listOf(Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12).getOrNull(n - 1)
+    /** True for a lone modifier key (Ctrl, Shift, Alt, Win): recording waits for the real key. */
+    fun isModifier(e: KeyEvent) = e.key in modifierKeys
 
     /** True when [e] is exactly [spec] (all of its modifiers and no others). */
     fun matches(spec: String, e: KeyEvent): Boolean {
-        if (spec.isBlank()) return false
-        // "Ctrl++" ends in the "+" key itself.
-        val parts = if (spec.endsWith("++")) spec.dropLast(2).split('+').filter { it.isNotEmpty() } + "+" else spec.split('+')
-        val mods = parts.dropLast(1).map { it.lowercase() }.toSet()
-        if (("ctrl" in mods) != e.isCtrlPressed || ("alt" in mods) != e.isAltPressed) return false
-        val key = parts.last()
-        // Shift is part of how "+" is typed on many layouts: don't insist on it there.
-        if (key != "+" && ("shift" in mods) != e.isShiftPressed) return false
-        return e.key in keysFor(key)
+        val n = normalize(spec) ?: return false
+        return n == specOf(e)
     }
 
-    /** Runs the first toolbar command whose shortcut is [e] (when it can run now). */
-    fun dispatch(s: AppState, e: KeyEvent): Boolean {
-        // The person's shortcuts (捷徑) with a hotkey come first.
-        FlowStore.all().firstOrNull { it.hotkey.isNotEmpty() && matches(it.hotkey, e) }?.let { s.runFlow(it); return true }
-        val cmd = TbCommands.all.firstOrNull { it.hotkey.isNotEmpty() && matches(it.hotkey, e) } ?: return false
-        if (!cmd.enabled(s)) return true
-        if (cmd.isGroup) return false
-        cmd.run(s)
-        return true
+    /**
+     * Keys that move around the file list. They can't be given to a command (without Ctrl or Alt),
+     * because the list needs them: arrows, Home, End and Esc, with or without Shift.
+     */
+    fun isReserved(spec: String): Boolean {
+        val n = normalize(spec) ?: return false
+        if (n.startsWith("Ctrl+") || n.contains("Alt+")) return false
+        return n.removePrefix("Shift+") in setOf("Left", "Right", "Up", "Down", "Home", "End", "Esc")
     }
 
-    /** Shortcuts that aren't toolbar commands, for the 鍵盤快速鍵 list. */
-    val extra: List<Pair<String, Pair<String, String>>> = listOf(
-        "Space" to ("Quick preview of the selected file" to "快速預覽所選檔案"),
-        "← → ↑ ↓" to ("Move between items (in the preview: previous / next file)" to "在項目之間移動（預覽中：上一個／下一個檔案）"),
-        "Shift+↑ / Shift+↓" to ("Extend the selection" to "延伸選取範圍"),
-        "Home / End" to ("First / last item" to "第一個／最後一個項目"),
-        "Backspace" to ("Back" to "上一頁"),
-        "Alt+D" to ("Edit the path" to "編輯路徑"),
-        "F3 / Ctrl+E" to ("Search" to "搜尋"),
-        "Ctrl+R" to ("Refresh" to "重新整理"),
-        "Ctrl+D" to ("Delete" to "刪除"),
-        "Ctrl+1 … Ctrl+9" to ("Go to tab 1–9" to "切換到第 1–9 個分頁"),
-        "Ctrl+Wheel" to ("Icon size" to "圖示大小"),
-        "Ctrl+Z" to ("Restore (in the Recycle Bin)" to "還原（在資源回收筒中）"),
-        "Esc" to ("Close the dialog or preview, or clear the selection" to "關閉對話框或預覽，或清除選取"),
-        "F1 / Ctrl+/" to ("This list" to "此快速鍵清單"),
-    )
-}
-
-/** 鍵盤快速鍵: every shortcut, grouped like the toolbar's command categories. */
-@Composable
-fun ShortcutList() {
-    val p = LocalPalette.current
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        @Composable
-        fun row(keys: String, text: String) {
-            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                T(text, Modifier.weight(1f), size = 13.sp)
-                Box(Modifier.background(p.control, RoundedCornerShape(4.dp)).border(1.dp, p.controlStroke, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 2.dp)) {
-                    T(keys, size = 12.sp, color = p.textSecondary)
-                }
-            }
-        }
-        TbCommands.all.filter { it.hotkey.isNotEmpty() }.groupBy { it.category }.forEach { (cat, cmds) ->
-            GroupTitle(cat.text)
-            cmds.forEach { row(it.hotkey, it.label) }
-        }
-        GroupTitle(if (S.zh) "其他" else "Other")
-        Hotkeys.extra.forEach { (k, t) -> row(k, if (S.zh) t.second else t.first) }
-    }
-}
-
-@Composable
-fun ShortcutsDialog(s: AppState) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(8.dp)
-    Box(Modifier.fillMaxSize().background(Color(0x66000000)).pointerInput(Unit) { detectTapGestures2 { s.shortcutsOpen = false } }, contentAlignment = Alignment.Center) {
-        Column(
-            Modifier.width(560.dp).fillMaxHeight(0.86f).softShadow(shape, 18.dp).background(p.solid, shape).border(1.dp, p.controlStroke, shape)
-                .pointerInput(Unit) { detectTapGestures2 { } }.padding(20.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                T(S.shortcuts, Modifier.weight(1f), size = 20.sp, weight = FontWeight.SemiBold)
-                IconBtn(androidx.compose.material.icons.Icons.Outlined.Close, S.close, { s.shortcutsOpen = false })
-            }
-            Spacer(Modifier.height(8.dp))
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { ShortcutList() }
-        }
-    }
+    /** Runs the command whose shortcut is [e]: the person's keys first, then the defaults (Keymap.kt). */
+    fun dispatch(s: AppState, e: KeyEvent): Boolean = Keymap.dispatch(s, specOf(e) ?: return false)
 }

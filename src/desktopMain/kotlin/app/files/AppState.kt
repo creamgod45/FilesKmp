@@ -25,6 +25,8 @@ const val TAG_PREFIX = "::tag:"
 const val SEARCH_PREFIX = "::search:"
 /** The 網路 page: servers found on the network (see NetworkFs). */
 const val NETWORK = "::network"
+/** 更新資訊與介紹: what changed in the last update (Updates.kt), and an introduction to the app. */
+const val UPDATES = "::updates"
 private const val SEP = "\u0001"
 
 fun searchLocation(root: String, query: String) = "$SEARCH_PREFIX$root$SEP$query"
@@ -38,6 +40,7 @@ class TabState(start: String) {
     val isTag: Boolean get() = location.startsWith(TAG_PREFIX)
     val isSearch: Boolean get() = location.startsWith(SEARCH_PREFIX)
     val isNetwork: Boolean get() = location == NETWORK
+    val isUpdates: Boolean get() = location == UPDATES
     /** 資源回收筒 (RecycleBin.kt): deleted items; restore or delete them for good. */
     val isRecycleBin: Boolean get() = location == RECYCLE_BIN
     /** `\\server`: the list of a server's shares, not a folder. */
@@ -69,6 +72,7 @@ class TabState(start: String) {
             isTag -> "${S.tags}: $tagName"
             isSearch -> "${S.search}: $searchQuery"
             isNetwork -> S.network
+            isUpdates -> tr("What's new", "更新資訊")
             isRecycleBin -> S.recycleBin
             isServer -> NetworkFs.hostOf(location).let { if (NetworkFs.isWslHost(it)) S.wsl else it }
             else -> Fs.displayName(location)
@@ -582,7 +586,7 @@ class AppState(val scope: CoroutineScope) {
         if (!keepSelection) t.selection = emptySet()
         t.renaming = null
         t.error = null
-        if (t.isHome) { t.raw = emptyList(); t.loading = false; return }
+        if (t.isHome || t.isUpdates) { t.raw = emptyList(); t.loading = false; return }
         val path = t.location
         t.loading = true
         if (t.isSearch) {
@@ -879,6 +883,24 @@ class AppState(val scope: CoroutineScope) {
     var quickLook by mutableStateOf<String?>(null)
     /** 鍵盤快速鍵 list (F1). */
     var shortcutsOpen by mutableStateOf(false)
+    /** 鍵盤快速鍵 editor: waiting for a key to record (null answer = cancelled). */
+    var keyCapture by mutableStateOf<((String?) -> Unit)?>(null)
+    /** Settings opens on this section next time (e.g. "Shortcuts"), with this filter in the keymap editor. */
+    var settingsSectionRequest by mutableStateOf<String?>(null)
+    var keymapFilter by mutableStateOf("")
+    /** The last update's report (Updates.kt); shown on the 更新資訊 tab. */
+    var updateReport by mutableStateOf<UpdateReport?>(null)
+
+    /** Opens (or switches to) the 更新資訊 tab. */
+    fun openUpdates() {
+        val i = tabs.indexOfFirst { it.left.isUpdates }
+        if (i >= 0) tabIndex = i else newTab(UPDATES)
+    }
+
+    /** Opens settings on 鍵盤快速鍵, filtered to [filter] (a key or a name). */
+    fun openKeymap(filter: String = "") {
+        keymapFilter = filter; settingsSectionRequest = "Shortcuts"; settingsOpen = true
+    }
 
     /** Space: preview the focused (last selected) item; Space again closes it. */
     fun toggleQuickLook() {

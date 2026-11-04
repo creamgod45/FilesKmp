@@ -42,12 +42,15 @@ class TbCmd(
     val category: TbCategory,
     val icon: ImageVector?,
     val context: TbContext = TbContext.AlwaysVisible,
-    val hotkey: String = "",
+    /** The shortcut it comes with; [hotkey] is what it answers to now (the person can change it, Keymap.kt). */
+    hotkey: String = "",
     val enabled: (AppState) -> Boolean = { true },
     val toggled: ((AppState) -> Boolean)? = null,
     val groupItems: ((AppState) -> List<MenuEntry>)? = null,
     val run: (AppState) -> Unit = {},
 ) {
+    val defaultHotkey: String = hotkey
+    val hotkey: String get() = Keymap.display(id, defaultHotkey)
     val label get() = if (S.zh) zhLabel else enLabel
     val isGroup get() = groupItems != null
     /** Tree / list text: groups get " ..." like the original. */
@@ -217,6 +220,7 @@ object TbCommands {
         TbCmd("OpenFlows", "管理捷徑", "Manage shortcuts", TbCategory.Run, Icons.Outlined.Tune, hotkey = "Ctrl+Alt+S", run = { it.flowsOpen = true }),
         // 預覽與說明
         TbCmd("QuickLook", "快速預覽", "Quick preview", TbCategory.Open, Icons.Outlined.Preview, hotkey = "Space", enabled = { sel(it) }, run = { it.toggleQuickLook() }),
+        TbCmd("WhatsNew", "更新資訊與介紹", "What's new", TbCategory.Open, Icons.Outlined.NewReleases, run = { it.openUpdates() }),
         TbCmd("ShowShortcuts", "鍵盤快速鍵", "Keyboard shortcuts", TbCategory.Open, Icons.Outlined.Keyboard, hotkey = "F1", run = { it.shortcutsOpen = true }),
         TbCmd("CustomizeToolbar", "自訂工具列", "Customize toolbar", TbCategory.Open, null, run = { it.customizeToolbarOpen = true }),
     )
