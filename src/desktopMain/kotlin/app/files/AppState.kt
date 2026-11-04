@@ -790,6 +790,8 @@ class AppState(val scope: CoroutineScope) {
     var gitBranchDialog by mutableStateOf(false)
     // ---- 捷徑 (Flows.kt / FlowsUi.kt)
     var flowsOpen by mutableStateOf(false)
+    /** The shortcut the 捷徑 dialog opens on (screenshots). */
+    var flowsInitial: String? = null
     var flowRun by mutableStateOf<FlowRunState?>(null)
     var flowPrompt by mutableStateOf<FlowPrompt?>(null)
 

@@ -390,6 +390,22 @@ object S {
     val flowStop = t("Stop", "停止"); val flowRunning = t("Running…", "執行中…"); val flowDone = t("Done", "完成"); val flowStopped = t("Stopped", "已停止")
     val flowCopyResult = t("Copy result", "複製結果"); val flowContinue = t("Continue", "繼續")
     val flowBusy = t("A shortcut is already running", "已有捷徑正在執行")
+    val flowIn = t("Input", "輸入"); val flowOut = t("Output", "輸出")
+    val flowInputFrom = t("Works on", "輸入來源"); val flowSaveAs = t("Save result as variable", "結果存成變數")
+    val flowSearchActions = t("Search actions…", "搜尋動作…")
+    val flowAccounts = t("Accounts", "帳戶")
+    val flowBrowseApps = t("Browse…", "瀏覽…"); val flowCliHelp = t("Command-line options", "命令列選項")
+    val flowAppsLoading = t("Looking for apps…", "正在尋找應用程式…")
+    val flowCliHint = t("Click an option to add it to the arguments.", "按一下選項即可加入參數。")
+    val flowWaitSkip = t("Press any key or click to continue", "按任意鍵或按一下以繼續")
+    val flowShowValues = t("values", "個值")
+    val flowSmtp = t("Email (SMTP)", "電子郵件（SMTP）"); val flowTwilio = t("Text messages (Twilio)", "簡訊（Twilio）")
+    val flowAccountsHint = t(
+        "Used by Send email (smtp) and Send text message (twilio). Passwords and tokens are encrypted with Windows DPAPI: only your Windows account on this PC can read them. Drafts and Outlook need no account.",
+        "供「寄送電子郵件（smtp）」與「傳送簡訊（twilio）」使用。密碼與權杖以 Windows DPAPI 加密，只有這台電腦上你的 Windows 帳戶能解開。草稿與 Outlook 方式不需要帳戶。")
+    val flowHost = t("Server", "伺服器"); val flowPort = t("Port", "連接埠"); val flowSecurity = t("Security", "加密")
+    val flowUser = t("User name", "使用者名稱"); val flowPassword = t("Password", "密碼"); val flowFrom = t("From", "寄件者")
+    val flowPasswordKeep = t("(saved — leave empty to keep)", "（已儲存，留白則不變）")
     // 圖示大小
     val iconSize = t("Icon size", "圖示大小")
     // 分割畫面

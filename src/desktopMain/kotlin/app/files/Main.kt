@@ -115,6 +115,7 @@ fun main(args: Array<String>) {
             }
             if ("--shortcuts" in args) s.shortcutsOpen = true
             if ("--flows" in args) s.flowsOpen = true
+            args.firstOrNull { it.startsWith("--flows=") }?.let { s.flowsInitial = it.substringAfter('='); s.flowsOpen = true }
             if ("--delete-report" in args) s.deleteReport = DeleteReport(0, listOf(System.getProperty("user.home") + "\\example-folder"), emptyList())
             args.firstOrNull { it.startsWith("--search=") }?.let { q -> s.scope.launch { delay(1200.milliseconds); s.searchDeep(q.substringAfter('=')) } }
             // --batch-rename / --edit-meta: the dialogs for every item in the folder (preview only in screenshots).
@@ -224,7 +225,7 @@ fun main(args: Array<String>) {
         val s = AppState(CoroutineScope(SupervisorJob()))
         s.navigate(dir.path)
         suspend fun run(f: Flow, dry: Boolean, params: Map<String, String> = emptyMap()): List<String> {
-            val r = FlowRun(s, f, emptyList(), params, dry, { null }) { println("   log: $it") }
+            val r = FlowRun(s, f, emptyList(), params, dry, { null }, { println("   log: $it") })
             r.runSteps(f.steps); return r.items
         }
         runBlocking {
@@ -251,6 +252,165 @@ fun main(args: Array<String>) {
                 { "action": "shell.run", "args": { "shell": "powershell", "script": "(${'$'}env:FILES_ITEMS -split \"`n\").Count" } } ] }""")
             println("shell.run: " + run(ps, dry = false))
             println("bad schema: " + runCatching { Flow.fromJson("x", """{"schema":"other","steps":[]}""") }.exceptionOrNull()?.message)
+        }
+        exitProcess(0)
+    }
+    // --test-flows2 <empty dir>: the typed actions — text, lists, JSON, numbers, dates, Base64, control,
+    // HTTP (local server), apps / CLI, read-only Windows calls, mail (MIME + local fake SMTP), speech to a file.
+    args.indexOf("--test-flows2").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
+        Prefs.readOnly = true
+        val dir = File(args[i + 1]).apply { mkdirs() }
+        val s = AppState(CoroutineScope(SupervisorJob()))
+        s.navigate(dir.path)
+        fun check(name: String, got: Any?, want: Any?) = println((if (got == want) "PASS " else "FAIL ") + name + ": " + got + if (got != want) "   (want $want)" else "")
+        suspend fun run(steps: String, input: List<String> = emptyList(), dry: Boolean = false, ask: suspend (FlowPrompt) -> String? = { null }): FlowRun {
+            val f = Flow.fromJson("t", """{ "schema": "fileskmp.shortcut/v1", "name": "t", "steps": [ $steps ] }""")
+            val r = FlowRun(s, f, input, emptyMap(), dry, ask, { if (System.getenv("FK_LOG") != null) println("   log: $it") })
+            r.runSteps(f.steps); return r
+        }
+        fun j(p: String) = p.replace("\\", "\\\\")
+        // Registry: unique ids, every sample round-trips and type-checks cleanly.
+        val ids = FlowActions.all.map { it.id }
+        check("actions", ids.size, ids.distinct().size); println("     ${ids.size} actions in ${FlowActions.all.map { it.category }.distinct().size} categories")
+        FlowStore.samples().forEach { f ->
+            val jtext = f.toJson()
+            check("roundtrip ${f.id}", Flow.fromJson(f.id, jtext).toJson() == jtext, true)
+            val warns = FlowActions.typeFlow(f.steps, FlowActions.startType(f.accepts)).mapNotNull { it.warning }
+            check("types ${f.id}", warns, emptyList<String>())
+        }
+        val bad = FlowActions.typeFlow(Flow.fromJson("x", """{"schema":"fileskmp.shortcut/v1","steps":[{"action":"text.set"},{"action":"file.hash"}]}""").steps, VType.None)
+        check("type warning text→files", bad[1].warning != null, true)
+        runBlocking {
+            // text
+            check("text.find regex group", run("""{"action":"list.make","args":{"items":"id=12 x\nid=7"}},{"action":"text.find","args":{"find":"id=(\\d+)","regex":true,"group":1}}""").items, listOf("12", "7"))
+            check("text.test filter startsWith", run("""{"action":"list.make","args":{"items":"apple\nbanana\navocado"}},{"action":"text.test","args":{"op":"startsWith","value":"a"}}""").items, listOf("apple", "avocado"))
+            check("text.test any endsWith", run("""{"action":"list.make","args":{"items":"a.txt\nb.md"}},{"action":"text.test","args":{"op":"endsWith","value":".md","mode":"any"}}""").items, listOf("true"))
+            check("text.indexOf", run("""{"action":"text.set","args":{"text":"hello world"}},{"action":"text.indexOf","args":{"find":"o","from":"last"}}""").items, listOf("8"))
+            check("text.substring", run("""{"action":"text.set","args":{"text":"hello world"}},{"action":"text.substring","args":{"start":-5}}""").items, listOf("world"))
+            check("text.case snake", run("""{"action":"text.set","args":{"text":"Hello Big World"}},{"action":"text.case","args":{"to":"snake"}}""").items, listOf("hello_big_world"))
+            check("text.split + length", run("""{"action":"text.set","args":{"text":"a,bb,ccc"}},{"action":"text.split","args":{"separator":","}},{"action":"text.length"}""").items, listOf("1", "2", "3"))
+            // lists
+            check("list.sort natural", run("""{"action":"list.make","args":{"items":"file10\nfile2\nfile1"}},{"action":"list.sort"}""").items, listOf("file1", "file2", "file10"))
+            check("list.item -1", run("""{"action":"list.make","args":{"items":"a\nb\nc"}},{"action":"list.item","args":{"which":"index","index":-1}}""").items, listOf("c"))
+            check("list.unique + count", run("""{"action":"list.make","args":{"items":"a\nb\na"}},{"action":"list.unique"},{"action":"list.count"}""").items, listOf("2"))
+            // dictionaries / JSON
+            check("json.make/get", run("""{"action":"json.make","args":{"entries":"name=Ann\nage=31\ntags=[\"x\",\"y\"]"}},{"action":"json.get","args":{"path":"tags[*]"}}""").items, listOf("x", "y"))
+            check("json.set nested", run("""{"action":"text.set","args":{"text":"{}"}},{"action":"json.set","args":{"path":"a.b[1]","value":"5"}},{"action":"json.decode","args":{"as":"flatten"}}""").items, listOf("a.b[0]=", "a.b[1]=5"))
+            check("json.encode/decode", run("""{"action":"list.make","args":{"items":"1\ntwo\ntrue"}},{"action":"json.encode","args":{"pretty":false}},{"action":"json.decode"}""").items, listOf("1", "two", "true"))
+            // numbers, dates, base64
+            check("number.calc", run("""{"action":"list.make","args":{"items":"3\n4"}},{"action":"number.calc","args":{"formula":"round(sqrt({first}^2 + {last}^2) * 1.5, 1)"}}""").items, listOf("7.5"))
+            check("number.stats median", run("""{"action":"list.make","args":{"items":"5\n1\n9\n3"}},{"action":"number.stats","args":{"of":"median"}}""").items, listOf("4"))
+            check("time.adjust", run("""{"action":"text.set","args":{"text":"2024-01-31 10:00"}},{"action":"time.adjust","args":{"amount":1,"unit":"months","format":"yyyy-MM-dd"}}""").items, listOf("2024-02-29"))
+            check("time.diff days", run("""{"action":"text.set","args":{"text":"2024-01-01"}},{"action":"time.diff","args":{"to":"2024-03-01","unit":"days"}}""").items, listOf("60"))
+            check("time.format epoch", run("""{"action":"text.set","args":{"text":"0"}},{"action":"time.format","args":{"format":"yyyy"}}""").items.first().length, 4)
+            check("base64 round trip", run("""{"action":"text.set","args":{"text":"中文 ✓"}},{"action":"base64.encode"},{"action":"base64.decode"}""").items, listOf("中文 ✓"))
+            val bin = File(dir, "bin.dat").apply { writeBytes(ByteArray(300) { it.toByte() }) }
+            val dec = run("""{"action":"base64.encode","args":{"source":"file"}},{"action":"base64.decode","args":{"to":"file","path":"${j(dir.path)}\\out.dat"}}""", listOf(bin.path)).items
+            check("base64 file round trip", File(dec.first()).readBytes().contentEquals(bin.readBytes()), true)
+            // control: input sources, saveAs, if, repeat, flow.run, wait
+            check("input var + saveAs", run("""{"action":"list.make","args":{"items":"a\nb"},"saveAs":"letters"},{"action":"text.set","args":{"text":"x"}},{"action":"list.count","input":"var:letters"}""").items, listOf("2"))
+            check("input shortcut", run("""{"action":"text.set","args":{"text":"x"}},{"action":"list.count","input":"shortcut"}""", listOf("p", "q", "r")).items, listOf("3"))
+            check("if else", run("""{"action":"text.set","args":{"text":"5"}},{"action":"if","args":{"op":">","value":"10","then":[{"action":"text.set","args":{"text":"big"}}],"else":[{"action":"text.set","args":{"text":"small"}}]}}""").items, listOf("small"))
+            check("repeat", run("""{"action":"text.set","args":{"text":"x"}},{"action":"repeat","args":{"times":3,"steps":[{"action":"text.template","args":{"template":"{item}{var.index}"}}]}}""").items, listOf("x1", "x2", "x3"))
+            FlowStore.testFlows = listOf(Flow.fromJson("child", """{"schema":"fileskmp.shortcut/v1","name":"Double","params":[{"id":"k","label":"k","default":"2"}],"steps":[{"action":"number.calc","args":{"formula":"{item} * {param.k}","perItem":true}}]}"""))
+            check("flow.run with params", run("""{"action":"list.make","args":{"items":"1\n2"}},{"action":"flow.run","args":{"shortcut":"Double","params":"k=10"}}""").items, listOf("10", "20"))
+            FlowStore.testFlows = listOf(Flow.fromJson("loop", """{"schema":"fileskmp.shortcut/v1","name":"Loop","steps":[{"action":"flow.run","args":{"shortcut":"loop"}}]}"""))
+            check("flow.run depth limit", runCatching { run("""{"action":"flow.run","args":{"shortcut":"loop"}}""") }.exceptionOrNull()?.message?.contains("8"), true)
+            FlowStore.testFlows = emptyList()
+            val t0 = System.nanoTime()
+            check("wait.skippable skipped", run("""{"action":"wait.skippable","args":{"seconds":30}},{"action":"var.get","args":{"name":"skipped"}}""", ask = { "skip" }).items, listOf("true"))
+            check("wait 0.2 s", run("""{"action":"wait","args":{"seconds":0.2}}""").let { (System.nanoTime() - t0) / 1_000_000 in 150..5000 }, true)
+            // files
+            check("file.create + exists + detail", run("""{"action":"file.create","args":{"path":"${j(dir.path)}\\n.txt","content":"a\nb\nc"}},{"action":"file.detail","args":{"detail":"lines"}}""").items, listOf("3"))
+            check("file.get missing filtered", run("""{"action":"text.set","args":{"text":"${j(dir.path)}\\nope.txt"}},{"action":"file.get"}""").items, emptyList<String>())
+            // HTTP against a local server
+            val srv = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+            srv.createContext("/json") { ex -> val b = """{"repo":{"stars":42,"tags":["a","b"]}}""".toByteArray(); ex.responseHeaders.add("Content-Type", "application/json"); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
+            srv.createContext("/echo") { ex -> val got = ex.requestBody.readAllBytes(); val b = ("${ex.requestMethod} ${ex.requestHeaders.getFirst("Content-Type")?.substringBefore(';')} ${got.size} " + String(got).contains("filename=\"bin.dat\"")).toByteArray(); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
+            srv.createContext("/missing") { ex -> ex.sendResponseHeaders(404, -1); ex.close() }
+            srv.start()
+            val base = "http://127.0.0.1:${srv.address.port}"
+            check("http json + json.get", run("""{"action":"http.request","args":{"url":"$base/json","output":"json"}},{"action":"json.get","args":{"path":"repo.stars"}}""").items, listOf("42"))
+            check("http multipart upload", run("""{"action":"http.request","args":{"method":"POST","url":"$base/echo","bodyType":"multipart","body":"note=hi"}}""", listOf(bin.path)).items.first().let { it.startsWith("POST multipart/form-data") && it.endsWith("true") }, true)
+            check("http status 404 (no stop)", run("""{"action":"http.request","args":{"url":"$base/missing","output":"status","failOnError":false}}""").items, listOf("404"))
+            check("http 404 stops", runCatching { run("""{"action":"http.request","args":{"url":"$base/missing"}}""") }.exceptionOrNull() is FlowStopped, true)
+            check("http download", run("""{"action":"http.request","args":{"url":"$base/json","output":"file","saveTo":"${j(dir.path)}\\"}}""").items.map { File(it).name to File(it).length() }, listOf("json" to 38L))
+            check("http POST skipped in dry run", run("""{"action":"http.request","args":{"method":"POST","url":"$base/echo","output":"status"}}""", dry = true).items, emptyList<String>())
+            srv.stop(0)
+            // apps
+            var t = System.nanoTime()
+            val cat = WinApps.catalog(refresh = true)
+            println("     app catalog: ${cat.size} apps (" + cat.groupBy { it.kind }.map { "${it.key} ${it.value.size}" }.joinToString(", ") + ") in ${(System.nanoTime() - t) / 1_000_000} ms")
+            check("catalog has notepad", WinApps.search("notepad").isNotEmpty(), true)
+            check("subsystem where.exe", WinApps.subsystem(WinApps.onPath("where")!!), "console")
+            check("subsystem notepad.exe", WinApps.subsystem(WinApps.onPath("notepad")!!), "gui")
+            val opts = WinApps.parseOptions(WinApps.cliHelp("where"))
+            println("     where /? options: " + opts.joinToString(" ") { it.name })
+            check("cli options found", opts.size >= 3, true)
+            check("gui app refused for cli", runCatching { WinApps.cliHelp("notepad") }.exceptionOrNull()?.message?.isNotEmpty(), true)
+            check("app.launch capture", run("""{"action":"app.launch","args":{"app":"where","args":"cmd.exe","output":"output"}}""").items.any { it.endsWith("cmd.exe", true) }, true)
+            val bat = File(dir, "echo arg.cmd").apply { writeText("@echo off\r\necho [%1]\r\n") }
+            val marker = File(dir, "pwned.txt")
+            check("batch arg with & stays text", run("""{"action":"app.launch","args":{"app":"${j(bat.path)}","args":"\"a&echo x>${j(marker.path)}\"","output":"output"}}""").items to marker.exists(),
+                listOf("[\"a&echo x>${marker.path}\"]") to false)
+            check("batch arg with % refused", runCatching { run("""{"action":"app.launch","args":{"app":"${j(bat.path)}","args":"%PATH%","output":"output"}}""") }.isFailure, true)
+            check("app.running explorer", run("""{"action":"app.running","args":{"name":"explorer"}}""").items, listOf("true"))
+            check("app.launch dry run", run("""{"action":"app.launch","args":{"app":"notepad"}}""", dry = true).items, emptyList<String>())
+            // Windows, read only
+            t = System.nanoTime()
+            val vol = WinSys.volume()
+            println("     volume: ${vol.first}% muted=${vol.second} (${(System.nanoTime() - t) / 1_000_000} ms)")
+            check("volume in range", vol.first in 0..100, true)
+            check("volume action get", run("""{"action":"volume"}""").items, listOf(vol.first.toString()))
+            check("volume set skipped in dry run", run("""{"action":"volume","args":{"op":"set","value":3}}""", dry = true).items, listOf(vol.first.toString()))
+            println("     battery: " + run("""{"action":"battery","args":{"get":"all"}}""").items.first().replace("\n", " "))
+            println("     banners off (dnd): " + run("""{"action":"dnd"}""").items)
+            val shot = run("""{"action":"screenshot","args":{"to":"${j(dir.path)}\\shot.png"}}""").items.first()
+            val img = javax.imageio.ImageIO.read(File(shot))
+            println("     screenshot ${img.width}x${img.height}, ${File(shot).length() / 1024} KiB")
+            check("screenshot written", img.width > 100, true)
+            check("dpapi round trip", WinSys.unprotect(WinSys.protect("p@ss 密碼")), "p@ss 密碼")
+            // speech to a wav file (silent), sound through both players (a silent wav)
+            val wav = run("""{"action":"speak","args":{"text":"FilesKmp","saveTo":"${j(dir.path)}\\speech.wav"}}""").items.first()
+            check("speak to wav", File(wav).length() > 1000, true)
+            val silent = File(dir, "silent.wav").apply {
+                val pcm = ByteArray(8000); val o = java.io.ByteArrayOutputStream()
+                javax.sound.sampled.AudioSystem.write(javax.sound.sampled.AudioInputStream(pcm.inputStream(), javax.sound.sampled.AudioFormat(8000f, 8, 1, true, false), pcm.size.toLong()), javax.sound.sampled.AudioFileFormat.Type.WAVE, o)
+                writeBytes(o.toByteArray())
+            }
+            t = System.nanoTime(); WinSys.play(silent.path, wait = true); println("     PlaySound wav: ${(System.nanoTime() - t) / 1_000_000} ms")
+            val mp = silent.copyTo(File(dir, "silent-mci.wma"), true)
+            println("     MCI: " + runCatching { WinSys.play(mp.path, wait = true); "ok" }.getOrElse { it.message })
+            // mail: MIME and a local fake SMTP server
+            val attach = File(dir, "報告 1.txt").apply { writeText("hello") }
+            val mime = String(Mailer.mime(Mailer.Mail("me@x.test", listOf("you@x.test"), emptyList(), emptyList(), "主旨 ✓", "內文", false, listOf(attach)), draft = true, includeBcc = true))
+            check("mime draft", mime.contains("X-Unsent: 1") && mime.contains("filename*=UTF-8''%E5%A0%B1%E5%91%8A%201.txt") && mime.contains("Subject: =?UTF-8?B?"), true)
+            val got = java.util.concurrent.CompletableFuture<String>()
+            val ss = java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())
+            Thread {
+                ss.accept().use { c ->
+                    val r = c.getInputStream().bufferedReader(); val w = c.getOutputStream().bufferedWriter()
+                    fun say(x: String) { w.write(x + "\r\n"); w.flush() }
+                    say("220 fake"); val log = StringBuilder()
+                    while (true) {
+                        val l = r.readLine() ?: break; log.append(l).append('\n')
+                        when {
+                            l.startsWith("EHLO") -> { say("250-fake"); say("250 AUTH PLAIN LOGIN") }
+                            l.startsWith("AUTH PLAIN") -> say("235 ok")
+                            l == "DATA" -> { say("354 go"); while (true) { val d = r.readLine() ?: break; if (d == ".") break; log.append(d).append('\n') }; say("250 queued") }
+                            l == "QUIT" -> { say("221 bye"); break }
+                            else -> say("250 ok")
+                        }
+                    }
+                    got.complete(log.toString())
+                }
+            }.start()
+            Mailer.smtp(Mailer.Mail("", listOf("you@x.test"), emptyList(), listOf("hidden@x.test"), "Hi", "Body", false, listOf(attach)),
+                Mailer.SmtpConfig("127.0.0.1", ss.localPort, "none", "me@x.test", "secret", "Me <me@x.test>"))
+            val conv = got.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            check("smtp conversation", listOf("MAIL FROM:<me@x.test>", "RCPT TO:<you@x.test>", "RCPT TO:<hidden@x.test>", "Content-Disposition: attachment").all { conv.contains(it) } && !conv.contains("Bcc:"), true)
+            check("email dry run", run("""{"action":"email.send","args":{"to":"a@b.test","method":"smtp"}}""", listOf(attach.path), dry = true).items, listOf(attach.path))
+            check("sms dry run", run("""{"action":"sms.send","args":{"to":"+886900000000","body":"hi"}}""", dry = true).items, emptyList<String>())
         }
         exitProcess(0)
     }
@@ -648,6 +808,8 @@ fun handleKey(s: AppState, e: KeyEvent): Boolean {
     val ctrl = e.isCtrlPressed
     val shift = e.isShiftPressed
     val alt = e.isAltPressed
+    // 捷徑「等待（按任意鍵略過）」: any key continues.
+    s.flowPrompt?.takeIf { it.kind == "wait" }?.let { q -> s.flowPrompt = null; q.answer.complete("skip"); return true }
     val editing = s.textFocus || s.editingPath || s.tab.renaming != null
     if (editing) {
         return false
@@ -903,7 +1065,8 @@ fun titleBarTest() = runBlocking(Dispatchers.Swing) {
 
 /**
  * SafeCleaner on a prepared fixture folder (see the test notes): [dir]\cache holds old.tmp, new.tmp
- * and a junction "link" to [dir]ictim; [dir]ootlink is a junction to victim used as a root.
+ * and a junction "link" to [dir]ictim; [dir]
+ootlink is a junction to victim used as a root.
  * Prints what was planned and what is left.
  */
 fun safeCleanerTest(dir: File) {

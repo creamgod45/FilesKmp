@@ -43,6 +43,10 @@ fun flowIcon(name: String): ImageVector = when (name) {
     "archive" -> Icons.Outlined.FolderZip
     "music" -> Icons.Outlined.MusicNote
     "terminal" -> Icons.Outlined.Terminal
+    "mail" -> Icons.Outlined.Mail
+    "timer" -> Icons.Outlined.Timer
+    "web" -> Icons.Outlined.Language
+    "battery" -> Icons.Outlined.BatteryAlert
     else -> Icons.Outlined.Bolt
 }
 
@@ -66,7 +70,7 @@ fun FlowsDialog(s: AppState) {
     val p = LocalPalette.current
     LaunchedEffect(Unit) { FlowStore.reload() }
     val all = FlowStore.all()
-    var selectedId by remember { mutableStateOf(all.firstOrNull()?.id) }
+    var selectedId by remember { mutableStateOf(s.flowsInitial?.takeIf { id -> all.any { it.id == id } } ?: all.firstOrNull()?.id) }
     val selected = all.firstOrNull { it.id == selectedId }
     var draft by remember(selectedId, FlowStore.mine) { mutableStateOf(selected) }
     var tab by remember { mutableStateOf(0) }
@@ -117,7 +121,7 @@ fun FlowsDialog(s: AppState) {
                     IconBtn(Icons.Outlined.Close, S.close, close)
                 }
                 Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf(S.flowEdit, "JSON", S.flowReference).forEachIndexed { i, label ->
+                    listOf(S.flowEdit, "JSON", S.flowReference, S.flowAccounts).forEachIndexed { i, label ->
                         Hover(Modifier.height(30.dp), onClick = {
                             if (tab == 1 && i != 1) runCatching { Flow.fromJson(d.id, jsonText).copy(builtIn = d.builtIn) }.onSuccess { draft = it; message = null }.onFailure { message = it.message }
                             tab = i
@@ -128,7 +132,8 @@ fun FlowsDialog(s: AppState) {
                     when (tab) {
                         0 -> FlowEditor(d) { draft = it }
                         1 -> MultiField(jsonText, { jsonText = it }, Modifier.fillMaxSize().verticalScroll(rememberScrollState()), mono = true)
-                        else -> ActionReference()
+                        2 -> ActionReference()
+                        else -> AccountsPanel()
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -183,20 +188,32 @@ private fun FlowEditor(f: Flow, onChange: (Flow) -> Unit) {
             T("+ " + S.flowAddParam, Modifier.align(Alignment.CenterStart).padding(horizontal = 6.dp), size = 12.sp, color = p.accentText)
         }
         GroupTitle(S.flowSteps)
-        StepList(f.steps) { onChange(f.copy(steps = it)) }
+        val start = FlowActions.startType(f.accepts)
+        StepList(f.steps, 0, start, start, flowVariables(f.steps)) { onChange(f.copy(steps = it)) }
     }
 }
 
+/** Every variable name a shortcut sets (saveAs, var.set), for the input pickers. */
+private fun flowVariables(steps: List<FlowStep>): List<String> = steps.flatMap { st ->
+    val own = listOfNotNull(st.saveAs.trim().takeIf { it.isNotEmpty() }, if (st.action == "var.set") (st.args["name"] ?: "saved").toString() else null)
+    @Suppress("UNCHECKED_CAST") val inner = st.args.values.filterIsInstance<List<*>>().filter { l -> l.all { it is FlowStep } }.flatMap { flowVariables(it as List<FlowStep>) }
+    own + inner
+}.distinct()
+
 @Composable
-private fun StepList(steps: List<FlowStep>, depth: Int = 0, onChange: (List<FlowStep>) -> Unit) {
+private fun StepList(steps: List<FlowStep>, depth: Int, start: VType, shortcutType: VType, vars: List<String>, onChange: (List<FlowStep>) -> Unit) {
     val p = LocalPalette.current
+    val types = remember(steps, start, shortcutType) { FlowActions.typeFlow(steps, start, shortcutType) }
     Column(Modifier.padding(start = (depth * 18).dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         steps.forEachIndexed { i, st ->
-            StepCard(st, i, steps.size, depth,
+            StepCard(st, i, steps.size, depth, types.getOrNull(i), shortcutType, vars,
                 onChange = { n -> onChange(steps.toMutableList().also { it[i] = n }) },
                 onMove = { d -> val j = i + d; if (j in steps.indices) onChange(steps.toMutableList().also { val x = it[i]; it[i] = it[j]; it[j] = x }) },
                 onDelete = { onChange(steps.filterIndexed { j, _ -> j != i }) })
-            if (i < steps.size - 1) Icon(Icons.Outlined.ArrowDownward, null, Modifier.padding(start = 16.dp).size(12.dp), tint = p.textTertiary)
+            if (i < steps.size - 1) Row(Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.ArrowDownward, null, Modifier.size(12.dp), tint = p.textTertiary)
+                types.getOrNull(i)?.let { T("  " + it.outgoing.label, size = 10.sp, color = p.textTertiary) }
+            }
         }
         AddStepMenu { onChange(steps + FlowStep(it.id)) }
     }
@@ -205,12 +222,16 @@ private fun StepList(steps: List<FlowStep>, depth: Int = 0, onChange: (List<Flow
 @Composable
 private fun AddStepMenu(add: (FlowAction) -> Unit) {
     var open by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
     val p = LocalPalette.current
     Box {
-        Hover(Modifier.height(30.dp), onClick = { open = true }) { T("+ " + S.flowAddStep, Modifier.align(Alignment.CenterStart).padding(horizontal = 8.dp), size = 12.sp, color = p.accentText) }
+        Hover(Modifier.height(30.dp), onClick = { open = true; query = "" }) { T("+ " + S.flowAddStep, Modifier.align(Alignment.CenterStart).padding(horizontal = 8.dp), size = 12.sp, color = p.accentText) }
         Flyout(open, { open = false }) {
-            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
-                FlowActions.all.groupBy { it.category }.forEach { (cat, acts) ->
+            PlainField(query, { query = it }, Modifier.width(420.dp).padding(8.dp), placeholder = S.flowSearchActions)
+            val q = query.trim().lowercase()
+            val shown = FlowActions.all.filter { q.isEmpty() || it.id.contains(q) || it.zh.lowercase().contains(q) || it.en.lowercase().contains(q) || it.descZh.contains(q) || it.descEn.lowercase().contains(q) }
+            Column(Modifier.width(420.dp).heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                shown.groupBy { it.category }.forEach { (cat, acts) ->
                     T(FlowActions.categoryLabel(cat), Modifier.padding(start = 10.dp, top = 8.dp, bottom = 2.dp), size = 11.sp, color = p.textSecondary)
                     acts.forEach { a -> FlowItemRow(a) { open = false; add(a) } }
                 }
@@ -222,10 +243,38 @@ private fun AddStepMenu(add: (FlowAction) -> Unit) {
 @Composable
 private fun FlowItemRow(a: FlowAction, onClick: () -> Unit) {
     val p = LocalPalette.current
-    Hover(Modifier.fillMaxWidth().widthIn(min = 320.dp), onClick = onClick) {
+    Hover(Modifier.fillMaxWidth(), onClick = onClick) {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) {
-            T(a.label + if (a.changes) "  •" else "", size = 13.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                T(a.label + if (a.changes) "  •" else "", Modifier.weight(1f), size = 13.sp)
+                IoChip(a.ioLabel)
+            }
             T(a.description, size = 11.sp, color = p.textTertiary, maxLines = 2)
+        }
+    }
+}
+
+/** "檔案 → 文字" in a small pill. */
+@Composable
+private fun IoChip(text: String, warn: Boolean = false) {
+    val p = LocalPalette.current
+    T(text, Modifier.background(if (warn) p.danger.copy(alpha = 0.14f) else p.accent.copy(alpha = 0.12f), RoundedCornerShape(10.dp)).padding(horizontal = 8.dp, vertical = 2.dp),
+        size = 11.sp, color = if (warn) p.danger else p.accentText)
+}
+
+/** A small drop-down: the current choice, and a list of (value, label). */
+@Composable
+private fun ChoiceBox(current: String, choices: List<Pair<String, String>>, modifier: Modifier = Modifier, onPick: (String) -> Unit) {
+    val p = LocalPalette.current
+    var open by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Hover(Modifier.height(30.dp).border(1.dp, p.controlStroke, RoundedCornerShape(4.dp)), onClick = { open = true }) {
+            Row(Modifier.fillMaxHeight().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                T(choices.firstOrNull { it.first == current }?.second ?: current, size = 12.sp, maxLines = 1); Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(14.dp))
+            }
+        }
+        Flyout(open, { open = false }) {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) { choices.forEach { (v, l) -> FlowyChoice(l, v == current) { open = false; onPick(v) } } }
         }
     }
 }
@@ -240,27 +289,34 @@ private fun FlowCheck(on: Boolean, label: String, onToggle: () -> Unit) {
 }
 
 @Composable
-private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, onChange: (FlowStep) -> Unit, onMove: (Int) -> Unit, onDelete: () -> Unit) {
+private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, type: FlowActions.StepType?, shortcutType: VType, vars: List<String>,
+                     onChange: (FlowStep) -> Unit, onMove: (Int) -> Unit, onDelete: () -> Unit) {
     val p = LocalPalette.current
     val a = FlowActions.byId[st.action]
-    Column(Modifier.fillMaxWidth().background(p.card, RoundedCornerShape(6.dp)).border(1.dp, if (a == null) p.danger else p.cardStroke, RoundedCornerShape(6.dp)).padding(10.dp),
+    val warn = type?.warning
+    Column(Modifier.fillMaxWidth().background(p.card, RoundedCornerShape(6.dp)).border(1.dp, if (a == null || warn != null) p.danger else p.cardStroke, RoundedCornerShape(6.dp)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            FlowCheck(st.enabled, "${index + 1}. " + (a?.label ?: st.action)) { onChange(FlowStep(st.action, st.args, !st.enabled)) }
+            FlowCheck(st.enabled, "${index + 1}. " + (a?.label ?: st.action)) { onChange(st.with(enabled = !st.enabled)) }
             if (a != null) T("  " + FlowActions.categoryLabel(a.category) + if (a.changes) " · " + S.flowChanges else "", size = 11.sp, color = p.textTertiary)
             Spacer(Modifier.weight(1f))
+            // What this step really gets and leaves here (following the steps before it).
+            if (a != null && type != null) IoChip(S.flowIn + " " + (if (a.input == VType.None) VType.None.label else type.incoming.label) + "  →  " + S.flowOut + " " + type.outgoing.label, warn != null)
+            Spacer(Modifier.width(6.dp))
             IconBtn(Icons.Outlined.ArrowUpward, S.moveUp, { onMove(-1) }, enabled = index > 0, width = 26.dp, height = 24.dp, iconSize = 13.dp)
             IconBtn(Icons.Outlined.ArrowDownward, S.moveDown, { onMove(1) }, enabled = index < total - 1, width = 26.dp, height = 24.dp, iconSize = 13.dp)
             IconBtn(Icons.Outlined.Close, S.remove, onDelete, width = 26.dp, height = 24.dp, iconSize = 13.dp)
         }
         if (a == null) { T(S.flowUnknown, size = 11.sp, color = p.danger); return@Column }
+        T(a.description, size = 11.sp, color = p.textTertiary, maxLines = 3)
+        if (warn != null) T("⚠ $warn", size = 11.sp, color = p.danger, maxLines = 2)
         a.args.forEach { g ->
-            fun set(v: Any?) = onChange(FlowStep(st.action, st.args + (g.id to v), st.enabled))
+            fun set(v: Any?) = onChange(st.with(args = st.args + (g.id to v)))
             val cur = st.args[g.id] ?: g.default
             if (g.type == "steps") {
                 @Suppress("UNCHECKED_CAST") val inner = (cur as? List<FlowStep>).orEmpty()
                 T(g.label, size = 12.sp, color = p.textSecondary)
-                StepList(inner, depth + 1) { set(it) }
+                StepList(inner, depth + 1, type?.incoming ?: VType.Anything, shortcutType, vars) { set(it) }
                 return@forEach
             }
             Row(verticalAlignment = if (g.type == "multiline") Alignment.Top else Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -280,9 +336,136 @@ private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, onChange:
                         }
                     }
                     "number" -> PlainField(cur.toString(), { v -> set(v.toLongOrNull() ?: v) }, Modifier.width(100.dp))
+                    "flow" -> ChoiceBox(cur.toString(), FlowStore.all().map { it.id to it.name }, Modifier.weight(1f)) { set(it) }
+                    "app" -> AppField(cur.toString(), { set(it) }, onOption = { opt ->
+                        val old = (st.args["args"] ?: a.args.firstOrNull { it.id == "args" }?.default ?: "").toString()
+                        onChange(st.with(args = st.args + ("app" to cur.toString()) + ("args" to (if (old.isBlank() || old == "{input}") opt else "$old $opt"))))
+                    }, Modifier.weight(1f))
                     else -> PlainField(cur.toString(), { set(it) }, Modifier.weight(1f))
                 }
             }
+        }
+        // Where the step's values come from and where its result also goes.
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (a.input == VType.None && st.input.isEmpty()) Spacer(Modifier.width(150.dp)) else {
+            T(S.flowInputFrom, Modifier.width(150.dp), size = 12.sp, color = p.textSecondary)
+            val sources = listOf("" to inputLabel(""), "nothing" to inputLabel("nothing"), "shortcut" to inputLabel("shortcut") + " (" + shortcutType.label + ")") +
+                (vars + listOfNotNull(st.input.removePrefix("var:").takeIf { st.input.startsWith("var:") })).distinct().map { "var:$it" to inputLabel("var:$it") }
+            ChoiceBox(st.input, sources, Modifier.width(220.dp)) { onChange(st.with(input = it)) }
+            }
+            T(S.flowSaveAs, size = 12.sp, color = p.textSecondary)
+            PlainField(st.saveAs, { onChange(st.with(saveAs = it.filter { c -> c.isLetterOrDigit() || c == '_' || c == '-' || c == '.' })) }, Modifier.width(140.dp), placeholder = "{var.…}")
+        }
+    }
+}
+
+/** An app on this PC: typed, picked from the catalog, plus its command-line options. */
+@Composable
+private fun AppField(value: String, onChange: (String) -> Unit, onOption: (String) -> Unit, modifier: Modifier = Modifier) {
+    val p = LocalPalette.current
+    var browse by remember { mutableStateOf(false) }
+    var help by remember { mutableStateOf(false) }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        PlainField(value, onChange, Modifier.weight(1f), placeholder = "notepad / C:\\…\\app.exe")
+        Box {
+            DialogButton(S.flowBrowseApps, primary = false) { browse = true }
+            Flyout(browse, { browse = false }) {
+                var query by remember { mutableStateOf("") }
+                var kind by remember { mutableStateOf("all") }
+                var apps by remember { mutableStateOf<List<WinApps.Entry>?>(null) }
+                LaunchedEffect(Unit) { apps = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { WinApps.catalog() } }
+                Row(Modifier.width(480.dp).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    PlainField(query, { query = it }, Modifier.weight(1f), placeholder = S.search)
+                    ChoiceBox(kind, listOf("all", "desktop", "store", "cli").map { it to it }, Modifier.width(100.dp)) { kind = it }
+                }
+                val list = apps
+                if (list == null) T(S.flowAppsLoading, Modifier.padding(12.dp), size = 12.sp, color = p.textSecondary)
+                else {
+                    val q = query.trim().lowercase()
+                    val shown = list.filter { (kind == "all" || it.kind == kind) && (q.isEmpty() || it.name.lowercase().contains(q) || it.target.lowercase().contains(q)) }.take(300)
+                    Column(Modifier.width(480.dp).height(380.dp).verticalScroll(rememberScrollState())) {
+                        shown.forEach { e ->
+                            Hover(Modifier.fillMaxWidth(), onClick = { browse = false; onChange(if (e.kind == "cli") e.name else if (e.kind == "store") e.target else e.target) }) {
+                                Column(Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
+                                    Row { T(e.name, Modifier.weight(1f), size = 13.sp, maxLines = 1); T(e.kind, size = 10.sp, color = p.textTertiary) }
+                                    T(e.target, size = 10.sp, color = p.textTertiary, maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Box {
+            DialogButton(S.flowCliHelp, primary = false) { help = true }
+            Flyout(help, { help = false }) {
+                var result by remember { mutableStateOf<Result<List<WinApps.CliOption>>?>(null) }
+                LaunchedEffect(value) { result = null; result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { WinApps.parseOptions(WinApps.cliHelp(value)) } } }
+                Column(Modifier.width(520.dp).padding(8.dp)) {
+                    T(value, size = 13.sp, weight = FontWeight.SemiBold)
+                    T(S.flowCliHint, size = 11.sp, color = p.textSecondary)
+                    Spacer(Modifier.height(6.dp))
+                    when (val r = result) {
+                        null -> T(S.flowRunning, size = 12.sp, color = p.textSecondary)
+                        else -> r.fold(onSuccess = { opts ->
+                            Column(Modifier.fillMaxWidth().height(380.dp).verticalScroll(rememberScrollState())) {
+                                opts.forEach { o ->
+                                    Hover(Modifier.fillMaxWidth(), onClick = { help = false; onOption(o.name.substringBefore(',').substringBefore('|').trim().substringBefore(' ').substringBefore('=')) }) {
+                                        Row(Modifier.padding(horizontal = 6.dp, vertical = 3.dp)) {
+                                            T(o.name, Modifier.width(190.dp), size = 12.sp, fontFamily = FontFamily.Monospace, color = p.accentText, maxLines = 2)
+                                            T(o.help, Modifier.weight(1f), size = 11.sp, color = p.textSecondary, maxLines = 3)
+                                        }
+                                    }
+                                }
+                            }
+                        }, onFailure = { T(it.message ?: "", size = 12.sp, color = p.danger, maxLines = 4) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 帳戶: the mail (SMTP) and Twilio accounts the mail / message actions use. */
+@Composable
+private fun AccountsPanel() {
+    val p = LocalPalette.current
+    var host by remember { mutableStateOf(MailAccounts.smtpHost) }
+    var port by remember { mutableStateOf(MailAccounts.smtpPort.toString()) }
+    var sec by remember { mutableStateOf(MailAccounts.smtpSecurity) }
+    var user by remember { mutableStateOf(MailAccounts.smtpUser) }
+    var from by remember { mutableStateOf(MailAccounts.smtpFrom) }
+    var pass by remember { mutableStateOf("") }
+    var sid by remember { mutableStateOf(MailAccounts.twilioSid) }
+    var tfrom by remember { mutableStateOf(MailAccounts.twilioFrom) }
+    var token by remember { mutableStateOf("") }
+    var saved by remember { mutableStateOf(false) }
+    val hasPass = remember(saved) { MailAccounts.smtpPassword.isNotEmpty() }
+    val hasToken = remember(saved) { MailAccounts.twilioToken.isNotEmpty() }
+    @Composable fun row(label: String, content: @Composable RowScope.() -> Unit) =
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { T(label, Modifier.width(130.dp), size = 13.sp); content() }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        T(S.flowAccountsHint, size = 12.sp, color = p.textSecondary, maxLines = 5)
+        GroupTitle(S.flowSmtp)
+        row(S.flowHost) { PlainField(host, { host = it; saved = false }, Modifier.weight(1f), placeholder = "smtp.gmail.com"); T(S.flowPort, size = 13.sp); PlainField(port, { port = it.filter(Char::isDigit); saved = false }, Modifier.width(80.dp)) }
+        row(S.flowSecurity) { ChoiceBox(sec, listOf("starttls" to "STARTTLS (587)", "ssl" to "SSL/TLS (465)", "none" to (if (S.zh) "不加密" else "None")), Modifier.width(200.dp)) { sec = it; saved = false } }
+        row(S.flowUser) { PlainField(user, { user = it; saved = false }, Modifier.weight(1f)) }
+        row(S.flowPassword) { PlainField(pass, { pass = it; saved = false }, Modifier.weight(1f), placeholder = if (hasPass) S.flowPasswordKeep else "", password = true) }
+        row(S.flowFrom) { PlainField(from, { from = it; saved = false }, Modifier.weight(1f), placeholder = "Name <me@example.com>") }
+        GroupTitle(S.flowTwilio)
+        row("Account SID") { PlainField(sid, { sid = it.trim(); saved = false }, Modifier.weight(1f), placeholder = "AC…") }
+        row("Auth token") { PlainField(token, { token = it; saved = false }, Modifier.weight(1f), placeholder = if (hasToken) S.flowPasswordKeep else "", password = true) }
+        row(S.flowFrom) { PlainField(tfrom, { tfrom = it; saved = false }, Modifier.weight(1f), placeholder = "+1…") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            DialogButton(S.flowSave, primary = true) {
+                MailAccounts.smtpHost = host.trim(); MailAccounts.smtpPort = port.toIntOrNull() ?: 587; MailAccounts.smtpSecurity = sec
+                MailAccounts.smtpUser = user.trim(); MailAccounts.smtpFrom = from.trim()
+                if (pass.isNotEmpty()) MailAccounts.smtpPassword = pass
+                MailAccounts.twilioSid = sid; MailAccounts.twilioFrom = tfrom.trim()
+                if (token.isNotEmpty()) MailAccounts.twilioToken = token
+                pass = ""; token = ""; saved = true
+            }
+            if (saved) T(S.saved, size = 12.sp, color = p.textSecondary)
         }
     }
 }
@@ -302,6 +485,7 @@ private fun ActionReference() {
                     T(a.id, size = 12.sp, color = p.accentText, fontFamily = FontFamily.Monospace)
                     Spacer(Modifier.width(10.dp)); T(a.label, size = 13.sp, weight = FontWeight.SemiBold)
                     if (a.changes) T("  · " + S.flowChanges, size = 11.sp, color = p.textTertiary)
+                    Spacer(Modifier.weight(1f)); IoChip(a.ioLabel)
                 }
                 T(a.description, size = 12.sp, color = p.textSecondary, maxLines = 3)
                 a.args.forEach { g -> T("    ${g.id} (${g.type}) — ${g.label}" + (g.default.takeIf { it is String && it.isNotEmpty() || it is Number || it is Boolean }?.let { "  = $it" } ?: ""), size = 11.sp, color = p.textTertiary, fontFamily = FontFamily.Monospace) }
@@ -346,8 +530,9 @@ fun FlowPromptDialog(s: AppState, q: FlowPrompt) {
     var text by remember(q) { mutableStateOf(q.default) }
     fun done(v: String?) { s.flowPrompt = null; q.answer.complete(v) }
     val shape = RoundedCornerShape(8.dp)
-    Box(Modifier.fillMaxSize().background(Color(0x66000000)), contentAlignment = Alignment.Center) {
-        Column(Modifier.width(460.dp).heightIn(max = 560.dp).softShadow(shape, 18.dp).background(p.solid, shape).border(1.dp, p.controlStroke, shape).padding(20.dp)) {
+    Box(Modifier.fillMaxSize().background(Color(0x66000000)).then(if (q.kind == "wait") Modifier.pointerInput(q) { detectTapGestures2 { done("skip") } } else Modifier),
+        contentAlignment = Alignment.Center) {
+        Column(Modifier.width(if (q.kind == "show") 640.dp else 460.dp).heightIn(max = 560.dp).softShadow(shape, 18.dp).background(p.solid, shape).border(1.dp, p.controlStroke, shape).padding(20.dp)) {
             T(s.flowRun?.flow?.name ?: S.flows, size = 12.sp, color = p.textSecondary)
             Spacer(Modifier.height(4.dp))
             T(q.title, size = 16.sp, weight = FontWeight.SemiBold, maxLines = 4)
@@ -357,11 +542,32 @@ fun FlowPromptDialog(s: AppState, q: FlowPrompt) {
                 "choose" -> Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
                     q.options.forEach { o -> Hover(Modifier.fillMaxWidth().height(32.dp), onClick = { done(o) }) { T(File(o).name.ifEmpty { o }, Modifier.align(Alignment.CenterStart).padding(horizontal = 8.dp)) } }
                 }
+                "wait" -> {
+                    // wait.skippable: a countdown; any key (Main.handleKey) or a click continues.
+                    val total = q.default.toDoubleOrNull() ?: 0.0
+                    var left by remember(q) { mutableStateOf(total) }
+                    LaunchedEffect(q) { val t0 = System.nanoTime(); while (left > 0) { kotlinx.coroutines.delay(100); left = (total - (System.nanoTime() - t0) / 1e9).coerceAtLeast(0.0) } }
+                    T(String.format("%.0f", kotlin.math.ceil(left)), size = 40.sp, weight = FontWeight.SemiBold, color = p.accentText)
+                    T(S.flowWaitSkip, size = 12.sp, color = p.textSecondary)
+                }
+                "show" -> {
+                    // debug.show: every value, numbered.
+                    T("${q.options.size} " + S.flowShowValues, size = 12.sp, color = p.textSecondary)
+                    Column(Modifier.fillMaxWidth().heightIn(max = 360.dp).background(if (p.dark) Color(0xFF1A1A1A) else Color(0xFFF6F6F6), RoundedCornerShape(4.dp))
+                        .verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(8.dp)) {
+                        q.options.take(2000).forEachIndexed { i, v -> T("${i + 1}  $v", size = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 40) }
+                    }
+                }
             }
             Spacer(Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (q.kind != "choose") DialogButton(if (q.kind == "confirm") S.flowContinue else (if (S.zh) "確定" else "OK"), primary = true) { done(if (q.kind == "confirm") "yes" else text) }
-                DialogButton(if (S.zh) "取消" else "Cancel", primary = false) { done(null) }
+                when (q.kind) {
+                    "choose" -> {}
+                    "wait" -> DialogButton(S.flowContinue, primary = true) { done("skip") }
+                    "show" -> { DialogButton(S.flowContinue, primary = true) { done("yes") }; DialogButton(S.flowCopyResult, primary = false) { copyText(q.options.joinToString("\n")) } }
+                    else -> DialogButton(if (q.kind == "confirm") S.flowContinue else (if (S.zh) "確定" else "OK"), primary = true) { done(if (q.kind == "confirm") "yes" else text) }
+                }
+                DialogButton(if (q.kind == "show") S.flowStop else if (S.zh) "取消" else "Cancel", primary = false) { done(if (q.kind == "wait") "skip" else null) }
             }
         }
     }

@@ -77,7 +77,7 @@ val windowsApp by tasks.registering {
             "--main-class", "app.files.MainKt",
             "--dest", out.absolutePath,
             "--icon", icon.absolutePath,
-            "--add-modules", "java.base,java.desktop,java.logging,jdk.unsupported,jdk.zipfs,java.management,jdk.localedata",
+            "--add-modules", "java.base,java.desktop,java.logging,jdk.unsupported,jdk.zipfs,java.management,jdk.localedata,java.net.http,jdk.charsets",
             "--java-options", "-Dfile.encoding=UTF-8",
             "--java-options", "-Dsun.stdout.encoding=UTF-8",
         ) + windowJvmOptions.flatMap { listOf("--java-options", it) }
