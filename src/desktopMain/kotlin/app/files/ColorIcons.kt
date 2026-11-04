@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.Dp
 /** Colourful icons in the style of the original's Windows 11 shell icons (drawn, not copied). */
 enum class KnownKind { Desktop, Downloads, Documents, Pictures, Music, Videos, Folder }
 
-fun knownKind(f: PinnedFolder): KnownKind {
+fun knownKindOf(f: PinnedFolder): KnownKind {
     val n = f.name.lowercase()
     val leaf = f.path.trimEnd('\\').substringAfterLast('\\').lowercase()
     fun any(vararg k: String) = k.any { it == n || it == leaf }

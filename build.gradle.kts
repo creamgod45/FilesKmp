@@ -1,3 +1,5 @@
+import java.net.URI
+import java.nio.file.FileSystems
 import java.nio.file.Files
 
 plugins {
@@ -13,6 +15,13 @@ val windowsArch = when (System.getProperty("os.arch").lowercase()) {
     "aarch64", "arm64" -> "arm64"
     else -> error("Only Windows x64 and ARM64 are supported")
 }
+
+// Lets WindowCorners.kt reach the window handle and call DWM (Windows 11 rounded corners).
+val windowJvmOptions = listOf(
+    "--add-exports=java.desktop/sun.awt=ALL-UNNAMED",
+    "--add-exports=java.desktop/sun.awt.windows=ALL-UNNAMED",
+    "--enable-native-access=ALL-UNNAMED",
+)
 
 kotlin {
     // Windows-only desktop target (Compose Multiplatform on the JVM).
@@ -33,7 +42,7 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "app.files.MainKt"
-        jvmArgs += listOf("-Dfile.encoding=UTF-8")
+        jvmArgs += listOf("-Dfile.encoding=UTF-8") + windowJvmOptions
     }
 }
 
@@ -56,6 +65,8 @@ val windowsApp by tasks.registering {
         val jar = layout.buildDirectory.dir("compose/jars").get().asFile
             .listFiles { f -> f.name.endsWith(".jar") }!!.maxByOrNull { it.lastModified() }!!
         jar.copyTo(File(input, "FilesKmp.jar"), overwrite = true)
+        // App icon (exe, shortcuts, MSI). Copied out of the non-ASCII project path first.
+        val icon = file("packaging/icon.ico").copyTo(File(work, "icon.ico"), overwrite = true)
         val cmd = listOf(
             jpackage.absolutePath,
             "--type", "app-image",
@@ -65,10 +76,11 @@ val windowsApp by tasks.registering {
             "--main-jar", "FilesKmp.jar",
             "--main-class", "app.files.MainKt",
             "--dest", out.absolutePath,
+            "--icon", icon.absolutePath,
             "--add-modules", "java.base,java.desktop,java.logging,jdk.unsupported,jdk.zipfs,java.management,jdk.localedata",
             "--java-options", "-Dfile.encoding=UTF-8",
             "--java-options", "-Dsun.stdout.encoding=UTF-8",
-        )
+        ) + windowJvmOptions.flatMap { listOf("--java-options", it) }
         val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
         val log = p.inputStream.bufferedReader().readText()
         if (p.waitFor() != 0) throw GradleException("jpackage failed:\n$log")
@@ -89,11 +101,38 @@ val windowsMsi by tasks.registering {
         val staged = File(work, "FilesKmp")
         layout.buildDirectory.dir("FilesKmp").get().asFile.copyRecursively(staged)
         val out = File(work, "out")
+        // jpackage's own main.wxs, patched: (1) a new ProductCode per build and the same
+        // version counted as an upgrade, so any build can be installed over the same version;
+        // (2) a "Launch FilesKmp" check box on the last page of a fresh install;
+        // (3) install into %LOCALAPPDATA%\Programs\FilesKmp (Windows' place for per-user programs),
+        // so %LOCALAPPDATA%\FilesKmp holds only the cache. Set when installing, because jpackage's
+        // --install-dir "Programs\FilesKmp" fails MSI validation (ICE64) on the extra folder level.
+        val resources = File(work, "resources").apply { mkdirs() }
+        var wxs = Files.readString(FileSystems.getFileSystem(URI.create("jrt:/"))
+            .getPath("/modules/jdk.jpackage/jdk/jpackage/internal/resources/main.wxs"))
+        fun patch(from: String, to: String) {
+            if (!wxs.contains(from)) throw GradleException("jpackage main.wxs changed; cannot find: $from")
+            wxs = wxs.replace(from, to)
+        }
+        patch("Id=\"\$(var.JpProductCode)\"", "Id=\"*\"")
+        patch("IncludeMaximum=\"\$(var.JpUpgradeVersionOnlyDetectUpgrade)\"", "IncludeMaximum=\"yes\"")
+        patch("<UIRef Id=\"JpUI\"/>", """
+            <SetDirectory Id="INSTALLDIR" Value="[LocalAppDataFolder]Programs\FilesKmp\" Sequence="both">NOT Installed</SetDirectory>
+            <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch FilesKmp" After="CostFinalize" Sequence="ui">NOT Installed</SetProperty>
+            <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+            <Property Id="WixShellExecTarget" Value="[INSTALLDIR]FilesKmp.exe" />
+            <CustomAction Id="FkLaunchApp" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
+            <UI>
+              <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="FkLaunchApp">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+            </UI>
+            <UIRef Id="JpUI"/>""".trimIndent())
+        File(resources, "main.wxs").writeText(wxs)
         val cmd = listOf(
             File(System.getProperty("java.home"), "bin/jpackage.exe").absolutePath,
             "--type", "msi", "--name", "FilesKmp", "--app-version", project.version.toString(),
             "--app-image", staged.absolutePath, "--dest", out.absolutePath,
-            "--win-menu", "--win-shortcut", "--win-dir-chooser", "--win-per-user-install",
+            "--resource-dir", resources.absolutePath,
+            "--win-menu", "--win-shortcut", "--win-shortcut-prompt", "--win-dir-chooser", "--win-per-user-install",
             "--win-upgrade-uuid", if (windowsArch == "arm64") "a816d2b1-9605-43ab-b441-70ae0e83e548" else "1ab430d5-5393-48a5-9bbb-5f98bf171a14",
         )
         val p = ProcessBuilder(cmd).redirectErrorStream(true).start()

@@ -5,6 +5,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 
 enum class SortBy(val label: String) { Name("Name"), DateModified("Date modified"), DateCreated("Date created"), Size("Size"), Type("Type");
     val text: String get() = when (this) { Name -> S.name; DateModified -> S.dateModified; DateCreated -> S.dateCreated; Size -> S.size; Type -> S.type }
@@ -89,6 +91,8 @@ class AppState(val scope: CoroutineScope) {
     var sortBy by mutableStateOf(runCatching { SortBy.valueOf(Prefs.str("sortBy", "Name")) }.getOrDefault(SortBy.Name))
     var sortAscending by mutableStateOf(Prefs.bool("sortAscending", true))
     var showHidden by mutableStateOf(Prefs.bool("showHidden", false))              // FoldersSettingsService:55
+    // Separate from showHidden: items with the System attribute (or a "$" name) stay hidden unless this is on.
+    var showSystem by mutableStateOf(Prefs.bool("showSystem", false))
     var showExtensions by mutableStateOf(Prefs.bool("showExtensions", true))       // FoldersSettingsService:118
     var showCheckboxes by mutableStateOf(Prefs.bool("showCheckboxes", true))       // FoldersSettingsService:154
     var showThumbnails by mutableStateOf(Prefs.bool("showThumbnails", true))       // FoldersSettingsService:124
@@ -212,19 +216,19 @@ class AppState(val scope: CoroutineScope) {
         else if (bgImages.isNotEmpty() && backgroundImage.isBlank()) backgroundImage = bgImages[bgIndex.coerceIn(0, bgImages.size - 1)]
         scope.launch {
             while (true) {
-                delay(bgIntervalMin * 60_000L)
+                delay(bgIntervalMin.minutes)
                 if (bgMode == BgMode.Timer && bgImages.size > 1) nextBackground()
             }
         }
         // Save settings and the open tabs whenever they change.
         scope.launch {
-            snapshotFlow { settingsSnapshot() }.drop(1).debounce(400).collect { Prefs.put(it) }
+            snapshotFlow { settingsSnapshot() }.drop(1).debounce(400.milliseconds).collect { Prefs.put(it) }
         }
     }
 
     private fun settingsSnapshot(): Map<String, Any?> = mapOf(
         "theme" to theme, "layout" to layout, "sortBy" to sortBy, "sortAscending" to sortAscending,
-        "showHidden" to showHidden, "showExtensions" to showExtensions, "showCheckboxes" to showCheckboxes, "showThumbnails" to showThumbnails,
+        "showHidden" to showHidden, "showSystem" to showSystem, "showExtensions" to showExtensions, "showCheckboxes" to showCheckboxes, "showThumbnails" to showThumbnails,
         "confirmDelete" to confirmDeleteAlways, "openFoldersInNewTab" to openFoldersInNewTab, "continueSession" to continueSession,
         "w.quickAccess" to showQuickAccessWidget, "w.drives" to showDrivesWidget, "w.network" to showNetworkWidget,
         "w.tags" to showTagsWidget, "w.recent" to showRecentWidget, "showToolbar" to showToolbar, "showStatusBar" to showStatusBar,
@@ -253,9 +257,16 @@ class AppState(val scope: CoroutineScope) {
         }
     }
 
+    /** System items follow 顯示受保護的作業系統檔案, other hidden items follow 顯示隱藏的項目. */
+    fun isShown(f: FileItem) = when {
+        f.system -> showSystem
+        f.hidden -> showHidden
+        else -> true
+    }
+
     fun visibleItems(t: TabState): List<FileItem> {
         var list = t.raw
-        if (!showHidden) list = list.filter { !it.hidden && !it.name.startsWith("\$") }
+        if (!showHidden || !showSystem) list = list.filter { isShown(it) }
         if (searchText.isNotBlank() && !t.isSearch) list = list.filter { it.name.contains(searchText, ignoreCase = true) }
         return Fs.sort(list, sortBy, sortAscending)
     }
@@ -421,7 +432,7 @@ class AppState(val scope: CoroutineScope) {
         val parent = Fs.parent(p) ?: return
         val t = tab
         navigate(parent, t)
-        scope.launch { delay(300); t.selection = setOf(p); t.anchor = p }
+        scope.launch { delay(300.milliseconds); t.selection = setOf(p); t.anchor = p }
     }
 
     /** "解壓縮至此": unpack straight into the current folder. */
@@ -583,7 +594,7 @@ class AppState(val scope: CoroutineScope) {
         scope.launch {
             val kids = withContext(Dispatchers.IO) {
                 runCatching {
-                    Fs.list(path).filter { it.isDir && (showHidden || (!it.hidden && !it.name.startsWith("$"))) }
+                    Fs.list(path).filter { it.isDir && isShown(it) }
                         .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }).map { it.path }
                 }.getOrDefault(emptyList())
             }

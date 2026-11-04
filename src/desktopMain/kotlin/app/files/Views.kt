@@ -112,7 +112,7 @@ fun HomeCard(modifier: Modifier, onClick: (() -> Unit)?, content: @Composable Bo
  * (8 px spacing), capped at maxCols; with stretch every item widens to fill its column.
  */
 @Composable
-fun UniformGrid(minW: Int, itemH: Int, maxCols: Int, stretch: Boolean, count: Int, item: @Composable (Int, androidx.compose.ui.unit.Dp) -> Unit) {
+fun UniformGrid(minW: Int, itemH: Int, maxCols: Int, stretch: Boolean, count: Int, item: @Composable (Int, Dp) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val spacing = M.WIDGET_SPACING
         val avail = maxWidth.value
@@ -132,7 +132,7 @@ fun UniformGrid(minW: Int, itemH: Int, maxCols: Int, stretch: Boolean, count: In
 }
 
 @Composable
-fun QuickAccessCard(s: AppState, f: PinnedFolder, width: androidx.compose.ui.unit.Dp) {
+fun QuickAccessCard(s: AppState, f: PinnedFolder, width: Dp) {
     val p = LocalPalette.current
     Box(Modifier.contextMenu {
         listOf(
@@ -143,7 +143,7 @@ fun QuickAccessCard(s: AppState, f: PinnedFolder, width: androidx.compose.ui.uni
     }) {
         HomeCard(Modifier.size(width, M.QA_H.dp), onClick = { s.navigate(f.path) }) {
             Column(Modifier.fillMaxSize().padding(top = 12.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceBetween) {
-                KnownFolderGlyph(knownKind(f), M.QA_ICON.dp)
+                KnownFolderGlyph(knownKindOf(f), M.QA_ICON.dp)
                 T(f.name, size = 14.sp)
             }
             Icon(Icons.Outlined.PushPin, null, Modifier.align(Alignment.TopEnd).padding(6.dp).size(14.dp), tint = p.textSecondary)
@@ -183,7 +183,7 @@ fun DriveTile(s: AppState, d: DriveInfo) {
     }) {
         HomeCard(Modifier.width(M.DRIVE_TILE_MIN_W.dp).height(M.DRIVE_TILE_MIN_H.dp), onClick = { s.navigate(d.root) }) {
             Row(Modifier.fillMaxSize().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                DriveGlyph(driveKind(d), M.DRIVE_ICON.dp)
+                DriveGlyph(driveKindOf(d), M.DRIVE_ICON.dp)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     T(d.title)
@@ -203,7 +203,7 @@ fun DriveTile(s: AppState, d: DriveInfo) {
 
 /** One tag on Home: its newest tagged files (click to open), "···" opens the whole tag view. */
 @Composable
-fun TagCard(s: AppState, t: TagDef, width: androidx.compose.ui.unit.Dp) {
+fun TagCard(s: AppState, t: TagDef, width: Dp) {
     val p = LocalPalette.current
     val files = s.tagStore.filesWith(t.name)
     HomeCard(Modifier.size(width, M.TAG_H.dp), onClick = null) {
@@ -238,7 +238,6 @@ fun TagCard(s: AppState, t: TagDef, width: androidx.compose.ui.unit.Dp) {
 
 @Composable
 fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
-    val p = LocalPalette.current
     // "Calculate folder sizes" on (off by default, FoldersSettingsService.cs:112): size every folder shown.
     LaunchedEffect(t.raw, s.calculateFolderSizes) {
         if (s.calculateFolderSizes) items.filter { it.isDir && s.folderSizes[it.path] == null }.forEach { s.calcFolderSize(it.path) }

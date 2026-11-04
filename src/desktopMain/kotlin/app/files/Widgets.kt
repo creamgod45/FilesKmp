@@ -187,7 +187,7 @@ fun FileIcon(item: FileItem, size: Dp) {
     val px = with(androidx.compose.ui.platform.LocalDensity.current) { size.roundToPx() } * 2
     val thumb = rememberThumbnail(item, px, app?.showThumbnails == true)
     if (thumb != null) {
-        androidx.compose.foundation.Image(
+        Image(
             thumb, null,
             Modifier.size(size).clip(RoundedCornerShape(M.THUMB_RADIUS.dp)),
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,

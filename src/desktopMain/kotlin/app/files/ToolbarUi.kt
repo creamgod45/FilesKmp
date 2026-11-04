@@ -55,9 +55,8 @@ fun CustomToolbar(s: AppState, modifier: Modifier, layout: Map<TbContext, List<T
         } else Modifier)
     ) {
         OverflowRow(
-            count = items.size,
-            item = { i ->
-                val (ctx, pair) = items[i]
+            items = items,
+            item = { (ctx, pair) ->
                 ToolbarItem(s, pair.second, interactive, onUnpin = if (pair.first >= 0) ({ s.toolbarStore.unpin(ctx, pair.first) }) else null)
             },
             more = { hidden ->
@@ -65,8 +64,8 @@ fun CustomToolbar(s: AppState, modifier: Modifier, layout: Map<TbContext, List<T
                 Box {
                     IconBtn(Icons.Outlined.MoreHoriz, if (S.zh) "更多選項" else "More options", { if (interactive) open = true }, width = 40.dp, height = 36.dp)
                     Flyout(open, { open = false }) {
-                        hidden.forEach { i ->
-                            val e = items[i].second.second
+                        hidden.forEach { (_, pair) ->
+                            val e = pair.second
                             if (e.isSeparator) FlyoutSeparator()
                             else TbCommands.get(e.id)?.let { cmd ->
                                 if (cmd.isGroup) {
@@ -82,12 +81,17 @@ fun CustomToolbar(s: AppState, modifier: Modifier, layout: Map<TbContext, List<T
     }
 }
 
-/** Places children left to right; when they don't fit, the rest go into [more]. */
+/**
+ * Places children left to right; when they don't fit, the rest go into [more].
+ * Each slot is handed its element, not an index: when the list shrinks, a slot that is about
+ * to be dropped can still recompose once, and an index would then point past the new end.
+ */
 @Composable
-fun OverflowRow(count: Int, item: @Composable (Int) -> Unit, more: @Composable (List<Int>) -> Unit, modifier: Modifier = Modifier) {
+fun <E> OverflowRow(items: List<E>, item: @Composable (E) -> Unit, more: @Composable (List<E>) -> Unit, modifier: Modifier = Modifier) {
     SubcomposeLayout(modifier) { constraints ->
+        val count = items.size
         val loose = constraints.copy(minWidth = 0, minHeight = 0)
-        val placeables = (0 until count).map { i -> subcompose("i$i") { item(i) }.map { it.measure(loose) } }
+        val placeables = items.mapIndexed { i, e -> subcompose("i$i") { item(e) }.map { it.measure(loose) } }
         val widths = placeables.map { ps -> ps.sumOf { it.width } }
         var visible = count
         var morePlaceables = emptyList<androidx.compose.ui.layout.Placeable>()
@@ -96,7 +100,8 @@ fun OverflowRow(count: Int, item: @Composable (Int) -> Unit, more: @Composable (
             var used = 0
             visible = 0
             while (visible < count && used + widths[visible] <= constraints.maxWidth - moreW) { used += widths[visible]; visible++ }
-            morePlaceables = subcompose("more") { more((visible until count).toList()) }.map { it.measure(loose) }
+            val hidden = items.subList(visible, count).toList()
+            morePlaceables = subcompose("more") { more(hidden) }.map { it.measure(loose) }
         }
         val h = (placeables.flatten() + morePlaceables).maxOfOrNull { it.height } ?: 0
         layout(constraints.maxWidth, h) {
@@ -149,7 +154,7 @@ fun ToolbarItem(s: AppState, e: TbEntry, interactive: Boolean, onUnpin: (() -> U
         if (cmd.isGroup) Flyout(open, { open = false }) {
             cmd.groupItems!!(s).forEach { m ->
                 if (m.separatorBefore) FlyoutSeparator()
-                FlyoutItem(m.label, m.icon, m.hotkey, enabled = m.enabled, iconTint = if (m.icon == androidx.compose.material.icons.Icons.Filled.Folder) p.folder else null) { open = false; m.action() }
+                FlyoutItem(m.label, m.icon, m.hotkey, enabled = m.enabled, iconTint = if (m.icon == Icons.Filled.Folder) p.folder else null) { open = false; m.action() }
             }
         }
     }

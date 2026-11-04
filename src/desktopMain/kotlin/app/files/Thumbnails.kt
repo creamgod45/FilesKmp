@@ -4,7 +4,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
@@ -30,7 +29,7 @@ object Thumbnails {
     /** Two sizes keep the cache small: small views and large (grid / preview) views. */
     fun bucketFor(px: Int) = if (px <= 64) M.THUMB_SMALL else M.THUMB_LARGE
 
-    private val cacheDir = File(System.getenv("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir"), "FilesKmp\\thumbs").apply { mkdirs() }
+    private val cacheDir = File(AppDirs.cache, "thumbs").apply { mkdirs() }
     private val memory = object : LinkedHashMap<String, ImageBitmap>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>?) = size > M.THUMB_MEMORY_ITEMS
     }

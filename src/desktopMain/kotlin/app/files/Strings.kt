@@ -51,6 +51,7 @@ object S {
     val ascending = t("Ascending", "遞增")
     val descending = t("Descending", "遞減")
     val showHidden = t("Show hidden items", "顯示隱藏的項目")
+    val showSystem = t("Show protected operating system files", "顯示受保護的作業系統檔案")
     val fileExtensions = t("File extensions", "副檔名")
     val folder = t("Folder", "資料夾")
     val newFolder = t("New folder", "新增資料夾")

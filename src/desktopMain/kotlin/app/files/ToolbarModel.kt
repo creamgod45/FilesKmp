@@ -73,6 +73,7 @@ object TbCommands {
         TbCmd("ToggleShowFileExtensions", "副檔名", "File extensions", TbCategory.Ui, Icons.Outlined.Extension, toggled = { it.showExtensions }, run = { it.showExtensions = !it.showExtensions }),
         TbCmd("ToggleSidebar", "開啟/關閉側邊欄", "Toggle sidebar", TbCategory.Ui, Icons.Outlined.VerticalSplit, hotkey = "Ctrl+B", toggled = { it.sidebarOpen }, run = { it.sidebarOpen = !it.sidebarOpen }),
         TbCmd("ToggleShowHiddenItems", "隱藏的項目", "Hidden items", TbCategory.Ui, Icons.Outlined.VisibilityOff, hotkey = "Ctrl+H", toggled = { it.showHidden }, run = { it.showHidden = !it.showHidden }),
+        TbCmd("ToggleShowSystemItems", "系統檔案", "System files", TbCategory.Ui, Icons.Outlined.Shield, toggled = { it.showSystem }, run = { it.showSystem = !it.showSystem }),
         TbCmd("ToggleThumbnails", "顯示縮圖", "Show thumbnails", TbCategory.Ui, Icons.Outlined.Image, toggled = { it.showThumbnails }, run = { it.showThumbnails = !it.showThumbnails }),
         // 分割畫面
         TbCmd("SplitPaneHorizontally", "上下分割", "Split horizontally", TbCategory.Panes, Icons.Outlined.Splitscreen, run = { it.splitPane(PaneArrangement.Horizontal) }),

@@ -15,7 +15,7 @@ object FsExtra {
         val p = Paths.get(path)
         val a = Files.readAttributes(p, DosFileAttributes::class.java)
         FileItem(path, p.fileName?.toString() ?: path, a.isDirectory, if (a.isDirectory) 0 else a.size(),
-            a.lastModifiedTime().toMillis(), a.creationTime().toMillis(), a.isHidden || a.isSystem)
+            a.lastModifiedTime().toMillis(), a.creationTime().toMillis(), a.isHidden, isSystemItem(a.isSystem, p.fileName?.toString()))
     } catch (_: Exception) { null }
 
     /** Total size of everything inside a folder (files that can't be read are skipped). */
@@ -116,9 +116,10 @@ object FsExtra {
                     if (cancelled() || found >= limit) return FileVisitResult.TERMINATE
                     val name = p.fileName?.toString() ?: return FileVisitResult.CONTINUE
                     if (name.lowercase().contains(q)) {
-                        val hidden = (attrs as? DosFileAttributes)?.let { it.isHidden || it.isSystem } ?: false
+                        val dos = attrs as? DosFileAttributes
                         batch += FileItem(p.toString(), name, attrs.isDirectory, if (attrs.isDirectory) 0 else attrs.size(),
-                            attrs.lastModifiedTime().toMillis(), attrs.creationTime().toMillis(), hidden)
+                            attrs.lastModifiedTime().toMillis(), attrs.creationTime().toMillis(),
+                            dos?.isHidden ?: false, isSystemItem(dos?.isSystem ?: false, name))
                         found++
                     }
                     if (System.currentTimeMillis() - lastFlush > 200) flush()

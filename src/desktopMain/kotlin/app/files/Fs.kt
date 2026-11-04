@@ -11,6 +11,10 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
+
+/** OS-protected item: System attribute, or a "$" name ($Recycle.Bin, $WinREAgent, …). */
+fun isSystemItem(systemAttr: Boolean, name: String?) = systemAttr || name?.startsWith("$") == true
 
 class FileItem(
     val path: String,
@@ -19,7 +23,10 @@ class FileItem(
     val size: Long,
     val modified: Long,
     val created: Long,
+    /** Hidden attribute set (ordinary hidden item), see [system] for OS-protected items. */
     val hidden: Boolean,
+    /** System attribute set, or a "$" name such as $Recycle.Bin: protected operating-system item. */
+    val system: Boolean = false,
 ) {
     val ext: String get() = if (isDir) "" else name.substringAfterLast('.', "").lowercase()
     val typeName: String
@@ -122,7 +129,8 @@ object Fs {
                         size = if (a.isDirectory) 0 else a.size(),
                         modified = a.lastModifiedTime().toMillis(),
                         created = a.creationTime().toMillis(),
-                        hidden = a.isHidden || a.isSystem,
+                        hidden = a.isHidden,
+                        system = isSystemItem(a.isSystem, p.fileName?.toString()),
                     )
                 } catch (_: Exception) {
                 }
@@ -149,7 +157,7 @@ object Fs {
         File.listRoots().map { root ->
             async(Dispatchers.IO) {
                 val r = root.path
-                val info = withTimeoutOrNull(M.DRIVE_QUERY_TIMEOUT_MS) {
+                val info = withTimeoutOrNull(M.DRIVE_QUERY_TIMEOUT_MS.milliseconds) {
                     runInterruptible {
                         val store = try { Files.getFileStore(root.toPath()) } catch (_: Exception) { null }
                         DriveInfo(
@@ -199,7 +207,7 @@ object Fs {
             KnownKind.Desktop to "Desktop", KnownKind.Downloads to "Downloads", KnownKind.Documents to "Documents",
             KnownKind.Pictures to "Pictures", KnownKind.Music to "Music", KnownKind.Videos to "Videos",
         )
-        return (if (S.zh) zh else en)[knownKind(f)] ?: f.name
+        return (if (S.zh) zh else en)[knownKindOf(f)] ?: f.name
     }
 
     /** Windows' own Quick access pins (the original mirrors these), with known folders as the fallback. */

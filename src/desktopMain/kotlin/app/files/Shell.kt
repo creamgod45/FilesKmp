@@ -252,9 +252,6 @@ fun CommandToolbar(s: AppState) {
     val p = LocalPalette.current
     val t = s.tab
     val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
-    val hasSel = t.selection.isNotEmpty() && !t.isHome
-    val zipSelected = t.selection.any { it.endsWith(".zip", true) }
-    var newOpen by remember { mutableStateOf(false) }
     var selOpen by remember { mutableStateOf(false) }
     var sortOpen by remember { mutableStateOf(false) }
     var layoutOpen by remember { mutableStateOf(false) }
@@ -301,6 +298,7 @@ fun CommandToolbar(s: AppState) {
                     }
                     FlyoutSeparator()
                     FlyoutItem(S.showHidden, if (s.showHidden) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "Ctrl+H") { s.showHidden = !s.showHidden }
+                    FlyoutItem(S.showSystem, if (s.showSystem) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showSystem = !s.showSystem }
                     FlyoutItem(S.fileExtensions, if (s.showExtensions) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showExtensions = !s.showExtensions }
                     FlyoutItem(S.showThumbnails, if (s.showThumbnails) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank, "") { s.showThumbnails = !s.showThumbnails }
                 }
@@ -408,11 +406,11 @@ fun Sidebar(s: AppState, modifier: Modifier) {
                         MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(f.path) },
                         MenuEntry(S.unpinFromSidebar, Icons.Outlined.PushPin, separatorBefore = true) { s.unpin(f.path) },
                     ) },
-                    onClick = { s.navigate(f.path) }) { KnownFolderGlyph(knownKind(f), M.SIDEBAR_ICON.dp) }
+                    onClick = { s.navigate(f.path) }) { KnownFolderGlyph(knownKindOf(f), M.SIDEBAR_ICON.dp) }
             }
             item { SidebarSection(S.drives, "drives", drivesOpen) { drivesOpen = !drivesOpen } }
             if (drivesOpen) items(s.drives) { d ->
-                SidebarTree(s, d.root, d.title) { DriveGlyph(driveKind(d), M.SIDEBAR_ICON.dp) }
+                SidebarTree(s, d.root, d.title) { DriveGlyph(driveKindOf(d), M.SIDEBAR_ICON.dp) }
             }
             if (s.cloud.isNotEmpty()) {
                 item { SidebarSection(S.cloudDrives, "cloud", cloudOpen) { cloudOpen = !cloudOpen } }
@@ -455,7 +453,7 @@ fun Sidebar(s: AppState, modifier: Modifier) {
     }
 }
 
-fun driveKind(d: DriveInfo): DriveKind = when {
+fun driveKindOf(d: DriveInfo): DriveKind = when {
     d.isSystem -> DriveKind.System
     CopyEngine.isUsb(d.root) -> DriveKind.Usb
     else -> DriveKind.Hdd

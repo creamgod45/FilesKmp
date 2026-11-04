@@ -105,6 +105,7 @@ fun SettingsPage(s: AppState) {
                         }
                         SettingsSection.Folders -> {
                             ToggleCard(S.showHidden, s.showHidden) { s.showHidden = it }
+                            ToggleCard(S.showSystem, s.showSystem) { s.showSystem = it }
                             ToggleCard(S.fileExtensions, s.showExtensions) { s.showExtensions = it }
                             ToggleCard(S.showThumbnails, s.showThumbnails) { s.showThumbnails = it }
                             ToggleCard(S.calcFolderSizes, s.calculateFolderSizes) { s.calculateFolderSizes = it }

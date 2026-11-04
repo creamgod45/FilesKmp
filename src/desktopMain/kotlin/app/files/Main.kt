@@ -21,11 +21,11 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.loadSvgPainter
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.swing.Swing
@@ -34,8 +34,10 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.io.File
 import kotlin.system.exitProcess
+import kotlin.time.Duration.Companion.milliseconds
 
 fun main(args: Array<String>) {
+    AppDirs.init()
     val shotIdx = args.indexOf("--screenshot")
     if (shotIdx >= 0 && shotIdx + 1 < args.size) {
         val start = args.filterIndexed { i, a -> i != shotIdx + 1 && !a.startsWith("--") && File(a).isDirectory }.firstOrNull()
@@ -45,6 +47,7 @@ fun main(args: Array<String>) {
         val interact: (suspend (ImageComposeScene, AppState) -> Unit)? = when {
             "--test-checkbox" in args -> ::checkboxTest
             "--test-toolbar-drag" in args -> ::toolbarDragTest
+            "--test-toolbar-delete" in args -> ::toolbarDeleteTest
             "--test-sidebar" in args -> ::sidebarTreeTest
             else -> null
         }
@@ -52,10 +55,12 @@ fun main(args: Array<String>) {
             if ("--dual" in args) s.toggleDualPane()
             if ("--hsplit" in args) s.splitPane(PaneArrangement.Horizontal)
             if ("--sizes" in args) s.calculateFolderSizes = true
+            args.firstOrNull { it.startsWith("--show-hidden=") }?.let { s.showHidden = it.endsWith("=1") }
+            args.firstOrNull { it.startsWith("--show-system=") }?.let { s.showSystem = it.endsWith("=1") }
             if ("--customize" in args) s.customizeToolbarOpen = true
             if ("--settings" in args) s.settingsOpen = true
             if ("--clone-dialog" in args) s.cloneDialogOpen = true
-            if ("--select-first" in args) s.scope.launch { delay(1200); s.tab.raw.firstOrNull()?.let { s.tab.selection = setOf(it.path) } }
+            if ("--select-first" in args) s.scope.launch { delay(1200.milliseconds); s.tab.raw.firstOrNull()?.let { s.tab.selection = setOf(it.path) } }
         }
         exitProcess(0)
     }
@@ -67,6 +72,8 @@ fun main(args: Array<String>) {
     val startPath = args.firstOrNull { !it.startsWith("--") && File(it).isDirectory }
     val dark = systemUsesDarkTheme()
     val accent = systemAccent()
+    val appIcon = Thread.currentThread().contextClassLoader.getResourceAsStream("icon.svg")
+        ?.use { loadSvgPainter(it, Density(1f)) }
     application {
         val scope = rememberCoroutineScope()
         val state = remember { AppState(scope).also { s -> startPath?.let { s.navigate(File(it).absolutePath) } } }
@@ -75,12 +82,14 @@ fun main(args: Array<String>) {
             onCloseRequest = ::exitApplication,
             state = windowState,
             title = "Files",
+            icon = appIcon,
             undecorated = true,
             resizable = true,
             onPreviewKeyEvent = { handleKey(state, it) },
         ) {
             LaunchedEffect(Unit) {
                 window.minimumSize = Dimension(M.WINDOW_MIN_W, M.WINDOW_MIN_H)
+                WindowCorners.round(window)
                 // "全螢幕" (F11) toggles between full screen and the normal window.
                 state.toggleFullScreen = {
                     windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) WindowPlacement.Floating else WindowPlacement.Fullscreen
@@ -158,7 +167,7 @@ fun Root(s: AppState, systemDark: Boolean, accent: androidx.compose.ui.graphics.
                 if (s.customizeToolbarOpen) CustomizeToolbarDialog(s)
                 if (s.cloneDialogOpen) GitCloneDialog(s)
                 s.toast?.let { msg ->
-                    LaunchedEffect(msg) { delay(2500); if (s.toast == msg) s.toast = null }
+                    LaunchedEffect(msg) { delay(2500.milliseconds); if (s.toast == msg) s.toast = null }
                     Box(Modifier.fillMaxSize().padding(bottom = 48.dp), contentAlignment = Alignment.BottomCenter) {
                         Box(Modifier.shadow8().background(palette.flyout, RoundedCornerShape(8.dp)).border(1.dp, palette.controlStroke, RoundedCornerShape(8.dp)).padding(16.dp, 10.dp)) {
                             T(msg)
@@ -197,7 +206,7 @@ fun MainLayout(s: AppState) {
     val p = LocalPalette.current
     val t = s.tab
     val ct = s.currentTab
-    val items = remember(t.raw, s.showHidden, s.searchText, s.sortBy, s.sortAscending) { s.visibleItems(t) }
+    val items = remember(t.raw, s.showHidden, s.showSystem, s.searchText, s.sortBy, s.sortAscending) { s.visibleItems(t) }
     Column(Modifier.fillMaxSize()) {
         TabStrip(s)
         AddressBar(s)
@@ -264,7 +273,7 @@ fun PanesArea(s: AppState, ct: Tab, modifier: Modifier) {
 fun PaneCard(s: AppState, pane: TabState, modifier: Modifier, active: Boolean) {
     val p = LocalPalette.current
     val dual = s.currentTab.right != null
-    val items = remember(pane.raw, s.showHidden, s.searchText, s.sortBy, s.sortAscending, s.tab === pane) { s.visibleItems(pane) }
+    val items = remember(pane.raw, s.showHidden, s.showSystem, s.searchText, s.sortBy, s.sortAscending, s.tab === pane) { s.visibleItems(pane) }
     val shape = RoundedCornerShape(M.CARD_RADIUS.dp)
     Column(
         modifier.fillMaxHeight().shadow(2.dp, shape).clip(shape).background(p.fileArea, shape)
@@ -375,10 +384,10 @@ suspend fun checkboxTest(scene: ImageComposeScene, s: AppState) {
     suspend fun click(x: Float, yy: Float) {
         val pos = androidx.compose.ui.geometry.Offset(x, yy)
         scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Move, pos)
-        scene.render(System.nanoTime()); delay(30)
+        scene.render(System.nanoTime()); delay(30.milliseconds)
         scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Press, pos, buttons = androidx.compose.ui.input.pointer.PointerButtons(isPrimaryPressed = true))
         scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Release, pos)
-        scene.render(System.nanoTime()); delay(500)   // past the double-click window
+        scene.render(System.nanoTime()); delay(500.milliseconds)   // past the double-click window
     }
     click(nameX, y(0))
     val a = s.tab.selection.size
@@ -400,7 +409,7 @@ suspend fun toolbarDragTest(scene: ImageComposeScene, s: AppState) {
     val before = s.toolbarStore.layout
     val P = androidx.compose.ui.input.pointer.PointerEventType
     val down = androidx.compose.ui.input.pointer.PointerButtons(isPrimaryPressed = true)
-    suspend fun frame() { scene.render(System.nanoTime()); delay(16) }
+    suspend fun frame() { scene.render(System.nanoTime()); delay(16.milliseconds) }
     fun at(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
     // drag the gripper of row 3 (剪下) to below the last row
     scene.sendPointerEvent(P.Move, at(546f, 352f)); frame()
@@ -415,6 +424,29 @@ suspend fun toolbarDragTest(scene: ImageComposeScene, s: AppState) {
     val after = s.toolbarStore.layout[TbContext.AlwaysVisible]?.map { it.id }
     println("TOOLBAR DRAG TEST saved=${!s.customizeToolbarOpen} order=$after (expect CutItem last)")
     s.toolbarStore.save(before)
+}
+
+/**
+ * Screenshot-mode regression test: in 自訂工具列, remove rows from the middle of 新增選項 with ×.
+ * The preview toolbar below used to crash with "Index n out of bounds for length n".
+ * Nothing is saved: the dialog stays open for the picture and the run then exits.
+ */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+suspend fun toolbarDeleteTest(scene: ImageComposeScene, s: AppState) {
+    val P = androidx.compose.ui.input.pointer.PointerEventType
+    val down = androidx.compose.ui.input.pointer.PointerButtons(isPrimaryPressed = true)
+    suspend fun frame() { scene.render(System.nanoTime()); delay(16.milliseconds) }
+    suspend fun click(x: Float, y: Float) {
+        val o = androidx.compose.ui.geometry.Offset(x, y)
+        scene.sendPointerEvent(P.Move, o); frame()
+        scene.sendPointerEvent(P.Press, o, buttons = down); frame()
+        scene.sendPointerEvent(P.Release, o); frame(); frame()
+    }
+    val before = s.toolbarStore.layout[TbContext.AlwaysVisible]?.size ?: 0
+    // × of the third row, three times: each removal shifts the rows below it up.
+    repeat(3) { click(992f, 357f) }
+    frame(); frame()
+    println("TOOLBAR DELETE TEST rows before=$before (no crash = pass)")
 }
 
 /** Starts the app as normal (Home in one tab), draws about 120 frames, saves the picture, exits. */
@@ -440,16 +472,15 @@ fun screenshot(
         }
         var frame = 0
         val startNs = System.nanoTime()
-        var image: org.jetbrains.skia.Image? = null
         val deadline = System.currentTimeMillis() + 15_000
         while (frame < 120 || ((!(state.pinnedLoaded && state.drivesLoaded && state.recentLoaded) || state.tab.loading || Thumbnails.busy() || state.folderSizing.isNotEmpty()) && System.currentTimeMillis() < deadline)) {
-            image = withContext(Dispatchers.Swing) { scene.render(System.nanoTime() - startNs) }
+            withContext(Dispatchers.Swing) { scene.render(System.nanoTime() - startNs) }
             frame++
             if (frame == 90) interact?.let { withContext(Dispatchers.Swing) { it(scene, state) } }
-            delay(16)
+            delay(16.milliseconds)
         }
-        image = withContext(Dispatchers.Swing) { scene.render(System.nanoTime() - startNs) }
-        val data = image!!.encodeToData(EncodedImageFormat.PNG) ?: error("PNG encoding failed")
+        val image = withContext(Dispatchers.Swing) { scene.render(System.nanoTime() - startNs) }
+        val data = image.encodeToData(EncodedImageFormat.PNG) ?: error("PNG encoding failed")
         out.absoluteFile.parentFile?.mkdirs()
         out.writeBytes(data.bytes)
         withContext(Dispatchers.Swing) { scene.close() }

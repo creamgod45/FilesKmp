@@ -4,9 +4,30 @@ import androidx.compose.runtime.*
 import java.io.File
 import java.util.Properties
 
+/**
+ * Where the app writes, following Windows' per-user data locations:
+ * - settings, tags, toolbar, last session: %APPDATA%\FilesKmp (roaming user settings)
+ * - everything that can be rebuilt (thumbnails, Skia's native library): %LOCALAPPDATA%\FilesKmp\Cache
+ * The program itself is installed in %LOCALAPPDATA%\Programs\FilesKmp, apart from both.
+ */
+object AppDirs {
+    private fun env(name: String) = System.getenv(name)?.takeIf { it.isNotBlank() }
+    val settings: File = File(env("APPDATA") ?: System.getProperty("user.home"), "FilesKmp")
+    val cache: File = File(File(env("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir"), "FilesKmp"), "Cache")
+
+    /** Call first thing in main(), before Compose loads Skia (which otherwise unpacks into %USERPROFILE%\.skiko). */
+    fun init() {
+        if (System.getProperty("skiko.data.path") == null) System.setProperty("skiko.data.path", File(cache, "skiko").path)
+        // Thumbnails used to live in %LOCALAPPDATA%\FilesKmp\thumbs, which was also the install folder.
+        Thread {
+            runCatching { File(cache.parentFile, "thumbs").takeIf { it.isDirectory }?.deleteRecursively() }
+        }.apply { isDaemon = true; start() }
+    }
+}
+
 /** Where the app keeps its settings, tags and last session (%APPDATA%\FilesKmp). */
 object Prefs {
-    val dir: File = File(System.getenv("APPDATA") ?: System.getProperty("user.home"), "FilesKmp").apply { mkdirs() }
+    val dir: File = AppDirs.settings.apply { mkdirs() }
     private val file = File(dir, "settings.properties")
     private val props = Properties()
 
