@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.Icon
@@ -39,6 +40,7 @@ fun HomePage(s: AppState) {
     var tagsOpen by remember { mutableStateOf(true) }
     var recentOpen by remember { mutableStateOf(true) }
     var netOpen by remember { mutableStateOf(false) }   // collapsed by default in the original
+    var storageOpen by remember { mutableStateOf(true) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp)) {
         if (s.showQuickAccessWidget) item {
             Widget(S.quickAccess, qaOpen, { qaOpen = !qaOpen }) {
@@ -55,6 +57,10 @@ fun HomePage(s: AppState) {
                     DriveTile(s, s.drives[i])
                 }
             }
+        }
+        // Open by default, but it waits for the widgets above before it loads anything (skeleton meanwhile).
+        if (s.showStorageWidget) item {
+            Widget(S.storageAnalysis, storageOpen, { storageOpen = !storageOpen }) { HomeStorageWidget(s) }
         }
         if (s.showNetworkWidget) item {
             Widget(S.networkLocations, netOpen, { netOpen = !netOpen }) {
@@ -240,7 +246,8 @@ fun TagCard(s: AppState, t: TagDef, width: Dp) {
 fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
     // "Calculate folder sizes" on (off by default, FoldersSettingsService.cs:112): size every folder shown.
     LaunchedEffect(t.raw, s.calculateFolderSizes) {
-        if (s.calculateFolderSizes) items.filter { it.isDir && s.folderSizes[it.path] == null }.forEach { s.calcFolderSize(it.path) }
+        // Not on 網路 / server pages: sizing a whole share would walk the server.
+        if (s.calculateFolderSizes && !t.isNetwork && !t.isServer) items.filter { it.isDir && s.folderSizes[it.path] == null }.forEach { s.calcFolderSize(it.path) }
     }
     val emptyMenu = {
         if (t.isVirtual) listOf(
@@ -264,10 +271,12 @@ fun FolderView(s: AppState, t: TabState, items: List<FileItem>) {
     ) {
         when {
             t.error != null -> CenterNote(t.error!!)
-            t.loading && items.isEmpty() -> CenterNote(if (t.isSearch) S.searching else S.loading)
+            t.loading && items.isEmpty() -> CenterNote(if (t.isSearch) S.searching else if (t.isNetwork) S.netSearching else S.loading)
             items.isEmpty() -> CenterNote(
                 when {
                     t.isTag -> S.noTagged
+                    t.isNetwork -> S.netEmpty
+                    t.isServer -> S.netNoShares
                     t.isSearch || s.searchText.isNotBlank() -> S.noResults
                     else -> S.emptyFolder
                 }
@@ -289,12 +298,24 @@ fun CenterNote(text: String) {
     }
 }
 
+/** Servers and shares are places, not files: open them, copy the path, or drop a server from 網路. */
+private fun networkPlaceMenu(s: AppState, item: FileItem): List<MenuEntry> = listOfNotNull(
+    MenuEntry(S.open, Icons.AutoMirrored.Outlined.OpenInNew, "Enter") { s.openSelected() },
+    MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(item.path) },
+    if (NetworkFs.isShareRoot(item.path)) MenuEntry(S.openInTerminal, Icons.Outlined.Terminal) { Fs.openInTerminal(item.path) } else null,
+    MenuEntry(S.copyPath, Icons.Outlined.Link, "Ctrl+Shift+C", separatorBefore = true) { s.copyPath() },
+    if (s.tab.isNetwork && NetworkFs.isServer(item.path)) MenuEntry(S.netForget, Icons.Outlined.Close, separatorBefore = true) {
+        NetworkFs.forget(NetworkFs.hostOf(item.path)); s.refresh()
+    } else null,
+)
+
 fun itemMenu(s: AppState, item: FileItem): List<MenuEntry> {
+    if (NetworkFs.isServer(item.path) || NetworkFs.isShareRoot(item.path)) return networkPlaceMenu(s, item)
     val multi = s.tab.selection.size > 1
     val isZip = item.ext == "zip"
     val pinned = s.pinned.any { it.path.equals(item.path, true) }
     return listOfNotNull(
-        MenuEntry(S.open, Icons.Outlined.OpenInNew, "Enter") { s.openSelected() },
+        MenuEntry(S.open, Icons.AutoMirrored.Outlined.OpenInNew, "Enter") { s.openSelected() },
         MenuEntry(S.openInNewTab, Icons.Outlined.Tab, enabled = item.isDir) { s.newTab(item.path) },
         MenuEntry(S.openInTerminal, Icons.Outlined.Terminal, enabled = item.isDir) { Fs.openInTerminal(item.path) },
         if (item.isDir) (if (pinned) MenuEntry(S.unpinFromSidebar, Icons.Outlined.PushPin) { s.unpin(item.path) }
@@ -409,6 +430,8 @@ fun SizeCell(s: AppState, item: FileItem, modifier: Modifier) {
         T(Fs.sizeText(item.size), modifier, size = 13.sp, color = p.textSecondary)
         return
     }
+    // Servers, shares and exports: adding up a whole share would walk the server.
+    if (item.typeLabel != null) { Box(modifier); return }
     val known = s.folderSizes[item.path]
     when {
         known != null -> T(Fs.sizeText(known), modifier, size = 13.sp, color = p.textSecondary)

@@ -27,10 +27,13 @@ class FileItem(
     val hidden: Boolean,
     /** System attribute set, or a "$" name such as $Recycle.Bin: protected operating-system item. */
     val system: Boolean = false,
+    /** Shown in the 類型 column instead of the file type (network servers, shares, exports). */
+    val typeLabel: String? = null,
 ) {
     val ext: String get() = if (isDir) "" else name.substringAfterLast('.', "").lowercase()
     val typeName: String
         get() = when {
+            typeLabel != null -> typeLabel
             isDir -> S.fileFolder
             ext.isEmpty() -> S.file
             else -> if (S.zh) "${ext.uppercase()} 檔案" else "${ext.uppercase()} File"
@@ -251,6 +254,41 @@ object Fs {
         emptyList()
     }
 
+    /**
+     * The icon WSL registered for each distribution: HKCU\…\Lxss\{id} holds DistributionName and
+     * BasePath, and WSL puts shortcut.ico there (the Start-menu and Windows Terminal icon).
+     * Distributions without one (docker-desktop, older imports) are simply missing from the map.
+     */
+    fun wslIconFiles(): Map<String, File> = try {
+        val p = ProcessBuilder("reg", "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss", "/s")
+            .redirectErrorStream(true).start()
+        p.outputStream.close()
+        val bytes = java.util.concurrent.CompletableFuture.supplyAsync { p.inputStream.readAllBytes() }
+        if (!p.waitFor(4, TimeUnit.SECONDS)) { p.destroyForcibly(); emptyMap() }
+        else {
+            val charset = runCatching { java.nio.charset.Charset.forName(System.getProperty("native.encoding")) }.getOrDefault(Charsets.UTF_8)
+            val out = HashMap<String, File>()
+            var name: String? = null; var base: String? = null
+            fun flush() {
+                val n = name; val b = base
+                if (n != null && b != null) File(b.removePrefix("\\\\?\\"), "shortcut.ico").takeIf { it.isFile }?.let { out[n] = it }
+                name = null; base = null
+            }
+            for (line in String(bytes.get(1, TimeUnit.SECONDS), charset).lines()) {
+                if (line.startsWith("HKEY_")) { flush(); continue }
+                val parts = line.trim().split(Regex("\\s{2,}|\\t"), limit = 3)
+                if (parts.size == 3 && parts[1].startsWith("REG_")) when (parts[0]) {
+                    "DistributionName" -> name = parts[2]
+                    "BasePath" -> base = parts[2]
+                }
+            }
+            flush()
+            out
+        }
+    } catch (_: Exception) {
+        emptyMap()
+    }
+
     /** Recent files from Windows' Recent folder (shortcut names, newest first), capped. */
     fun recentFiles(): List<RecentFile> {
         val dir = File(System.getenv("APPDATA") ?: return emptyList(), "Microsoft\\Windows\\Recent")
@@ -311,11 +349,25 @@ object Fs {
     }
 
     fun parent(path: String): String? {
+        if (NetworkFs.isServer(path)) return if (NetworkFs.isWslHost(NetworkFs.hostOf(path))) HOME else NETWORK
+        if (NetworkFs.isShareRoot(path)) return NetworkFs.serverPath(NetworkFs.hostOf(path))
         val p = Paths.get(path).parent ?: return null
         return p.toString()
     }
 
     fun breadcrumbs(path: String): List<Pair<String, String>> {
+        // Network paths start at 網路 > server, then the share and its folders.
+        if (NetworkFs.isUnc(path)) {
+            val host = NetworkFs.hostOf(path)
+            // WSL paths read WSL > distribution > …, other servers 網路 > server > share > ….
+            val head = if (NetworkFs.isWslHost(host)) listOf(S.wsl to NetworkFs.serverPath(host))
+                else listOf(S.network to NETWORK, host to NetworkFs.serverPath(host))
+            return if (NetworkFs.isServer(path)) head else head + localCrumbs(path)
+        }
+        return localCrumbs(path)
+    }
+
+    private fun localCrumbs(path: String): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>()
         var p: Path? = Paths.get(path)
         while (p != null) {

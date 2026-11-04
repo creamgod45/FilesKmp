@@ -69,9 +69,9 @@ fun CustomToolbar(s: AppState, modifier: Modifier, layout: Map<TbContext, List<T
                             if (e.isSeparator) FlyoutSeparator()
                             else TbCommands.get(e.id)?.let { cmd ->
                                 if (cmd.isGroup) {
-                                    T(cmd.label, Modifier.padding(start = 10.dp, top = 6.dp, bottom = 2.dp), size = 12.sp, color = LocalPalette.current.textSecondary)
+                                    T(e.displayLabel(cmd), Modifier.padding(start = 10.dp, top = 6.dp, bottom = 2.dp), size = 12.sp, color = LocalPalette.current.textSecondary)
                                     cmd.groupItems!!(s).forEach { m -> FlyoutItem(m.label, m.icon, m.hotkey, enabled = cmd.enabled(s) && m.enabled) { open = false; m.action() } }
-                                } else FlyoutItem(cmd.label, cmd.icon, cmd.hotkey, enabled = cmd.enabled(s)) { open = false; cmd.run(s) }
+                                } else FlyoutItem(e.displayLabel(cmd), cmd.icon, cmd.hotkey, enabled = cmd.enabled(s)) { open = false; cmd.run(s) }
                             }
                         }
                     }
@@ -132,7 +132,8 @@ fun ToolbarItem(s: AppState, e: TbEntry, interactive: Boolean, onUnpin: (() -> U
             MenuEntry(S.unpin, Icons.Outlined.PushPin) { onUnpin() },
         )
     } else Modifier)
-    val tip = cmd.label + if (cmd.hotkey.isNotEmpty()) " (${cmd.hotkey})" else ""
+    val name = e.displayLabel(cmd)
+    val tip = name + if (cmd.hotkey.isNotEmpty()) " (${cmd.hotkey})" else ""
     Box(menu) {
         if (showIcon && !showLabel && !cmd.isGroup) {
             IconBtn(cmd.icon!!, tip, { if (interactive) cmd.run(s) }, enabled = enabled || !interactive, width = 40.dp, height = 36.dp, selected = on)
@@ -141,9 +142,9 @@ fun ToolbarItem(s: AppState, e: TbEntry, interactive: Boolean, onUnpin: (() -> U
                 enabled = enabled || !interactive, selected = on) {
                 Row(Modifier.padding(horizontal = 10.dp).fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
                     val tint = if (enabled || !interactive) p.text else p.textTertiary
-                    if (showIcon) Icon(cmd.icon!!, cmd.label, Modifier.size(16.dp), tint = tint)
+                    if (showIcon) Icon(cmd.icon!!, name, Modifier.size(16.dp), tint = tint)
                     if (showIcon && showLabel) Spacer(Modifier.width(8.dp))
-                    if (showLabel) T(cmd.label, size = 14.sp, color = tint)
+                    if (showLabel) T(name, size = 14.sp, color = tint)
                     if (cmd.isGroup) {
                         Spacer(Modifier.width(6.dp))
                         Icon(Icons.Outlined.KeyboardArrowDown, null, Modifier.size(14.dp), tint = p.textSecondary)
@@ -182,6 +183,10 @@ fun CustomizeToolbarDialog(s: AppState) {
     var listRect by remember { mutableStateOf(Rect.Zero) }
     val rowRects = remember { mutableStateMapOf<Int, Rect>() }
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
+    // The person's own commands / folders: which editor is open (null id = new), and the row being renamed.
+    var commandEditor by remember { mutableStateOf<Pair<Boolean, String?>?>(null) }
+    var folderEditor by remember { mutableStateOf<Pair<Boolean, String?>?>(null) }
+    var renamingRow by remember { mutableStateOf<Int?>(null) }
     val list = work[ctx] ?: emptyList()
 
     fun setList(l: List<TbEntry>) {
@@ -209,6 +214,20 @@ fun CustomizeToolbarDialog(s: AppState) {
         setList(l)
     }
     fun newEntry(id: String) = if (id == SEPARATOR) TbEntry(SEPARATOR, false, false) else TbEntry(id, TbCommands.get(id)?.icon != null, true)
+    fun deleteCustom(id: String) {
+        TbCustom.delete(id)
+        TbContext.entries.forEach { c -> work[c]?.let { l -> if (l.any { it.id == id }) work[c] = l.filter { it.id != id } } }
+        rowRects.clear(); changed = true
+    }
+    /** 重新命名: a custom item renames itself everywhere; a built-in gets this slot's own name (blank = its own). */
+    fun renameRow(i: Int, newName: String) {
+        val cur = work[ctx] ?: return
+        if (i >= cur.size) return
+        val e = cur[i]
+        val n = newName.trim()
+        if (TbCustom.isCustom(e.id)) { if (n.isNotEmpty()) TbCustom.rename(e.id, n); setList(cur.toMutableList().also { it[i] = e.copy(label = null) }) }
+        else setList(cur.toMutableList().also { it[i] = e.copy(label = n.ifEmpty { null }?.takeIf { l -> l != TbCommands.get(e.id)?.label }) })
+    }
 
     Box(
         Modifier.fillMaxSize().background(Color(0x66000000)).onGloballyPositioned { rootOrigin = it.boundsInRoot().topLeft }
@@ -247,6 +266,11 @@ fun CustomizeToolbarDialog(s: AppState) {
                     T(S.availableOptions, Modifier.padding(bottom = 6.dp), weight = FontWeight.SemiBold)
                     PlainField(search, { search = it }, Modifier.fillMaxWidth(), placeholder = S.search)
                     Spacer(Modifier.height(6.dp))
+                    // New command / new folder (the person's own items, listed under 自訂).
+                    Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        DialogButton("+ " + S.commandShort, primary = false, modifier = Modifier.weight(1f)) { commandEditor = true to null }
+                        DialogButton("+ " + S.folderShort, primary = false, modifier = Modifier.weight(1f)) { folderEditor = true to null }
+                    }
                     val leaf: @Composable (String, String, androidx.compose.ui.graphics.vector.ImageVector?, Int) -> Unit = { id, label, icon, indent ->
                         var coords by remember { mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
                         Hover(
@@ -265,6 +289,9 @@ fun CustomizeToolbarDialog(s: AppState) {
                                 Box(Modifier.size(16.dp)) { if (icon != null) Icon(icon, null, Modifier.size(16.dp), tint = p.text) }
                                 Spacer(Modifier.width(8.dp))
                                 T(label, Modifier.weight(1f), size = 13.sp)
+                                if (TbCustom.isCustom(id)) IconBtn(Icons.Outlined.Edit, S.editItem, {
+                                    if (id.startsWith("folder:")) folderEditor = true to id else commandEditor = true to id
+                                }, width = 24.dp, height = 24.dp, iconSize = 12.dp)
                                 // Convenience: the original is drag-only; "+" adds at the end.
                                 IconBtn(Icons.Outlined.Add, S.add, { setList(list + newEntry(id)) }, width = 24.dp, height = 24.dp, iconSize = 12.dp)
                             }
@@ -274,7 +301,7 @@ fun CustomizeToolbarDialog(s: AppState) {
                         val q = search.trim()
                         if (q.isNotEmpty()) {
                             // Search: flat list, case-insensitive match on the full label.
-                            val hits = TbCommands.all.filter { it.listLabel.contains(q, true) }.sortedBy { it.listLabel }
+                            val hits = (TbCommands.all + TbCustom.all).filter { it.listLabel.contains(q, true) }.sortedBy { it.listLabel }
                             items(hits.size) { i -> leaf(hits[i].id, hits[i].listLabel, hits[i].icon, 0) }
                         } else {
                             item { leaf(SEPARATOR, S.separator, Icons.Outlined.HorizontalRule, 0) }
@@ -291,7 +318,7 @@ fun CustomizeToolbarDialog(s: AppState) {
                                     }
                                 }
                                 if (open) {
-                                    val cmds = TbCommands.all.filter { it.category == cat }.sortedBy { it.listLabel }
+                                    val cmds = (TbCommands.all + TbCustom.all).filter { it.category == cat }.sortedBy { it.listLabel }
                                     items(cmds.size) { i -> leaf(cmds[i].id, cmds[i].listLabel, cmds[i].icon, 1) }
                                 }
                             }
@@ -341,7 +368,16 @@ fun CustomizeToolbarDialog(s: AppState) {
                                             T(S.separator, Modifier.weight(1f), color = p.textSecondary)
                                             Spacer(Modifier.width(128.dp))
                                         } else {
-                                            T(cmd?.listLabel ?: e.id, Modifier.weight(1f))
+                                            if (renamingRow == i) {
+                                                EditBox(initial = e.displayLabel(cmd), selectStem = false,
+                                                    onCommit = { renameRow(i, it); renamingRow = null }, onCancel = { renamingRow = null },
+                                                    modifier = Modifier.weight(1f))
+                                            } else {
+                                                T(e.displayLabel(cmd) + if (cmd?.isGroup == true) " ..." else "", Modifier.weight(1f))
+                                                if (e.label != null) T(cmd?.label ?: "", Modifier.padding(end = 6.dp), size = 11.sp, color = p.textTertiary)
+                                                IconBtn(Icons.Outlined.DriveFileRenameOutline, S.renameItem, { renamingRow = i },
+                                                    width = 26.dp, height = 26.dp, iconSize = 12.dp, tint = if (hovered) p.text else p.textTertiary)
+                                            }
                                             Box(Modifier.width(56.dp)) {
                                                 // Use the captured index only if it is still in bounds.
                                                 TinyCheck(e.showIcon, enabled = cmd?.icon != null, tip = S.showIconTip) { v ->
@@ -393,6 +429,14 @@ fun CustomizeToolbarDialog(s: AppState) {
                 Spacer(Modifier.width(8.dp))
                 DialogButton(S.cancel, primary = false) { s.customizeToolbarOpen = false }
             }
+        }
+        commandEditor?.let { (_, id) ->
+            CustomCommandEditor(id?.let { TbCustom.command(it) }, onDismiss = { commandEditor = null },
+                onDelete = id?.let { { deleteCustom(it); commandEditor = null } }) { c -> TbCustom.upsert(c); changed = true; commandEditor = null }
+        }
+        folderEditor?.let { (_, id) ->
+            CustomFolderEditor(id?.let { TbCustom.folder(it) }, onDismiss = { folderEditor = null },
+                onDelete = id?.let { { deleteCustom(it); folderEditor = null } }) { f -> TbCustom.upsert(f); changed = true; folderEditor = null }
         }
         // Dragged item follows the pointer
         drag?.let { d ->

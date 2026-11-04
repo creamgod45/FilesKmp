@@ -87,6 +87,21 @@ object M {
     // Home loading (rebuild's own fix for the slow Home page)
     const val DRIVE_QUERY_TIMEOUT_MS = 1500L
     const val SHELL_QUERY_TIMEOUT_MS = 6000L
+    // Network browsing (rebuild's own: the original hands 網路 to Explorer)
+    const val NET_PROBE_TIMEOUT_MS = 400       // SMB/NFS port probe per LAN host
+    const val NET_SHARE_TIMEOUT_MS = 8000L     // listing a server's shares / exports
+    const val NET_WINDOWS_DISCOVERY_MS = 40000L // Windows' Network folder can take ~30 s
+    // Storage statistics (rebuild's own; off by default)
+    const val STORAGE_SAMPLE_MINUTES = 30                         // a reading while the app runs
+    const val STORAGE_MIN_GAP_MS = 10 * 60_000L                   // skip a reading this soon after the last…
+    const val STORAGE_MIN_CHANGE_BYTES = 50L * 1024 * 1024        // …unless usage moved at least this much
+    const val STORAGE_HISTORY_MAX = 20_000                        // lines kept in storage.tsv
+    const val STORAGE_MEASURE_TIMEOUT_MS = 120_000L               // per clean-up target
+    const val STORAGE_GROWTH_ALERT_BYTES = 5L * 1024 * 1024 * 1024 // reminder: +5 GB in 7 days
+    const val STORAGE_LOW_FREE_PERCENT = 10                       // reminder: less than 10 % free
+    const val STORAGE_WIDGET_DELAY_MS = 800L                      // Home widget: after the other widgets, then this
+    const val STORAGE_FIRST_SAMPLE_DELAY_MS = 5000L               // first reading after start-up
+    const val STORAGE_WIDGET_ROWS = 6                             // clean-up rows shown on Home
     const val RECENT_FILES_LIMIT = 50
     // Thumbnails (shell thumbnails like Explorer; ShowThumbnails on by default: FoldersSettingsService.cs:124)
     const val THUMB_SMALL = 96            // px requested for small views (estimated)

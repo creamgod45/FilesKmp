@@ -27,7 +27,9 @@ enum class TbCategory(private val zhName: String, private val enName: String) {
     Theme("主題", "Theme"), Ui("介面", "Interface"), Panes("分割畫面", "Panes"), Run("執行", "Run"),
     Archive("壓縮", "Archive"), Media("媒體", "Media"), Navigation("導覽", "Navigation"), Image("影像", "Image"),
     Sort("排序", "Sort"), Create("新增", "New"), FileOps("檔案操作", "File operations"), Layout("版面配置", "Layout"),
-    Window("視窗", "Window"), Selection("選取", "Selection"), Open("開啟", "Open");
+    Window("視窗", "Window"), Selection("選取", "Selection"), Open("開啟", "Open"),
+    /** The person's own commands and folders (ToolbarCustom.kt). */
+    Custom("自訂", "Custom");
     val text get() = if (S.zh) zhName else enName
 }
 
@@ -193,13 +195,20 @@ object TbCommands {
     )
 
     private val byId = all.associateBy { it.id }
-    fun get(id: String): TbCmd? = byId[id]
+    /** A built-in command, or one of the person's own commands / folders. */
+    fun get(id: String): TbCmd? = byId[id] ?: TbCustom.get(id)
 }
 
-/** One toolbar slot: a command or a separator, with its 圖示 / 文字標籤 switches (ToolbarItemSettingsEntry). */
-data class TbEntry(val id: String, val showIcon: Boolean = true, val showLabel: Boolean = false) {
+/**
+ * One toolbar slot: a command or a separator, with its 圖示 / 文字標籤 switches (ToolbarItemSettingsEntry).
+ * [label] is the person's own name for a built-in command (重新命名); null keeps the command's name.
+ */
+data class TbEntry(val id: String, val showIcon: Boolean = true, val showLabel: Boolean = false, val label: String? = null) {
     val isSeparator get() = id == SEPARATOR
 }
+
+/** The name a slot shows: the person's rename, a custom item's own name, or the command's. */
+fun TbEntry.displayLabel(cmd: TbCmd?): String = label ?: cmd?.label ?: id
 
 /** The original's ToolbarDefaultsTemplate (ToolbarSections.cs:23-57), limited to commands this app has. */
 fun toolbarDefaults(): Map<TbContext, List<TbEntry>> = mapOf(
@@ -229,10 +238,13 @@ class ToolbarStore {
             TbContext.entries.forEach { map[it] = ArrayList() }
             file.readLines(Charsets.UTF_8).forEach { l ->
                 val p = l.split('\t')
-                if (p.size == 4) {
+                if (p.size == 4 || p.size == 5) {
                     // Unknown contexts fold into 其他內容; unknown commands are dropped (ToolbarSections.cs:124-131).
                     val ctx = runCatching { TbContext.valueOf(p[0]) }.getOrDefault(TbContext.OtherContexts)
-                    if (p[1] == SEPARATOR || TbCommands.get(p[1]) != null) map[ctx]!!.add(TbEntry(p[1], p[2] == "1", p[3] == "1"))
+                    // Optional 5th column: the person's name for the slot (base64, UTF-8).
+                    val label = p.getOrNull(4)?.takeIf { it.isNotEmpty() }
+                        ?.let { runCatching { String(java.util.Base64.getDecoder().decode(it), Charsets.UTF_8) }.getOrNull() }
+                    if (p[1] == SEPARATOR || TbCommands.get(p[1]) != null) map[ctx]!!.add(TbEntry(p[1], p[2] == "1", p[3] == "1", label))
                 }
             }
             map
@@ -241,9 +253,13 @@ class ToolbarStore {
 
     fun save(newLayout: Map<TbContext, List<TbEntry>>) {
         layout = newLayout
+        if (Prefs.readOnly) return
         try {
             file.writeText(TbContext.entries.flatMap { c ->
-                (newLayout[c] ?: emptyList()).map { "${c.name}\t${it.id}\t${if (it.showIcon) 1 else 0}\t${if (it.showLabel) 1 else 0}" }
+                (newLayout[c] ?: emptyList()).map {
+                    "${c.name}\t${it.id}\t${if (it.showIcon) 1 else 0}\t${if (it.showLabel) 1 else 0}" +
+                        (it.label?.let { l -> "\t" + java.util.Base64.getEncoder().encodeToString(l.toByteArray(Charsets.UTF_8)) } ?: "")
+                }
             }.joinToString("\n"), Charsets.UTF_8)
         } catch (_: Exception) {}
     }
