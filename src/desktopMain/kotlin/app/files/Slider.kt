@@ -37,6 +37,8 @@ fun FluentSlider(
     range: ClosedFloatingPointRange<Float> = 0f..1f,
     steps: Int = 0,
     width: Dp = 160.dp,
+    /** Called once a drag (or a key / wheel step) is done: for work too heavy for every move, like seeking. */
+    onChangeFinished: (() -> Unit)? = null,
 ) {
     val p = LocalPalette.current
     var widthPx by remember { mutableStateOf(1) }
@@ -54,6 +56,7 @@ fun FluentSlider(
     val stepSize = if (steps > 0) span / steps else span / 20f
     val current by rememberUpdatedState(value)
     val change by rememberUpdatedState(onChange)
+    val finished by rememberUpdatedState(onChangeFinished)
     val frac = ((value - range.start) / span).coerceIn(0f, 1f)
     Box(
         modifier.width(width).height(24.dp).hoverable(src)
@@ -61,10 +64,10 @@ fun FluentSlider(
             .onPreviewKeyEvent {
                 if (it.type != KeyEventType.KeyDown) false
                 else when (it.key) {
-                    Key.DirectionLeft, Key.DirectionDown -> { change(snap(current - stepSize)); true }
-                    Key.DirectionRight, Key.DirectionUp -> { change(snap(current + stepSize)); true }
-                    Key.MoveHome -> { change(range.start); true }
-                    Key.MoveEnd -> { change(range.endInclusive); true }
+                    Key.DirectionLeft, Key.DirectionDown -> { change(snap(current - stepSize)); finished?.invoke(); true }
+                    Key.DirectionRight, Key.DirectionUp -> { change(snap(current + stepSize)); finished?.invoke(); true }
+                    Key.MoveHome -> { change(range.start); finished?.invoke(); true }
+                    Key.MoveEnd -> { change(range.endInclusive); finished?.invoke(); true }
                     else -> false
                 }
             }
@@ -80,6 +83,7 @@ fun FluentSlider(
                         c.consume()
                         change(fromX(c.position.x))
                     }
+                    finished?.invoke()
                 }
             }
             .pointerInput(range, steps) {
@@ -88,7 +92,7 @@ fun FluentSlider(
                         val e = awaitPointerEvent()
                         if (e.type == PointerEventType.Scroll) {
                             val dy = e.changes.firstOrNull()?.scrollDelta?.y ?: 0f
-                            if (dy != 0f) { change(snap(current + if (dy < 0) stepSize else -stepSize)); e.changes.forEach { it.consume() } }
+                            if (dy != 0f) { change(snap(current + if (dy < 0) stepSize else -stepSize)); finished?.invoke(); e.changes.forEach { it.consume() } }
                         }
                     }
                 }

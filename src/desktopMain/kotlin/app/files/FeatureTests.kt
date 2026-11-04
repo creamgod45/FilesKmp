@@ -228,3 +228,99 @@ fun tokensTest() {
     c.check("catalog has the built-ins", listOf("{first}", "{clipboard}", "{item.name}", "{newline}").all { t -> cat.any { it.text == t } })
     println("\nTOKENS TEST: ${c.pass} passed, ${c.fail} failed")
 }
+
+/** A small uncompressed AVI (moving colour bars) for the media test. */
+private fun writeTestAvi(f: File, w: Int = 64, h: Int = 48, frames: Int = 20, fps: Int = 10) {
+    val frameBytes = w * 3 * h
+    val b = java.io.ByteArrayOutputStream()
+    fun i32(v: Int) { b.write(v and 255); b.write(v shr 8 and 255); b.write(v shr 16 and 255); b.write(v shr 24 and 255) }
+    fun i16(v: Int) { b.write(v and 255); b.write(v shr 8 and 255) }
+    fun cc(s: String) = b.write(s.toByteArray(Charsets.US_ASCII))
+    val strl = 4 + (8 + 56) + (8 + 40)
+    val hdrl = 4 + (8 + 56) + (8 + strl)
+    val movi = 4 + frames * (8 + frameBytes)
+    val idx = frames * 16
+    cc("RIFF"); i32(4 + (8 + hdrl) + (8 + movi) + (8 + idx)); cc("AVI ")
+    cc("LIST"); i32(hdrl); cc("hdrl")
+    cc("avih"); i32(56); i32(1_000_000 / fps); i32(frameBytes * fps); i32(0); i32(0x10); i32(frames); i32(0); i32(1); i32(frameBytes); i32(w); i32(h); repeat(4) { i32(0) }
+    cc("LIST"); i32(strl); cc("strl")
+    cc("strh"); i32(56); cc("vids"); cc("DIB "); i32(0); i16(0); i16(0); i32(0); i32(1); i32(fps); i32(0); i32(frames); i32(frameBytes); i32(-1); i32(0); i16(0); i16(0); i16(w); i16(h)
+    cc("strf"); i32(40); i32(40); i32(w); i32(h); i16(1); i16(24); i32(0); i32(frameBytes); i32(0); i32(0); i32(0); i32(0)
+    cc("LIST"); i32(movi); cc("movi")
+    repeat(frames) { n ->
+        cc("00db"); i32(frameBytes)
+        for (y in 0 until h) for (x in 0 until w) { val v = ((x + n * 3) * 4) and 255; b.write(v); b.write(255 - v); b.write((y * 5) and 255) }
+    }
+    cc("idx1"); i32(idx)
+    repeat(frames) { n -> cc("00db"); i32(0x10); i32(4 + n * (8 + frameBytes)); i32(frameBytes) }
+    f.writeBytes(b.toByteArray())
+}
+
+/**
+ * --test-media <dir> [video.mp4]: plays a WAV and an AVI this test writes (and the given video, read
+ * only) with Windows' Media Foundation, muted, in an invisible off-screen window.
+ */
+fun mediaTest(dir: File, extra: File?) {
+    val c = Checks()
+    dir.mkdirs()
+    val wav = File(dir, "tone.wav")
+    run {
+        val rate = 44100f; val secs = 2
+        val pcm = ByteArray((rate * secs).toInt() * 2) { 0 }
+        for (i in 0 until pcm.size / 2) { val v = (Math.sin(i * 2 * Math.PI * 440 / rate) * 8000).toInt(); pcm[i * 2] = v.toByte(); pcm[i * 2 + 1] = (v shr 8).toByte() }
+        val fmt = javax.sound.sampled.AudioFormat(rate, 16, 1, true, false)
+        javax.sound.sampled.AudioSystem.write(javax.sound.sampled.AudioInputStream(java.io.ByteArrayInputStream(pcm), fmt, (pcm.size / 2).toLong()),
+            javax.sound.sampled.AudioFileFormat.Type.WAVE, wav)
+    }
+    val avi = File(dir, "bars.avi").also { writeTestAvi(it) }
+    // An invisible host window for the video (off screen, no taskbar button).
+    val host = java.awt.Window(null as java.awt.Frame?).apply { setBounds(-4000, -4000, 320, 240); isVisible = true }
+    val canvas = java.awt.Canvas().apply { setSize(320, 240) }
+    host.add(canvas); host.validate()
+    Thread.sleep(300)
+    val hwnd = WindowCorners.hwnd(canvas) ?: 0L
+    c.check("video surface has a window handle", hwnd != 0L)
+
+    fun exercise(name: String, f: File, h: Long, expectSize: Pair<Int, Int>?, expectLen: Double?) {
+        val pl = MediaEngine.open(f.path, h, autoPlay = false)
+        c.check("$name: opened", pl != null)
+        if (pl == null) return
+        pl.mute(true); pl.volume(0f); pl.play()
+        var len = 0.0
+        repeat(40) { if (len <= 0.0) { Thread.sleep(100); len = pl.duration() } }
+        println("   $name: length ${"%.2f".format(len)} s, state ${pl.state()}, size ${pl.videoSize()}")
+        c.check("$name: length known", len > 0 && (expectLen == null || kotlin.math.abs(len - expectLen) < 0.3), len)
+        if (expectSize != null) c.check("$name: picture size", pl.videoSize() == expectSize, pl.videoSize())
+        val p0 = pl.position(); Thread.sleep(700); val p1 = pl.position()
+        c.check("$name: plays (position moves)", pl.state() == MediaEngine.State.Playing && p1 > p0, "$p0 → $p1")
+        pl.pause(); Thread.sleep(200)
+        c.check("$name: pause", pl.state() == MediaEngine.State.Paused)
+        pl.seek(len / 2); Thread.sleep(300)
+        c.check("$name: seek", kotlin.math.abs(pl.position() - len / 2) < 0.4, pl.position())
+        pl.close()
+        c.check("$name: closed", pl.state() == MediaEngine.State.Closed)
+    }
+    exercise("wav", wav, 0L, null, 2.0)
+    exercise("avi", avi, hwnd, 64 to 48, 2.0)
+    if (extra != null && extra.isFile) exercise("mp4 (H.264)", extra, hwnd, null, null)
+    c.check("not a media file: refused or fails cleanly", runCatching {
+        val pl = MediaEngine.open(File(dir, "tone.wav").path + ".missing", 0L, autoPlay = false); pl?.close(); pl == null
+    }.getOrDefault(false))
+    host.dispose()
+    println("\nMEDIA TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-xls <file.xls>...: reads old Excel workbooks (read only) and prints their sheets. */
+fun xlsTest(files: List<File>) {
+    val c = Checks()
+    files.forEach { f ->
+        val r = runCatching { Xls.read(f) }
+        c.check("${f.name}: read", r.isSuccess, r.exceptionOrNull())
+        r.getOrNull()?.forEach { sh ->
+            println("   [${sh.name}] ${sh.total} rows")
+            sh.rows.filter { row -> row.any { it.isNotBlank() } }.take(4).forEach { row -> println("      " + row.joinToString(" | ").take(160)) }
+        }
+        c.check("${f.name}: has sheets with cells", r.getOrNull().orEmpty().any { sh -> sh.rows.any { row -> row.any { it.isNotBlank() } } })
+    }
+    println("\nXLS TEST: ${c.pass} passed, ${c.fail} failed")
+}

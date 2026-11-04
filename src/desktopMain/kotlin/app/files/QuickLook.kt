@@ -43,7 +43,8 @@ sealed class QlContent {
     class Markdown(val blocks: List<MdBlock>, val source: Text, val dir: File?) : QlContent()
     /** CSV or a workbook: sheets of rows ([total] = rows in the file, more than shown when large). */
     class Table(val sheets: List<Sheet>) : QlContent()
-    class Media(val poster: ImageBitmap?, val video: Boolean) : QlContent()
+    /** Video or sound: played here when [playable] (MediaPlayer.kt), else its poster and the default player. */
+    class Media(val poster: ImageBitmap?, val video: Boolean, val playable: Boolean = false) : QlContent()
     class Message(val text: String) : QlContent()
     class Sheet(val name: String, val rows: List<List<String>>, val total: Int)
 }
@@ -80,8 +81,8 @@ object QuickLook {
             }
             ext == "csv" || ext == "tsv" -> csv(f, if (ext == "tsv") '\t' else null)
             ext == "xlsx" || ext == "xlsm" -> xlsx(f)
-            ext == "xls" -> QlContent.Message(S.qlXlsOld)
-            ext in Thumbnails.videoExt || ext in audioExt -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), ext in Thumbnails.videoExt)
+            ext == "xls" -> QlContent.Table(Xls.read(f, TABLE_MAX_ROWS, SHEET_MAX).map { QlContent.Sheet(it.name, it.rows, it.total) }.ifEmpty { return QlContent.Message(S.qlNoPreview) })
+            ext in Thumbnails.videoExt || ext in audioExt -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), ext in Thumbnails.videoExt, playable = true)
             ext in FsExtra.textExt || ext in moreText || ext.isEmpty() || looksLikeText(f) -> text(f)
             Thumbnails.supports(item) -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), false)
             else -> QlContent.Message(S.qlNoPreview)
@@ -287,7 +288,8 @@ fun QuickLookDialog(s: AppState, path: String) {
                         }
                     }
                     is QlContent.Table -> TablePreview(c)
-                    is QlContent.Media -> MediaPreview(c, item) { Fs.open(path) }
+                    is QlContent.Media -> if (c.playable) MediaPlayerView(path, c.video, c.poster, item, s.translucentActive) { s.quickLook = null; Fs.open(path) }
+                        else MediaPreview(c, item) { Fs.open(path) }
                     is QlContent.Message -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                         if (item != null) FileIcon(item, 96.dp)
                         Spacer(Modifier.height(12.dp))

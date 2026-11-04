@@ -57,6 +57,11 @@ val releases: List<Release> = listOf(
                 "Unknown variables, parameters or tokens, and a missing }, are pointed out under the field.") to
                 ("在步驟的文字欄輸入 {，就會列出前面步驟設定的變數、參數與所有標記，並附說明；用了不存在的變數、參數或標記，或少了 }，欄位下方會直接提醒。"),
             key = "OpenFlows", open = { it.flowsOpen = true }),
+        Feature(Icons.Outlined.PlayCircle, "Quick preview plays video and music" to "快速預覽可直接播放影片與音樂",
+            ("Space on a video or song plays it right there with Windows' own media engine: play / pause, seek, volume. " +
+                "Old Excel workbooks (.xls) now preview as tables too.") to
+                ("在影片或音樂上按 Space，直接用 Windows 內建的媒體引擎播放：播放／暫停、拖曳進度、音量。舊版 Excel 活頁簿（.xls）也能以表格預覽。"),
+            key = "QuickLook"),
         Feature(Icons.Outlined.Fingerprint, "Shortcuts: comparing hashes works" to "捷徑：雜湊值比對修正",
             ("“Hash” now gives the hash alone by default (choose “hash+name” for the old list), and “equals” ignores spaces " +
                 "and line breaks around the text, such as the one a copied hash ends with.") to

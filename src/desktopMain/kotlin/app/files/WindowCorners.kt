@@ -39,8 +39,10 @@ object WindowCorners {
 
     /** The native window handle, through AWT's internal accessor (exported by a JVM option). */
     fun hwnd(window: Window): Long? = runCatching { hwndOf(window) }.getOrNull()
+    /** The native handle of a heavyweight component (a Canvas): where native video is drawn. */
+    fun hwnd(component: Component): Long? = runCatching { hwndOf(component) }.getOrNull()
 
-    private fun hwndOf(window: Window): Long? {
+    private fun hwndOf(window: Component): Long? {
         val accessor = Class.forName("sun.awt.AWTAccessor").getMethod("getComponentAccessor").invoke(null)
         val peer = Class.forName("sun.awt.AWTAccessor\$ComponentAccessor")
             .getMethod("getPeer", Component::class.java).invoke(accessor, window) ?: return null

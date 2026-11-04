@@ -52,6 +52,7 @@ fun main(args: Array<String>) {
     if (args.any { it.startsWith("--test") || it == "--screenshot" || it.startsWith("--bench") } && "--test-errorlog" !in args) ErrorLog.enabled = false
     // Test and screenshot runs never write settings, tags or the toolbar (session, remembered servers, reminders, …).
     if ("--test-titlebar" in args || "--screenshot" in args) Prefs.readOnly = true
+    if ("--screenshot" in args) MediaEngine.enabled = false
     val shotIdx = args.indexOf("--screenshot")
     if (shotIdx >= 0 && shotIdx + 1 < args.size) {
         val start = args.filterIndexed { i, a -> i != shotIdx + 1 && !a.startsWith("--") && File(a).isDirectory }.firstOrNull()
@@ -501,6 +502,8 @@ fun main(args: Array<String>) {
     args.indexOf("--test-background").takeIf { it >= 0 && it + 1 < args.size }?.let { backgroundTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-sha-flow").takeIf { it >= 0 && it + 2 < args.size }?.let { shaFlowTest(File(args[it + 1]), File(args[it + 2])); exitProcess(0) }
     if ("--test-tokens" in args) { tokensTest(); exitProcess(0) }
+    args.indexOf("--test-media").takeIf { it >= 0 && it + 1 < args.size }?.let { mediaTest(File(args[it + 1]), args.getOrNull(it + 2)?.takeIf { a -> !a.startsWith("--") }?.let { a -> File(a) }); exitProcess(0) }
+    args.indexOf("--test-xls").takeIf { it >= 0 }?.let { i -> xlsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
     args.indexOf("--test-keymap").takeIf { it >= 0 && it + 1 < args.size }?.let { keymapTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-update-fresh").takeIf { it >= 0 && it + 1 < args.size }?.let { updateFreshTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-custom-command").takeIf { it >= 0 && it + 1 < args.size }?.let { customCommandTest(File(args[it + 1])); exitProcess(0) }
