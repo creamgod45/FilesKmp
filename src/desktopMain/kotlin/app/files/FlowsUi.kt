@@ -509,10 +509,10 @@ private fun AiPanel(s: AppState, onOpen: (String) -> Unit) {
             if (AiConfig.provider == AiConfig.ANTHROPIC)
                 ChoiceBox(AiConfig.model, (AiConfig.models + AiConfig.model).distinct().map { it to it }, Modifier.width(170.dp)) { AiConfig.saveModel(it) }
             else T(AiConfig.model.ifBlank { "—" }, size = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
-            if (AiConfig.provider != AiConfig.OPENAI_COMPAT) {
-                T(S.aiEffort, size = 12.sp, color = p.textSecondary)
+            T(S.aiEffort, size = 12.sp, color = p.textSecondary)
+            if (AiConfig.provider != AiConfig.OPENAI_COMPAT)
                 ChoiceBox(AiConfig.effort, AiConfig.efforts.map { it to if (it == "default") S.aiEffortDefault else it }, Modifier.width(90.dp)) { AiConfig.saveEffort(it) }
-            }
+            else ChoiceBox(AiConfig.openAiEffort, AiConfig.openAiEfforts.map { it to if (it == "default") S.aiEffortDefault else it }, Modifier.width(90.dp)) { AiConfig.saveOpenAiEffort(it) }
             Spacer(Modifier.weight(1f))
             DialogButton(S.aiSettings, primary = false) { settings = !settings }
             DialogButton(S.aiNewChat, primary = false) { chat.reset() }
@@ -600,6 +600,15 @@ private fun AiSettings() {
         T(when (prov) { AiConfig.CLAUDE_COMPAT -> S.aiClaudeCompatHint; AiConfig.OPENAI_COMPAT -> S.aiOpenAiCompatHint; else -> S.aiAnthropicHint }, size = 12.sp, color = p.textSecondary, maxLines = 5)
         if (prov != AiConfig.ANTHROPIC) row(S.aiBaseUrl) {
             PlainField(url, { url = it; message = null }, Modifier.weight(1f), placeholder = if (prov == AiConfig.OPENAI_COMPAT) "https://api.openai.com/v1 · http://localhost:11434/v1" else "https://my-gateway.example.com")
+        }
+        if (prov == AiConfig.OPENAI_COMPAT) {
+            row(S.aiApiFormat) {
+                ChoiceBox(AiConfig.openAiApi, listOf("chat" to S.aiApiChat, "responses" to S.aiApiResponses), Modifier.width(280.dp)) { AiConfig.saveOpenAiApi(it) }
+            }
+            row(S.aiEffort) {
+                ChoiceBox(AiConfig.openAiEffort, AiConfig.openAiEfforts.map { it to if (it == "default") S.aiEffortDefault else it }, Modifier.width(120.dp)) { AiConfig.saveOpenAiEffort(it) }
+            }
+            T(S.aiOpenAiApiHint, size = 12.sp, color = p.textSecondary, maxLines = 5)
         }
         row(S.aiModel) { PlainField(model, { model = it; message = null }, Modifier.weight(1f), placeholder = if (prov == AiConfig.OPENAI_COMPAT) S.aiModelHintOpenAi else "claude-opus-5-5") }
         row(S.aiKeyShort) {

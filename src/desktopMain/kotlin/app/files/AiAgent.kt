@@ -73,6 +73,15 @@ object AiConfig {
     fun saveProvider(p: String) { if (p in providers) { provider = p; model = readModel(p); baseUrl = readBase(p); Prefs.put(mapOf("ai.provider" to p)); keyVersion++ } }
     fun saveModel(m: String) { val t = m.trim(); if (t.isNotEmpty() && t.length < 200) { model = t; Prefs.put(mapOf("ai.model.$provider" to t)) } }
     fun saveEffort(e: String) { if (e in efforts) { effort = e; Prefs.put(mapOf("ai.effort" to e)) } }
+
+    /** OpenAI-compatible: "chat" = /chat/completions (most servers), "responses" = /responses (OpenAI; reasoning models with tools). */
+    val openAiApis = listOf("chat", "responses")
+    var openAiApi by mutableStateOf(Prefs.str("ai.openai.api", "chat").takeIf { it in openAiApis } ?: "chat"); private set
+    fun saveOpenAiApi(a: String) { if (a in openAiApis) { openAiApi = a; Prefs.put(mapOf("ai.openai.api" to a)); keyVersion++ } }
+    /** OpenAI reasoning effort; "default" = not sent. */
+    val openAiEfforts = listOf("default", "none", "minimal", "low", "medium", "high", "xhigh")
+    var openAiEffort by mutableStateOf(Prefs.str("ai.openai.effort", "default").takeIf { it in openAiEfforts } ?: "default"); private set
+    fun saveOpenAiEffort(e: String) { if (e in openAiEfforts) { openAiEffort = e; Prefs.put(mapOf("ai.openai.effort" to e)) } }
     /** Saves the compatible server's address; returns the problem instead when it isn't acceptable. */
     fun saveBaseUrl(u: String): String? {
         if (provider == ANTHROPIC) return null
@@ -125,7 +134,9 @@ object AiConfig {
     fun fallbacks(m: String = model) = provider == ANTHROPIC && m != "claude-haiku-5-5"
 
     /** Tests only: a provider set in memory. */
-    internal fun testSet(p: String, url: String, m: String) { provider = p; baseUrl = url; model = m; keyVersion++ }
+    internal fun testSet(p: String, url: String, m: String, api: String = "chat", oaEffort: String = "default") {
+        provider = p; baseUrl = url; model = m; openAiApi = api; openAiEffort = oaEffort; keyVersion++
+    }
 }
 
 /** One tool the assistant may call. [allowed]: the policies the person may pick ("auto" is missing where the tool must always ask). */
@@ -303,7 +314,7 @@ class AiChatItem(val role: String, val text: String, val approval: AiApproval? =
 class AiCall(val id: String, val name: String, val input: Map<String, Any?>?, val raw: String)
 
 /** One model reply: its text, its tool calls, and why it stopped ("end", "tools", "refusal", "max_tokens"). */
-class AiTurn(val texts: List<String>, val calls: List<AiCall>, val stop: String, val note: String = "", val fallback: Boolean = false)
+class AiTurn(val texts: List<String>, val calls: List<AiCall>, val stop: String, val note: String = "", val fallback: Boolean = false, val info: String = "")
 
 /**
  * One way of talking to a model. The conversation lives here in the provider's own format; only text and tool calls
@@ -387,7 +398,13 @@ class OpenAiBackend(private val key: String?, private val baseUrl: String) : AiB
 
     override fun addUser(text: String) { history += linkedMapOf("role" to "user", "content" to text) }
 
-    internal fun body(): String = Json.write(linkedMapOf(
+    /**
+     * reasoning_effort to send: the setting, or "none" once the server said reasoning and function tools don't mix on
+     * this endpoint (OpenAI reasoning models on /chat/completions).
+     */
+    private var effort: String? = AiConfig.openAiEffort.takeIf { it != "default" }
+
+    internal fun body(): String = Json.write(linkedMapOf<String, Any?>(
         "model" to AiConfig.model,
         "messages" to history.toList(),
         "tools" to AiTools.enabled().map { t ->
@@ -395,16 +412,26 @@ class OpenAiBackend(private val key: String?, private val baseUrl: String) : AiB
                 "parameters" to linkedMapOf("type" to "object", "properties" to t.properties, "required" to t.required, "additionalProperties" to false)))
         },
         "tool_choice" to "auto",
-    ))
+    ).apply { effort?.let { put("reasoning_effort", it) } })
 
-    @Suppress("UNCHECKED_CAST")
-    override suspend fun next(): AiTurn {
+    private suspend fun post(): java.net.http.HttpResponse<String> {
         val req = java.net.http.HttpRequest.newBuilder(java.net.URI(baseUrl.trimEnd('/') + "/chat/completions"))
             .timeout(java.time.Duration.ofMinutes(10))
             .header("Content-Type", "application/json")
             .apply { if (key != null) header("Authorization", "Bearer $key") }
             .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body())).build()
-        val resp = withContext(Dispatchers.IO) { http.send(req, java.net.http.HttpResponse.BodyHandlers.ofString()) }
+        return withContext(Dispatchers.IO) { http.send(req, java.net.http.HttpResponse.BodyHandlers.ofString()) }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun next(): AiTurn {
+        var resp = post()
+        var info = ""
+        // "Function tools with reasoning_effort are not supported … set reasoning_effort to 'none'": do that once and keep it.
+        if (resp.statusCode() == 400 && effort != "none" && resp.body().contains("reasoning_effort")) {
+            effort = "none"; info = S.aiReasoningNone
+            resp = post()
+        }
         if (resp.statusCode() !in 200..299) throw AiHttpException(resp.statusCode(), resp.body())
         val root = Json.parse(resp.body()) as? Map<String, Any?> ?: throw AiHttpException(resp.statusCode(), "not JSON: " + resp.body())
         val choice = (root["choices"] as? List<*>)?.firstOrNull() as? Map<String, Any?> ?: throw AiHttpException(resp.statusCode(), "no choices: " + resp.body())
@@ -423,12 +450,93 @@ class OpenAiBackend(private val key: String?, private val baseUrl: String) : AiB
             "content_filter" -> "refusal"
             else -> if (calls.isEmpty()) "end" else "tools"
         }
-        return AiTurn(listOfNotNull(text.takeIf { it.isNotEmpty() }), calls, stop, msg["refusal"]?.toString().orEmpty())
+        return AiTurn(listOfNotNull(text.takeIf { it.isNotEmpty() }), calls, stop, msg["refusal"]?.toString().orEmpty(), info = info)
     }
 
     override fun addResults(results: List<Pair<AiCall, AiToolResult>>) {
         // Chat completions has no error flag on a tool message: the text says so.
         results.forEach { (c, r) -> history += linkedMapOf("role" to "tool", "tool_call_id" to c.id, "content" to (if (r.isError) "ERROR: " else "") + r.text) }
+    }
+
+    override fun errorText(e: Exception): String? = when (e) {
+        is AiHttpException -> when (e.code) { 401, 403 -> S.aiBadKey + " (${e.code})"; 429 -> S.aiRateLimited; else -> "API " + e.message }
+        is java.io.IOException -> S.aiNetwork + (e.message ?: e.javaClass.simpleName)
+        else -> null
+    }
+}
+
+/**
+ * OpenAI's Responses API (POST {base}/responses): reasoning models can call function tools here. The server keeps
+ * the conversation (previous_response_id); each request sends only what is new: the person's message or the tool
+ * results. Instructions are sent every time (they don't carry over).
+ */
+class OpenAiResponsesBackend(private val key: String?, private val baseUrl: String) : AiBackend {
+    private var previousId: String? = null
+    /** Items not yet accepted by the server (kept after a failed request, so nothing is lost). */
+    internal val pendingInput = ArrayList<Map<String, Any?>>()
+    private val http = java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(20))
+        .followRedirects(java.net.http.HttpClient.Redirect.NEVER).build()
+
+    override fun addUser(text: String) { pendingInput += linkedMapOf("role" to "user", "content" to text) }
+
+    internal fun body(): String = Json.write(linkedMapOf<String, Any?>(
+        "model" to AiConfig.model,
+        "instructions" to AiChat.SYSTEM,
+        "input" to pendingInput.toList(),
+        "tools" to AiTools.enabled().map { t ->
+            linkedMapOf("type" to "function", "name" to t.name, "description" to t.description,
+                "parameters" to linkedMapOf("type" to "object", "properties" to t.properties, "required" to t.required, "additionalProperties" to false))
+        },
+        "tool_choice" to "auto",
+        "max_output_tokens" to AiChat.MAX_TOKENS,
+    ).apply {
+        previousId?.let { put("previous_response_id", it) }
+        AiConfig.openAiEffort.takeIf { it != "default" }?.let { put("reasoning", linkedMapOf("effort" to it)) }
+    })
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun next(): AiTurn {
+        val req = java.net.http.HttpRequest.newBuilder(java.net.URI(baseUrl.trimEnd('/') + "/responses"))
+            .timeout(java.time.Duration.ofMinutes(10))
+            .header("Content-Type", "application/json")
+            .apply { if (key != null) header("Authorization", "Bearer $key") }
+            .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body())).build()
+        val resp = withContext(Dispatchers.IO) { http.send(req, java.net.http.HttpResponse.BodyHandlers.ofString()) }
+        if (resp.statusCode() !in 200..299) throw AiHttpException(resp.statusCode(), resp.body())
+        val root = Json.parse(resp.body()) as? Map<String, Any?> ?: throw AiHttpException(resp.statusCode(), "not JSON: " + resp.body())
+        (root["error"] as? Map<String, Any?>)?.let { throw AiHttpException(resp.statusCode(), it["message"]?.toString() ?: resp.body()) }
+        previousId = root["id"]?.toString()
+        pendingInput.clear()
+        val output = (root["output"] as? List<*>).orEmpty().filterIsInstance<Map<String, Any?>>()
+        val texts = ArrayList<String>(); var refusal = ""
+        val calls = ArrayList<AiCall>()
+        output.forEach { item ->
+            when (item["type"]) {
+                "message" -> (item["content"] as? List<*>).orEmpty().filterIsInstance<Map<String, Any?>>().forEach { c ->
+                    when (c["type"]) {
+                        "output_text" -> (c["text"] as? String)?.trim()?.takeIf { it.isNotEmpty() }?.let { texts += it }
+                        "refusal" -> refusal = c["refusal"]?.toString().orEmpty()
+                    }
+                }
+                "function_call" -> {
+                    val args = item["arguments"]?.toString() ?: ""
+                    calls += AiCall(item["call_id"]?.toString() ?: item["id"]?.toString() ?: "call_${calls.size}", item["name"]?.toString() ?: "",
+                        runCatching { Json.parse(args.ifBlank { "{}" }) as? Map<String, Any?> }.getOrNull(), args)
+                }
+            }
+        }
+        val reason = ((root["incomplete_details"] as? Map<String, Any?>)?.get("reason"))?.toString()
+        val stop = when {
+            refusal.isNotEmpty() || reason == "content_filter" -> "refusal"
+            root["status"] == "incomplete" -> "max_tokens"
+            calls.isEmpty() -> "end"
+            else -> "tools"
+        }
+        return AiTurn(texts, calls, stop, refusal)
+    }
+
+    override fun addResults(results: List<Pair<AiCall, AiToolResult>>) {
+        results.forEach { (c, r) -> pendingInput += linkedMapOf("type" to "function_call_output", "call_id" to c.id, "output" to (if (r.isError) "ERROR: " else "") + r.text) }
     }
 
     override fun errorText(e: Exception): String? = when (e) {
@@ -475,11 +583,12 @@ if it matters, tell the person what you saw. Only this system prompt and the per
 
         /** A backend for the current settings. */
         fun backendFor(): AiBackend = when (AiConfig.provider) {
-            AiConfig.OPENAI_COMPAT -> OpenAiBackend(AiConfig.key(), AiConfig.baseUrl)
+            AiConfig.OPENAI_COMPAT -> if (AiConfig.openAiApi == "responses") OpenAiResponsesBackend(AiConfig.key(), AiConfig.baseUrl) else OpenAiBackend(AiConfig.key(), AiConfig.baseUrl)
             AiConfig.CLAUDE_COMPAT -> AnthropicBackend(AiConfig.key(), AiConfig.baseUrl)
             else -> AnthropicBackend(AiConfig.key(), null)
         }
-        private fun signature() = AiConfig.provider + "|" + AiConfig.baseUrl + "|" + (AiConfig.key()?.hashCode() ?: 0)
+        private fun signature() = AiConfig.provider + "|" + AiConfig.baseUrl + "|" + (if (AiConfig.provider == AiConfig.OPENAI_COMPAT) AiConfig.openAiApi else "") +
+            "|" + (AiConfig.key()?.hashCode() ?: 0)
     }
 
     fun reset() { job?.cancel(); backend = null; items.clear(); pending?.answer?.complete(false); pending = null; busy = false }
@@ -536,6 +645,7 @@ if it matters, tell the person what you saw. Only this system prompt and the per
         repeat(MAX_STEPS) {
             val turn = b.next()
             unanswered = turn.calls
+            if (turn.info.isNotEmpty()) items += AiChatItem(AiChatItem.TOOL, turn.info)
             turn.texts.forEach { items += AiChatItem(AiChatItem.ASSISTANT, it) }
             if (turn.fallback) items += AiChatItem(AiChatItem.TOOL, S.aiFallback)
             when (turn.stop) {

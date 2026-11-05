@@ -293,7 +293,11 @@ object S {
     val qlOpen = t("Open", "開啟")
     val qlPlay = t("Play in the default app", "以預設應用程式播放")
     val qlNoPreview = t("No preview for this kind of file", "此類型的檔案沒有預覽")
-    val qlXlsOld = t("Old .xls workbooks can't be previewed here; open it in Excel.", "舊版 .xls 活頁簿無法在此預覽，請以 Excel 開啟。")
+    val qlAdobeSlow = t(
+        "This PDF is previewed by Adobe, which is slow to start and can leave the app not responding for a while. Please wait, or switch this PC's PDF preview handler to Microsoft PDF Previewer (Edge).",
+        "此 PDF 由 Adobe 預覽，開啟較久，可能導致應用程式暫時無回應，請稍候。也可以嘗試把電腦的 PDF 預覽預設處理常式改為 Microsoft PDF Previewer（Edge）。",
+    )
+    val qlXlsOld =t("Old .xls workbooks can't be previewed here; open it in Excel.", "舊版 .xls 活頁簿無法在此預覽，請以 Excel 開啟。")
     fun qlRowsShown(shown: Int, total: Int) = t("Showing $shown of $total rows", "顯示 $total 列中的前 $shown 列")
     val mdPreview = t("Preview", "預覽")
     val mdSource = t("Source", "原始碼")
@@ -431,6 +435,14 @@ object S {
         "Any server that speaks OpenAI's chat completions with function calling: OpenAI, Azure OpenAI, OpenRouter, Ollama, LM Studio, vLLM… Enter the base address that ends before /chat/completions (often …/v1). The model must support tool calls. A server on this PC may need no key.",
         "任何支援 OpenAI chat completions 與 function calling 的伺服器：OpenAI、Azure OpenAI、OpenRouter、Ollama、LM Studio、vLLM… 輸入 /chat/completions 之前的基本網址（通常以 /v1 結尾）。模型必須支援工具呼叫。本機伺服器可不填金鑰。")
     val aiModelHintOpenAi = t("model id, e.g. the name your server lists", "模型名稱，例如伺服器列出的名稱")
+    val aiApiFormat = t("API format", "API 格式")
+    val aiApiChat = t("Chat Completions (/chat/completions)", "Chat Completions（/chat/completions）")
+    val aiApiResponses = t("Responses (/responses, OpenAI reasoning models)", "Responses（/responses，OpenAI 推理模型）")
+    val aiOpenAiApiHint = t(
+        "Most compatible servers only have Chat Completions. OpenAI reasoning models (e.g. gpt-5.x) can't use tools with reasoning there: the assistant then retries with reasoning \"none\". Choose Responses to keep reasoning on.",
+        "多數相容伺服器只支援 Chat Completions。OpenAI 推理模型（例如 gpt-5.x）在 Chat Completions 無法同時推理與使用工具，此時助手會自動改用 reasoning「none」重試。若要保留推理，請改用 Responses。")
+    val aiReasoningNone = t("(this model can't reason and use tools on Chat Completions: retried with reasoning_effort \"none\"; choose Responses under Settings to keep reasoning)",
+        "（此模型在 Chat Completions 無法同時推理與使用工具：已改用 reasoning_effort「none」重試；若要保留推理，請在「設定」改用 Responses）")
     val aiProviderChanged = t("(provider changed: new conversation)", "（已切換提供者：開始新對話）")
     val aiTools = t("Tools the assistant may call", "助手可以呼叫的工具")
     val aiToolsHint = t(

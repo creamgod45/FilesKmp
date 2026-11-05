@@ -399,6 +399,37 @@ fun main(args: Array<String>) {
             check("claude-compat: tool_result sent back", anBodies[1].contains("\"tool_result\"") && anBodies[1].contains("toolu_1"), true)
             check("claude-compat: no fallback beta", anHeaders.filter { it.startsWith("beta=") }.none { it.contains("server-side-fallback") }, true)
             check("claude-compat: final text", s.aiChat.items.lastOrNull()?.text, "Looks good.")
+            // OpenAI reasoning model on Chat Completions: the 400 about reasoning_effort → retried with "none", kept after.
+            val rBodies = ArrayList<String>()
+            srv.createContext("/v2/chat/completions") { ex ->
+                val body = String(ex.requestBody.readAllBytes()); rBodies += body
+                if (!compact(body).contains("\"reasoning_effort\":\"none\"")) {
+                    val b = """{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-x in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","type":"invalid_request_error","param":"reasoning_effort","code":null}}""".toByteArray()
+                    ex.sendResponseHeaders(400, b.size.toLong()); ex.responseBody.use { it.write(b) }
+                } else reply(ex, """{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"OK chat"}}]}""")
+            }
+            AiConfig.testSet(AiConfig.OPENAI_COMPAT, "$base/v2", "gpt-x")
+            val rc = OpenAiBackend("k", "$base/v2").apply { addUser("hi") }
+            s.aiChat.loop(rc)
+            check("reasoning 400 → retried with none", rBodies.size == 2 && s.aiChat.items.lastOrNull()?.text == "OK chat", true)
+            check("  … told the person", s.aiChat.items.any { it.text == S.aiReasoningNone }, true)
+            rc.addUser("again"); s.aiChat.loop(rc)
+            check("  … none kept: no second 400", rBodies.size, 3)
+            // Responses API: function_call → function_call_output on previous_response_id, reasoning effort sent.
+            val pBodies = ArrayList<String>()
+            srv.createContext("/v3/responses") { ex ->
+                pBodies += String(ex.requestBody.readAllBytes())
+                reply(ex, if (pBodies.size == 1)
+                    """{"id":"resp_1","status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[]},{"type":"function_call","id":"fc_1","call_id":"call_1","name":"validate_shortcut","arguments":${Json.write(Json.write(mapOf("shortcut_json" to good)))}}]}"""
+                    else """{"id":"resp_2","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Responses done"}]}]}""")
+            }
+            AiConfig.testSet(AiConfig.OPENAI_COMPAT, "$base/v3", "gpt-x", api = "responses", oaEffort = "high")
+            val rb = OpenAiResponsesBackend("k", "$base/v3").apply { addUser("check") }
+            s.aiChat.loop(rb)
+            check("responses: 2 requests, final text", pBodies.size == 2 && s.aiChat.items.lastOrNull()?.text == "Responses done", true)
+            check("responses: tools + reasoning sent", compact(pBodies[0]).let { it.contains("\"type\":\"function\",\"name\":\"validate_shortcut\"") && it.contains("\"reasoning\":{\"effort\":\"high\"}") }, true)
+            check("responses: result on previous_response_id", compact(pBodies[1]).let { it.contains("\"previous_response_id\":\"resp_1\"") && it.contains("\"type\":\"function_call_output\",\"call_id\":\"call_1\"") }, true)
+            check("responses: input not resent", pBodies[1].contains("\"check\""), false)
             approver.cancel(); srv.stop(0)
             AiConfig.testSet(AiConfig.ANTHROPIC, "", "claude-opus-5-5")
             // one real request with a made-up key: must be 401, not a crash in TLS / class loading
