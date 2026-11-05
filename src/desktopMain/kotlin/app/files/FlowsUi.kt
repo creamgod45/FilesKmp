@@ -500,14 +500,19 @@ private fun AccountsPanel() {
 private fun AiPanel(s: AppState, onOpen: (String) -> Unit) {
     val p = LocalPalette.current
     val chat = s.aiChat
-    var settings by remember { mutableStateOf(!AiConfig.hasKey && chat.items.isEmpty()) }
+    var settings by remember { mutableStateOf(!AiConfig.ready && chat.items.isEmpty()) }
     var input by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ChoiceBox(AiConfig.provider, AiConfig.providers.map { it to aiProviderLabel(it) }, Modifier.width(150.dp)) { AiConfig.saveProvider(it) }
             T(S.aiModel, size = 12.sp, color = p.textSecondary)
-            ChoiceBox(AiConfig.model, AiConfig.models.map { it to it }, Modifier.width(170.dp)) { AiConfig.saveModel(it) }
-            T(S.aiEffort, size = 12.sp, color = p.textSecondary)
-            ChoiceBox(AiConfig.effort, AiConfig.efforts.map { it to it }, Modifier.width(90.dp)) { AiConfig.saveEffort(it) }
+            if (AiConfig.provider == AiConfig.ANTHROPIC)
+                ChoiceBox(AiConfig.model, (AiConfig.models + AiConfig.model).distinct().map { it to it }, Modifier.width(170.dp)) { AiConfig.saveModel(it) }
+            else T(AiConfig.model.ifBlank { "—" }, size = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+            if (AiConfig.provider != AiConfig.OPENAI_COMPAT) {
+                T(S.aiEffort, size = 12.sp, color = p.textSecondary)
+                ChoiceBox(AiConfig.effort, AiConfig.efforts.map { it to if (it == "default") S.aiEffortDefault else it }, Modifier.width(90.dp)) { AiConfig.saveEffort(it) }
+            }
             Spacer(Modifier.weight(1f))
             DialogButton(S.aiSettings, primary = false) { settings = !settings }
             DialogButton(S.aiNewChat, primary = false) { chat.reset() }
@@ -571,20 +576,46 @@ private fun AiChatRow(chat: AiChat, it: AiChatItem, onOpen: (String) -> Unit) {
     }
 }
 
-/** The key, the model's settings and the per-tool policies. */
+private fun aiProviderLabel(p: String) = when (p) {
+    AiConfig.CLAUDE_COMPAT -> S.aiProviderClaudeCompat
+    AiConfig.OPENAI_COMPAT -> S.aiProviderOpenAiCompat
+    else -> "Anthropic"
+}
+
+/** The provider (address, model, key) and the per-tool policies. */
 @Composable
 private fun AiSettings() {
     val p = LocalPalette.current
-    var key by remember { mutableStateOf("") }
-    val hasStored = remember(AiConfig.keyVersion) { AiConfig.storedKey() != null }
+    val prov = AiConfig.provider
+    var key by remember(prov) { mutableStateOf("") }
+    var url by remember(prov) { mutableStateOf(AiConfig.baseUrl) }
+    var model by remember(prov) { mutableStateOf(AiConfig.model) }
+    var message by remember(prov) { mutableStateOf<String?>(null) }
+    val hasStored = remember(AiConfig.keyVersion, prov) { AiConfig.storedKey() != null }
+    @Composable fun row(label: String, content: @Composable RowScope.() -> Unit) =
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { T(label, Modifier.width(110.dp), size = 13.sp); content() }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        GroupTitle(S.aiKey)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PlainField(key, { key = it }, Modifier.weight(1f), placeholder = if (hasStored) S.flowPasswordKeep else "sk-ant-…", password = true)
-            DialogButton(S.flowSave, primary = true) { if (key.isNotBlank()) { AiConfig.saveKey(key); key = "" } }
+        GroupTitle(S.aiProvider)
+        row(S.aiProvider) { ChoiceBox(prov, AiConfig.providers.map { it to aiProviderLabel(it) }, Modifier.width(220.dp)) { AiConfig.saveProvider(it) } }
+        T(when (prov) { AiConfig.CLAUDE_COMPAT -> S.aiClaudeCompatHint; AiConfig.OPENAI_COMPAT -> S.aiOpenAiCompatHint; else -> S.aiAnthropicHint }, size = 12.sp, color = p.textSecondary, maxLines = 5)
+        if (prov != AiConfig.ANTHROPIC) row(S.aiBaseUrl) {
+            PlainField(url, { url = it; message = null }, Modifier.weight(1f), placeholder = if (prov == AiConfig.OPENAI_COMPAT) "https://api.openai.com/v1 · http://localhost:11434/v1" else "https://my-gateway.example.com")
+        }
+        row(S.aiModel) { PlainField(model, { model = it; message = null }, Modifier.weight(1f), placeholder = if (prov == AiConfig.OPENAI_COMPAT) S.aiModelHintOpenAi else "claude-opus-5-5") }
+        row(S.aiKeyShort) {
+            PlainField(key, { key = it }, Modifier.weight(1f), placeholder = if (hasStored) S.flowPasswordKeep else (if (prov == AiConfig.OPENAI_COMPAT) "sk-…" else "sk-ant-…"), password = true)
             if (hasStored) DialogButton(S.aiKeyRemove, primary = false) { AiConfig.saveKey("") }
         }
-        T(S.aiKeyHint, size = 12.sp, color = p.textSecondary, maxLines = 5)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DialogButton(S.flowSave, primary = true) {
+                val err = AiConfig.saveBaseUrl(url)
+                if (model.isNotBlank()) AiConfig.saveModel(model)
+                if (key.isNotBlank()) { AiConfig.saveKey(key); key = "" }
+                message = err ?: AiConfig.problem() ?: S.saved
+            }
+            message?.let { T(it, Modifier.weight(1f), size = 12.sp, color = if (it == S.saved) p.textSecondary else p.danger, maxLines = 3) }
+        }
+        T(S.aiKeyHint.replace("ANTHROPIC_API_KEY", AiConfig.envKeyName(prov)), size = 12.sp, color = p.textSecondary, maxLines = 5)
         GroupTitle(S.aiTools)
         T(S.aiToolsHint, size = 12.sp, color = p.textSecondary, maxLines = 8)
         AiTools.all.forEach { t ->

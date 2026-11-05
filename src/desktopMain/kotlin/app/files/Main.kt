@@ -142,6 +142,7 @@ fun main(args: Array<String>) {
             }
             // --ai-demo: a conversation in 捷徑 → AI 助手 (open the tab with --click).
             if ("--ai-demo" in args) s.aiChat.demo()
+            args.firstOrNull { it.startsWith("--ai-provider=") }?.let { AiConfig.saveProvider(it.substringAfter('=')) }
             // --permission-demo: the question an untrusted shortcut asks before a script (FlowSafety.kt).
             if ("--permission-demo" in args) s.flowPrompt = FlowPrompt("permission",
                 if (S.zh) "「範例」不是受信任的捷徑，想要執行程式或傳送資料" else "\"Sample\" isn't a trusted shortcut and wants to run a program or send data",
@@ -342,14 +343,64 @@ fun main(args: Array<String>) {
             check("propose update unknown id", AiTools.run(s, "propose_shortcut", mapOf("mode" to "update", "id" to "ghost", "shortcut_json" to good, "summary" to "x"), yes).isError, true)
             check("propose sample → copy", AiTools.run(s, "propose_shortcut", mapOf("mode" to "update", "id" to "builtin:hash", "shortcut_json" to good, "summary" to "x"), yes).text.contains("new shortcut"), true)
             check("  … asked 4 times", asked, 4)
-            // the request the chat would send
-            val chat = AiChat(CoroutineScope(SupervisorJob()), s)
-            chat.history += com.anthropic.models.beta.messages.BetaMessageParam.ofUser("hi")
-            val prm = chat.params()
-            check("request model", prm.model().asString(), AiConfig.model)
+            // the request the chat would send (Anthropic)
+            AiConfig.testSet(AiConfig.ANTHROPIC, "", "claude-opus-5-5")
+            val ab = AnthropicBackend("sk-ant-invalid-for-test", null).apply { addUser("hi") }
+            val prm = ab.params()
+            check("request model", prm.model().asString(), "claude-opus-5-5")
             check("request tools", prm.tools().orElse(emptyList()).size, AiTools.enabled().size)
             check("request system has the spec", prm.toString().contains("fileskmp.shortcut/v1"), true)
             check("request fallbacks beta", prm.toString().contains("server-side-fallback-2026-07-01"), true)
+            // base addresses: https anywhere, http only to this PC
+            check("base urls", listOf("https://api.openai.com/v1", "http://localhost:11434/v1", "http://127.0.0.1:1234/v1", "http://example.com/v1", "ftp://x", "")
+                .map { AiConfig.baseUrlProblem(it) == null }, listOf(true, true, true, false, false, false))
+            // A whole conversation against local fake servers: tool call → result → approval → proposal → final text.
+            val srv = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+            val oaBodies = ArrayList<String>(); val anBodies = ArrayList<String>(); val anHeaders = ArrayList<String>()
+            fun reply(ex: com.sun.net.httpserver.HttpExchange, body: String) { val b = body.toByteArray(); ex.responseHeaders.add("Content-Type", "application/json"); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
+            val goodEsc = Json.write(good)
+            srv.createContext("/v1/chat/completions") { ex ->
+                oaBodies += String(ex.requestBody.readAllBytes()); anHeaders += "auth=" + ex.requestHeaders.getFirst("Authorization")
+                reply(ex, when (oaBodies.size) {
+                    1 -> """{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"validate_shortcut","arguments":${Json.write(Json.write(mapOf("shortcut_json" to good)))}}}]}}]}"""
+                    2 -> """{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":"Proposing.","tool_calls":[{"id":"c2","type":"function","function":{"name":"propose_shortcut","arguments":${Json.write(Json.write(mapOf("mode" to "create", "id" to "", "shortcut_json" to good, "summary" to "hash")))}}}]}}]}"""
+                    3 -> """{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done."}}]}"""
+                    else -> """{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"","tool_calls":[{"id":"c9","type":"function","function":{"name":"list_shortcuts","arguments":"{"}}]}}]}"""
+                })
+            }
+            srv.createContext("/v1/messages") { ex ->
+                anBodies += String(ex.requestBody.readAllBytes()); anHeaders += "beta=" + ex.requestHeaders.getFirst("anthropic-beta")
+                reply(ex, if (anBodies.size == 1)
+                    """{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"tool_use","id":"toolu_1","name":"validate_shortcut","input":{"shortcut_json":$goodEsc}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}"""
+                    else """{"id":"msg_2","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"Looks good."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}""")
+            }
+            srv.start()
+            val base = "http://127.0.0.1:${srv.address.port}"
+            val chatScope = CoroutineScope(SupervisorJob())
+            val approver = chatScope.launch { while (true) { s.aiChat.pending?.let { s.aiChat.answer(true) }; kotlinx.coroutines.delay(20) } }
+            // OpenAI-compatible
+            AiConfig.testSet(AiConfig.OPENAI_COMPAT, "$base/v1", "local-model")
+            val oa = OpenAiBackend(null, "$base/v1").apply { addUser("make a hash shortcut") }
+            s.aiChat.loop(oa)
+            check("openai: 3 requests", oaBodies.size, 3)
+            fun compact(t: String) = t.replace(Regex("\\s"), "")
+            check("openai: tools sent as functions", compact(oaBodies[0]).contains("\"type\":\"function\"") && oaBodies[0].contains("propose_shortcut"), true)
+            check("openai: no key → no Authorization header", anHeaders.first(), "auth=null")
+            check("openai: tool result sent back", compact(oaBodies[1]).contains("\"tool_call_id\":\"c1\"") && oaBodies[1].contains("OK: no problems"), true)
+            check("openai: proposal asked and accepted", s.aiChat.items.any { it.approval?.decided == true }, true)
+            check("openai: final text shown", s.aiChat.items.lastOrNull()?.text, "Done.")
+            oa.addUser("again"); s.aiChat.loop(oa)
+            check("openai: cut-off reply's tool call not run", oa.history.last()["content"].toString().contains("Not run"), true)
+            // Claude-compatible (the Anthropic SDK at another address; no fallback beta there)
+            AiConfig.testSet(AiConfig.CLAUDE_COMPAT, base, "some-claude")
+            val an = AnthropicBackend("test-key", base).apply { addUser("check this") }
+            s.aiChat.loop(an)
+            check("claude-compat: 2 requests", anBodies.size, 2)
+            check("claude-compat: tool_result sent back", anBodies[1].contains("\"tool_result\"") && anBodies[1].contains("toolu_1"), true)
+            check("claude-compat: no fallback beta", anHeaders.filter { it.startsWith("beta=") }.none { it.contains("server-side-fallback") }, true)
+            check("claude-compat: final text", s.aiChat.items.lastOrNull()?.text, "Looks good.")
+            approver.cancel(); srv.stop(0)
+            AiConfig.testSet(AiConfig.ANTHROPIC, "", "claude-opus-5-5")
             // one real request with a made-up key: must be 401, not a crash in TLS / class loading
             val c = com.anthropic.client.okhttp.AnthropicOkHttpClient.builder().apiKey("sk-ant-invalid-for-test").maxRetries(0).build()
             val err = runCatching { withContext(Dispatchers.IO) { c.beta().messages().create(prm) } }.exceptionOrNull()

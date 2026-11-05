@@ -417,9 +417,21 @@ object S {
         "描述你想自動化的事，助手會設計捷徑、檢查後再請你同意加入。它不能執行捷徑、讀取檔案或做其他事，只能使用「設定」中列出的工具。")
     val aiKey = t("Anthropic API key", "Anthropic API 金鑰"); val aiModel = t("Model", "模型"); val aiEffort = t("Effort", "思考深度")
     val aiKeyHint = t(
-        "Encrypted with Windows DPAPI: only your Windows account on this PC can read it. Leave empty to use the ANTHROPIC_API_KEY environment variable. Conversations are sent to Anthropic's API.",
-        "以 Windows DPAPI 加密，只有這台電腦上你的 Windows 帳戶能解開。留白則使用環境變數 ANTHROPIC_API_KEY。對話內容會傳送到 Anthropic API。")
-    val aiKeyRemove = t("Remove key", "移除金鑰")
+        "Encrypted with Windows DPAPI: only your Windows account on this PC can read it. Leave empty to use the ANTHROPIC_API_KEY environment variable. Conversations are sent to the selected API.",
+        "以 Windows DPAPI 加密，只有這台電腦上你的 Windows 帳戶能解開。留白則使用環境變數 ANTHROPIC_API_KEY。對話內容會傳送到所選的 API。")
+    val aiKeyRemove = t("Remove key", "移除金鑰"); val aiKeyShort = t("API key", "API 金鑰")
+    val aiProvider = t("Provider", "提供者"); val aiBaseUrl = t("API address", "API 網址")
+    val aiProviderClaudeCompat = t("Claude-compatible API", "Claude 相容 API"); val aiProviderOpenAiCompat = t("OpenAI-compatible API", "OpenAI 相容 API")
+    val aiEffortDefault = t("not sent", "不指定")
+    val aiAnthropicHint = t("Anthropic's own API (api.anthropic.com).", "Anthropic 官方 API（api.anthropic.com）。")
+    val aiClaudeCompatHint = t(
+        "Any server that speaks the Claude Messages API (a gateway, proxy or another host). Enter its base address without /v1/messages. Set Effort to \"not sent\" if the server rejects it.",
+        "任何支援 Claude Messages API 的伺服器（閘道、代理或其他服務）。輸入基本網址，不含 /v1/messages。若伺服器不接受「思考深度」，請設為「不指定」。")
+    val aiOpenAiCompatHint = t(
+        "Any server that speaks OpenAI's chat completions with function calling: OpenAI, Azure OpenAI, OpenRouter, Ollama, LM Studio, vLLM… Enter the base address that ends before /chat/completions (often …/v1). The model must support tool calls. A server on this PC may need no key.",
+        "任何支援 OpenAI chat completions 與 function calling 的伺服器：OpenAI、Azure OpenAI、OpenRouter、Ollama、LM Studio、vLLM… 輸入 /chat/completions 之前的基本網址（通常以 /v1 結尾）。模型必須支援工具呼叫。本機伺服器可不填金鑰。")
+    val aiModelHintOpenAi = t("model id, e.g. the name your server lists", "模型名稱，例如伺服器列出的名稱")
+    val aiProviderChanged = t("(provider changed: new conversation)", "（已切換提供者：開始新對話）")
     val aiTools = t("Tools the assistant may call", "助手可以呼叫的工具")
     val aiToolsHint = t(
         "These are the only tools; there is no way for the assistant to add others. Auto: runs without asking. Ask: you approve every call. Off: not offered. Proposing a shortcut always asks, and what you accept is an untrusted shortcut: it is never run for you, and its program / data-sending steps still ask when you run it.",
