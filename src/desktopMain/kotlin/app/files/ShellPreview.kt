@@ -199,6 +199,9 @@ fun ShellPreviewView(path: String, clsid: String, translucent: Boolean, openExte
                 error = e.message ?: tr("Can't preview this file.", "無法預覽這個檔案。")
             }.getOrNull()
         }
+        // Some handlers take the keyboard when they start: give it back so Space / Esc / ← → keep working.
+        WindowFocus.reclaim()
+        delay(400.milliseconds); WindowFocus.reclaim()
     }
     DisposableEffect(path) { onDispose { val x = handle; handle = null; if (x != null) Thread { x.close() }.start() } }
     Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {

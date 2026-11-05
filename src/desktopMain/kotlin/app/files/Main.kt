@@ -778,6 +778,15 @@ fun main(args: Array<String>) {
                     state.applyWindowBlur?.invoke()
                 }
                 ShellMenu.ownerHwnd = WindowCorners.hwnd(window) ?: 0L
+                // Quick Look's native previews can keep the keyboard after they close (WindowFocus.kt).
+                WindowFocus.install(window)
+                launch {
+                    var wasOpen = false
+                    snapshotFlow { state.quickLook != null }.collect { open ->
+                        if (wasOpen && !open) { delay(50.milliseconds); WindowFocus.reclaim() }
+                        wasOpen = open
+                    }
+                }
                 // Back from the taskbar: the background may change (設定 › 外觀 › 視窗從最小化還原時).
                 launch {
                     var wasMinimized = windowState.isMinimized
