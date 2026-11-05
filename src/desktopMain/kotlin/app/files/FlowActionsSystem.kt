@@ -21,7 +21,7 @@ import app.files.FlowActions.CAT_WEB
  * battery, notification banners), mail and text messages.
  */
 
-private val http: HttpClient by lazy { HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(20)).build() }
+private val http: HttpClient by lazy { HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).connectTimeout(Duration.ofSeconds(20)).build() }
 
 /** A multipart/form-data body: text fields, then files. */
 private fun multipart(fields: List<Pair<String, String>>, fileField: String, files: List<File>, boundary: String): HttpRequest.BodyPublisher {
@@ -56,7 +56,9 @@ internal fun systemActions(): List<FlowAction> = listOf(
         val method = arg(st, "method").uppercase(); val url = arg(st, "url").trim(); val out = arg(st, "output")
         require(url.startsWith("http://", true) || url.startsWith("https://", true)) { (if (S.zh) "網址必須是 http:// 或 https://：" else "The URL must be http:// or https://: ") + url }
         if (dryRun && method !in setOf("GET", "HEAD")) { log("   $method $url"); return@FlowAction }
-        val b = HttpRequest.newBuilder(URI(url.replace(" ", "%20"))).timeout(Duration.ofSeconds(int(st, "timeout", 30).toLong().coerceIn(1, 3600)))
+        val uri = runCatching { URI(url.replace(" ", "%20")) }.getOrElse { throw FlowStopped((if (S.zh) "網址無效：" else "Not a valid address: ") + url) }
+        requireHost(uri)
+        val b = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(int(st, "timeout", 30).toLong().coerceIn(1, 3600)))
         keyValues(arg(st, "headers")).forEach { (k, v) -> b.header(k, v) }
         val bodyText = arg(st, "body")
         // HEAD never carries a body (RFC 9110 §9.3.2: content in a HEAD request has no defined meaning).
@@ -72,7 +74,26 @@ internal fun systemActions(): List<FlowAction> = listOf(
         }
         b.method(method, publisher)
         log("   $method $url")
-        val resp = withContext(Dispatchers.IO) { http.send(b.build(), HttpResponse.BodyHandlers.ofByteArray()) }
+        // Redirects are followed here, not by the client, so every hop is checked against the host list.
+        var req = b.build()
+        var resp = withContext(Dispatchers.IO) { http.send(req, HttpResponse.BodyHandlers.ofByteArray()) }
+        var hops = 0
+        while (resp.statusCode() in setOf(301, 302, 303, 307, 308)) {
+            val loc = resp.headers().firstValue("location").orElse(null) ?: break
+            if (++hops > 5) throw FlowStopped(if (S.zh) "重新導向太多次" else "Too many redirects")
+            val next = runCatching { req.uri().resolve(URI(loc.trim().replace(" ", "%20"))) }.getOrElse { throw FlowStopped((if (S.zh) "重新導向的網址無效：" else "Bad redirect address: ") + loc) }
+            if (req.uri().scheme.equals("https", true) && !next.scheme.equals("https", true)) throw FlowStopped((if (S.zh) "拒絕從 https 重新導向到 " else "Refused a redirect from https to ") + next)
+            requireHost(next)
+            log("   ↪ ${resp.statusCode()} $next")
+            val sameHost = next.host.equals(req.uri().host, true)
+            // 301 / 302 / 303 turn into GET without a body (as browsers do); 307 / 308 repeat the request as it was.
+            val keepBody = resp.statusCode() >= 307 || req.method() == "HEAD"
+            req = HttpRequest.newBuilder(req) { name, _ ->
+                val n = name.lowercase()
+                (keepBody || n != "content-type") && (sameHost || n != "authorization" && n != "cookie")
+            }.uri(next).apply { if (!keepBody) GET() }.build()
+            resp = withContext(Dispatchers.IO) { http.send(req, HttpResponse.BodyHandlers.ofByteArray()) }
+        }
         val code = resp.statusCode()
         log("   HTTP $code · ${Fs.sizeText(resp.body().size.toLong())}")
         if (bool(st, "failOnError") && code >= 400) throw FlowStopped("HTTP $code: " + String(resp.body(), Charsets.UTF_8).take(300))

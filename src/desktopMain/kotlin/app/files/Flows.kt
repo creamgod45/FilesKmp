@@ -171,6 +171,8 @@ class FlowRun(
     /** How deep in flow.run calls this run is (a shortcut may call others, up to [MAX_DEPTH]). */
     val depth: Int = 0,
 ) {
+    /** Steps and hosts the person allowed once during this run (FlowSafety.kt). */
+    val permissions = FlowPermissions()
     /** What the shortcut was started with (a step's input "shortcut"). */
     val initial: List<String> = input
     var items: List<String> = input
@@ -258,6 +260,8 @@ class FlowRun(
             }
             log("▶ $stepNo. ${action.label}  [${action.ioLabel}]" + (if (st.input.isNotEmpty()) "  ← " + inputLabel(st.input) else "") +
                 if (dryRun && action.changes) (if (S.zh) "（試執行）" else " (dry run)") else "")
+            // url.open asks only for a non-web address; a web address goes through the host list instead.
+            if (action.id in FlowTrust.gated && action.id != "url.open") requireTrust(st)
             action.run(this, st)
             if (st.saveAs.isNotBlank()) vars[st.saveAs.trim()] = items
             log("   → " + summary(items) + if (st.saveAs.isNotBlank()) "  ⇒ {var.${st.saveAs.trim()}}" else "")
@@ -542,7 +546,16 @@ object FlowActions {
         FlowAction("url.open", "開啟網址", "Open URL", CAT_SYSTEM, "在瀏覽器開啟網址（可用標記）。", "Opens a web address (tokens allowed).",
             listOf(ArgSpec("url", "網址", "URL", "text", "https://www.bing.com/search?q={first}")), changes = true) { st ->
             val u = arg(st, "url")
-            if (dryRun) log("   $u") else runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(u.replace(" ", "%20"))) }
+            if (dryRun) { log("   $u"); return@FlowAction }
+            val uri = runCatching { java.net.URI(u.trim().replace(" ", "%20")) }.getOrElse { throw FlowStopped((if (S.zh) "網址無效：" else "Not a valid address: ") + u) }
+            // A web page: the host list. mailto: opens a draft. Anything else (file:, ms-…:, custom
+            // protocols) can start a program, so it needs a trusted shortcut.
+            when (uri.scheme?.lowercase()) {
+                "http", "https" -> requireHost(uri)
+                "mailto" -> {}
+                else -> requireTrust(st)
+            }
+            runCatching { java.awt.Desktop.getDesktop().browse(uri) }
         },
         FlowAction("app.settings", "開啟 Windows 設定頁", "Open a Settings page", CAT_SYSTEM, "例如 display、bluetooth、network-wifi、storagesense、windowsupdate。", "e.g. display, bluetooth, network-wifi, storagesense, windowsupdate.",
             listOf(ArgSpec("page", "設定頁", "Page", "choice", "display", listOf("display", "sound", "bluetooth", "network-wifi", "storagesense", "windowsupdate", "apps-volume", "personalization-background", "defaultapps", "privacy"))), changes = true) { st ->
@@ -720,6 +733,7 @@ object FlowActions {
         append("## Tokens\n\n`{param.x}` `{var.x}` `{count}` `{input}` `{first}` `{last}` `{date:yyyy-MM-dd}` `{folder}` `{home}` `{desktop}` `{documents}` `{downloads}` `{pictures}` `{music}` `{videos}` `{temp}` `{clipboard}` `{env.NAME}` `{newline}` `{tab}`\n\n")
         append("Inside `each` / `repeat`: `{var.index}` (1, 2, …) and `{var.item}` (the current value).\n\n")
         append("Per item: `{item}` `{item.name}` `{item.stem}` `{item.ext}` `{item.parent}` `{item.folder}` `{item.index:000}` `{item.modified:fmt}` `{item.created:fmt}` `{item.taken:fmt}` `{item.size}` `{item.width}` `{item.height}` `{item.camera}` `{item.artist}` `{item.album}` `{item.title}` `{item.track:00}` `{item.field:Name}`\n\n")
+        append(SAFETY_SPEC)
         append("## Actions\n\n")
         all.groupBy { it.category }.forEach { (cat, acts) ->
             append("### ${cat.replace('|', '/')}\n\n")
@@ -762,6 +776,7 @@ object FlowStore {
             try { ok += Flow.fromJson(f.name.removeSuffix(".fkflow.json"), f.readText(Charsets.UTF_8)) } catch (e: Exception) { bad += "${f.name}: ${e.message}" }
         }
         mine = ok; errors = bad
+        FlowTrust.loaded(ok)
     }
 
     /** Tests only: shortcuts that exist without being saved. */

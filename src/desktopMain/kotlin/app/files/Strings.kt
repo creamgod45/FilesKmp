@@ -406,6 +406,19 @@ object S {
     val flowHost = t("Server", "伺服器"); val flowPort = t("Port", "連接埠"); val flowSecurity = t("Security", "加密")
     val flowUser = t("User name", "使用者名稱"); val flowPassword = t("Password", "密碼"); val flowFrom = t("From", "寄件者")
     val flowPasswordKeep = t("(saved — leave empty to keep)", "（已儲存，留白則不變）")
+    // 捷徑 → 權限 (FlowSafety.kt)
+    val flowPermissions = t("Permissions", "權限"); val flowDeny = t("Deny", "拒絕")
+    val flowNetTitle = t("Trusted hosts", "信任的網域")
+    val flowNetRestrict = t("Ask before connecting to a host not on this list", "連線到清單以外的主機前先詢問")
+    val flowNetHint = t(
+        "HTTP request and Open URL may reach these hosts without asking; anything else asks first. One per line: example.com (that host only), *.example.com (the domain and every subdomain), 10.0.0.5, 192.168.0.0/16, ::1. A pasted URL is cut down to its host. Redirects are checked too.",
+        "「HTTP 請求」與「開啟網址」可以不經詢問連到這些主機，其他主機會先詢問。每行一個：example.com（只有這個主機）、*.example.com（網域與所有子網域）、10.0.0.5、192.168.0.0/16、::1。貼上網址會只保留主機名稱。重新導向也會檢查。")
+    val flowNetBad = t("Not a host or address, skipped: ", "不是主機或位址，已略過：")
+    val flowTrustTitle = t("Trusted shortcuts", "受信任的捷徑")
+    val flowTrustHint = t(
+        "Steps that run programs or send data out (Run script, Start app, Open, Open with, Send email, Send text message, Run shortcut, Open URL with a non-web address) ask before they run, unless you trusted the shortcut. Imported shortcuts start untrusted; changing one of those steps asks again. Built-in samples are trusted as shipped.",
+        "會執行程式或把資料送出的步驟（執行指令碼、啟動應用程式、開啟、以應用程式開啟、寄送電子郵件、傳送簡訊、執行捷徑、開啟非網頁的網址）在執行前會先詢問，除非你已信任這個捷徑。匯入的捷徑一開始不受信任；修改這些步驟後會重新詢問。內建範例在未修改時視為受信任。")
+    val flowTrustReset = t("Forget all trusted shortcuts", "取消信任所有捷徑")
     // 圖示大小
     val iconSize = t("Icon size", "圖示大小")
     // 分割畫面

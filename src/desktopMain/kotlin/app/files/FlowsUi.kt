@@ -121,7 +121,7 @@ fun FlowsDialog(s: AppState) {
                     IconBtn(Icons.Outlined.Close, S.close, close)
                 }
                 Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf(S.flowEdit, "JSON", S.flowReference, S.flowAccounts).forEachIndexed { i, label ->
+                    listOf(S.flowEdit, "JSON", S.flowReference, S.flowAccounts, S.flowPermissions).forEachIndexed { i, label ->
                         Hover(Modifier.height(30.dp), onClick = {
                             if (tab == 1 && i != 1) runCatching { Flow.fromJson(d.id, jsonText).copy(builtIn = d.builtIn) }.onSuccess { draft = it; message = null }.onFailure { message = it.message }
                             tab = i
@@ -133,7 +133,8 @@ fun FlowsDialog(s: AppState) {
                         0 -> FlowEditor(d) { draft = it }
                         1 -> MultiField(jsonText, { jsonText = it }, Modifier.fillMaxSize().verticalScroll(rememberScrollState()), mono = true)
                         2 -> ActionReference()
-                        else -> AccountsPanel()
+                        3 -> AccountsPanel()
+                        else -> PermissionsPanel()
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -472,6 +473,33 @@ private fun AccountsPanel() {
     }
 }
 
+/** 權限: the hosts shortcuts may reach, and forgetting which shortcuts are trusted (FlowSafety.kt). */
+@Composable
+private fun PermissionsPanel() {
+    val p = LocalPalette.current
+    var text by remember { mutableStateOf(NetPolicy.entries.joinToString("\n")) }
+    var message by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        GroupTitle(S.flowNetTitle)
+        FlowCheck(NetPolicy.restrict, S.flowNetRestrict) { NetPolicy.saveRestrict(!NetPolicy.restrict) }
+        T(S.flowNetHint, size = 12.sp, color = p.textSecondary, maxLines = 8)
+        MultiField(text, { text = it; message = null }, Modifier.fillMaxWidth().heightIn(min = 140.dp), mono = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            DialogButton(S.flowSave, primary = true) {
+                val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+                val bad = lines.filter { NetPolicy.normalizeEntry(it) == null }
+                NetPolicy.saveEntries(lines)
+                text = NetPolicy.entries.joinToString("\n")
+                message = if (bad.isEmpty()) S.saved else S.flowNetBad + bad.joinToString(", ")
+            }
+            message?.let { T(it, Modifier.weight(1f), size = 12.sp, color = if (it == S.saved) p.textSecondary else p.danger, maxLines = 3) }
+        }
+        GroupTitle(S.flowTrustTitle)
+        T(S.flowTrustHint, size = 12.sp, color = p.textSecondary, maxLines = 8)
+        DialogButton(S.flowTrustReset, primary = false) { FlowTrust.untrustAll(); message = S.saved }
+    }
+}
+
 @Composable
 private fun FlowyChoice(label: String, on: Boolean, onClick: () -> Unit) = FlyoutItem(label, if (on) Icons.Outlined.Check else null, "", onClick = onClick)
 
@@ -552,6 +580,13 @@ fun FlowPromptDialog(s: AppState, q: FlowPrompt) {
                     T(String.format("%.0f", kotlin.math.ceil(left)), size = 40.sp, weight = FontWeight.SemiBold, color = p.accentText)
                     T(S.flowWaitSkip, size = 12.sp, color = p.textSecondary)
                 }
+                "permission" -> {
+                    // FlowSafety: what the step is about to do or where it connects; options are the buttons.
+                    Column(Modifier.fillMaxWidth().heightIn(max = 300.dp).background(if (p.dark) Color(0xFF1A1A1A) else Color(0xFFF6F6F6), RoundedCornerShape(4.dp))
+                        .verticalScroll(rememberScrollState()).padding(8.dp)) {
+                        T(q.default, size = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 60)
+                    }
+                }
                 "show" -> {
                     // debug.show: every value, numbered.
                     T("${q.options.size} " + S.flowShowValues, size = 12.sp, color = p.textSecondary)
@@ -565,11 +600,13 @@ fun FlowPromptDialog(s: AppState, q: FlowPrompt) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (q.kind) {
                     "choose" -> {}
+                    // Deny is the first (primary) button: Enter must never grant a permission.
+                    "permission" -> { DialogButton(S.flowDeny, primary = true) { done(null) }; q.options.forEach { o -> DialogButton(o, primary = false) { done(o) } } }
                     "wait" -> DialogButton(S.flowContinue, primary = true) { done("skip") }
                     "show" -> { DialogButton(S.flowContinue, primary = true) { done("yes") }; DialogButton(S.flowCopyResult, primary = false) { copyText(q.options.joinToString("\n")) } }
                     else -> DialogButton(if (q.kind == "confirm") S.flowContinue else (if (S.zh) "確定" else "OK"), primary = true) { done(if (q.kind == "confirm") "yes" else text) }
                 }
-                DialogButton(if (q.kind == "show") S.flowStop else if (S.zh) "取消" else "Cancel", primary = false) { done(if (q.kind == "wait") "skip" else null) }
+                if (q.kind != "permission") DialogButton(if (q.kind == "show") S.flowStop else if (S.zh) "取消" else "Cancel", primary = false) { done(if (q.kind == "wait") "skip" else null) }
             }
         }
     }

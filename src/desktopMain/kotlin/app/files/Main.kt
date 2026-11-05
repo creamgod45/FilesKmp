@@ -245,6 +245,7 @@ fun main(args: Array<String>) {
         val s = AppState(CoroutineScope(SupervisorJob()))
         s.navigate(dir.path)
         suspend fun run(f: Flow, dry: Boolean, params: Map<String, String> = emptyMap()): List<String> {
+            FlowTrust.trust(f) // test shortcuts: written here, so trusted (FlowSafety.kt)
             val r = FlowRun(s, f, emptyList(), params, dry, { null }, { println("   log: $it") })
             r.runSteps(f.steps); return r.items
         }
@@ -283,8 +284,10 @@ fun main(args: Array<String>) {
         val s = AppState(CoroutineScope(SupervisorJob()))
         s.navigate(dir.path)
         fun check(name: String, got: Any?, want: Any?) = println((if (got == want) "PASS " else "FAIL ") + name + ": " + got + if (got != want) "   (want $want)" else "")
-        suspend fun run(steps: String, input: List<String> = emptyList(), dry: Boolean = false, ask: suspend (FlowPrompt) -> String? = { null }): FlowRun {
+        FlowTrust.testReset(); NetPolicy.testSet(listOf("127.0.0.1"))
+        suspend fun run(steps: String, input: List<String> = emptyList(), dry: Boolean = false, trust: Boolean = true, ask: suspend (FlowPrompt) -> String? = { null }): FlowRun {
             val f = Flow.fromJson("t", """{ "schema": "fileskmp.shortcut/v1", "name": "t", "steps": [ $steps ] }""")
+            if (trust) FlowTrust.trust(f)
             val r = FlowRun(s, f, input, emptyMap(), dry, ask, { if (System.getenv("FK_LOG") != null) println("   log: $it") })
             r.runSteps(f.steps); return r
         }
@@ -337,7 +340,7 @@ fun main(args: Array<String>) {
             check("repeat", run("""{"action":"text.set","args":{"text":"x"}},{"action":"repeat","args":{"times":3,"steps":[{"action":"text.template","args":{"template":"{item}{var.index}"}}]}}""").items, listOf("x1", "x2", "x3"))
             FlowStore.testFlows = listOf(Flow.fromJson("child", """{"schema":"fileskmp.shortcut/v1","name":"Double","params":[{"id":"k","label":"k","default":"2"}],"steps":[{"action":"number.calc","args":{"formula":"{item} * {param.k}","perItem":true}}]}"""))
             check("flow.run with params", run("""{"action":"list.make","args":{"items":"1\n2"}},{"action":"flow.run","args":{"shortcut":"Double","params":"k=10"}}""").items, listOf("10", "20"))
-            FlowStore.testFlows = listOf(Flow.fromJson("loop", """{"schema":"fileskmp.shortcut/v1","name":"Loop","steps":[{"action":"flow.run","args":{"shortcut":"loop"}}]}"""))
+            FlowStore.testFlows = listOf(Flow.fromJson("loop", """{"schema":"fileskmp.shortcut/v1","name":"Loop","steps":[{"action":"flow.run","args":{"shortcut":"loop"}}]}""")).onEach { FlowTrust.trust(it) }
             check("flow.run depth limit", runCatching { run("""{"action":"flow.run","args":{"shortcut":"loop"}}""") }.exceptionOrNull()?.message?.contains("8"), true)
             FlowStore.testFlows = emptyList()
             val t0 = System.nanoTime()
@@ -351,6 +354,8 @@ fun main(args: Array<String>) {
             srv.createContext("/json") { ex -> val b = """{"repo":{"stars":42,"tags":["a","b"]}}""".toByteArray(); ex.responseHeaders.add("Content-Type", "application/json"); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
             srv.createContext("/echo") { ex -> val got = ex.requestBody.readAllBytes(); val b = ("${ex.requestMethod} ${ex.requestHeaders.getFirst("Content-Type")?.substringBefore(';')} ${got.size} " + String(got).contains("filename=\"bin.dat\"")).toByteArray(); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
             srv.createContext("/missing") { ex -> ex.sendResponseHeaders(404, -1); ex.close() }
+            srv.createContext("/redir-local") { ex -> ex.responseHeaders.add("Location", "/json"); ex.sendResponseHeaders(302, -1); ex.close() }
+            srv.createContext("/redir-away") { ex -> ex.responseHeaders.add("Location", "http://localhost:${srv.address.port}/json"); ex.sendResponseHeaders(302, -1); ex.close() }
             val headSeen = java.util.concurrent.atomic.AtomicReference("")
             srv.createContext("/head") { ex -> headSeen.set("${ex.requestMethod} ${ex.requestHeaders.getFirst("Content-Length") ?: "-"} ${ex.requestBody.readAllBytes().size}"); ex.sendResponseHeaders(200, -1); ex.close() }
             srv.start()
@@ -362,8 +367,51 @@ fun main(args: Array<String>) {
             check("http download", run("""{"action":"http.request","args":{"url":"$base/json","output":"file","saveTo":"${j(dir.path)}\\"}}""").items.map { File(it).name to File(it).length() }, listOf("json" to 38L))
             run("""{"action":"http.request","args":{"method":"HEAD","url":"$base/head","bodyType":"json","body":"{\"a\":1}","output":"status"}}""")
             check("http HEAD sends no body", headSeen.get().substringAfter(' ').let { it == "- 0" || it == "0 0" }, true)
+            // FlowSafety: host list, redirects, asking
+            check("http redirect same host", run("""{"action":"http.request","args":{"url":"$base/redir-local","output":"json"}},{"action":"json.get","args":{"path":"repo.stars"}}""").items, listOf("42"))
+            var asked = ""
+            check("http redirect to unlisted host stops", runCatching { run("""{"action":"http.request","args":{"url":"$base/redir-away"}}""", ask = { asked = it.title; null }) }.exceptionOrNull() is FlowStopped, true)
+            check("  … after asking about localhost", asked.contains("localhost"), true)
+            check("http unlisted host allowed once", run("""{"action":"http.request","args":{"url":"http://localhost:${srv.address.port}/json","output":"status"}}""", ask = { it.options.first() }).items.isNotEmpty(), true)
+            check("  … not added to the list", NetPolicy.allows("localhost"), false)
+            check("http userinfo trick", runCatching { run("""{"action":"http.request","args":{"url":"http://127.0.0.1@localhost:${srv.address.port}/json"}}""") }.exceptionOrNull() is FlowStopped, true)
+            NetPolicy.testSet(emptyList(), restrictOn = false)
+            check("http restriction off", run("""{"action":"http.request","args":{"url":"http://localhost:${srv.address.port}/json","output":"status"}}""").items.isNotEmpty(), true)
+            NetPolicy.testSet(listOf("127.0.0.1"))
             check("http POST skipped in dry run", run("""{"action":"http.request","args":{"method":"POST","url":"$base/echo","output":"status"}}""", dry = true).items, emptyList<String>())
             srv.stop(0)
+            // host list entries
+            check("entry url → host", NetPolicy.normalizeEntry("https://user@Example.COM:8443/x?y"), "example.com")
+            check("entry wildcard", NetPolicy.normalizeEntry("*.Example.com"), "*.example.com")
+            check("entry cidr", NetPolicy.normalizeEntry("192.168.1.7/16"), "192.168.1.7/16")
+            check("entry junk", listOf("", "# note", "a b", "*.10.0.0.1", "10.0.0.0/40").map { NetPolicy.normalizeEntry(it) }, listOf(null, null, null, null, null))
+            val list = listOf("example.com", "*.corp.test", "10.0.0.0/8", "0:0:0:0:0:0:0:1")
+            check("allows", listOf("example.com", "EXAMPLE.com.", "api.example.com", "corp.test", "a.b.corp.test", "evilcorp.test", "10.2.3.4", "11.0.0.1", "[::1]", "2130706433", "0x7f.1")
+                .map { NetPolicy.allows(it, list) }, listOf(true, true, false, true, true, false, true, false, true, false, false))
+            // trusted shortcuts
+            val script = """{"action":"shell.run","args":{"shell":"cmd","script":"echo hi"}}"""
+            check("untrusted shell.run asks and stops", runCatching { run(script, trust = false) }.exceptionOrNull() is FlowStopped, true)
+            var prompts = 0
+            check("untrusted allowed once runs", run("$script,$script", trust = false, ask = { prompts++; it.options.first() }).items, listOf("hi"))
+            check("  … asked once for the same step", prompts, 1)
+            check("untrusted dry run doesn't ask", run(script, trust = false, dry = true).items, emptyList<String>())
+            val f1 = Flow.fromJson("u", """{"schema":"fileskmp.shortcut/v1","name":"u","steps":[$script,{"action":"text.set","args":{"text":"x"}}]}""")
+            check("no gated steps = trusted", FlowTrust.isTrusted(Flow.fromJson("n", """{"schema":"fileskmp.shortcut/v1","name":"n","steps":[{"action":"text.set"}]}""")), true)
+            check("imported = untrusted", FlowTrust.isTrusted(f1), false)
+            FlowTrust.trust(f1)
+            check("trusted", FlowTrust.isTrusted(f1), true)
+            check("other steps edited: still trusted", FlowTrust.isTrusted(f1.copy(name = "v", steps = f1.steps.take(1) + FlowStep("text.set", mapOf("text" to "y")))), true)
+            check("gated step edited: untrusted", FlowTrust.isTrusted(f1.copy(steps = listOf(FlowStep("shell.run", mapOf("shell" to "cmd", "script" to "echo bye"))))), false)
+            check("gated step nested in if", FlowTrust.isTrusted(Flow.fromJson("w", """{"schema":"fileskmp.shortcut/v1","name":"w","steps":[{"action":"if","args":{"then":[$script]}}]}""")), true)
+            check("gated step nested, edited", FlowTrust.isTrusted(Flow.fromJson("w", """{"schema":"fileskmp.shortcut/v1","name":"w","steps":[{"action":"if","args":{"then":[{"action":"shell.run","args":{"script":"calc"}}]}}]}""")), false)
+            val cli = FlowStore.samples().first { it.id == "builtin:cli" }
+            check("sample as shipped trusted", FlowTrust.isTrusted(cli), true)
+            check("sample edited in JSON tab untrusted", FlowTrust.isTrusted(cli.copy(steps = cli.steps + FlowStep("shell.run", mapOf("script" to "calc")))), false)
+            FlowStore.testFlows = listOf(Flow.fromJson("child2", """{"schema":"fileskmp.shortcut/v1","name":"Child","steps":[{"action":"shell.run","args":{"shell":"cmd","script":"echo child"}}]}"""))
+            check("trusted parent, untrusted child asks", runCatching { run("""{"action":"flow.run","args":{"shortcut":"child2"}}""") }.exceptionOrNull() is FlowStopped, true)
+            FlowStore.testFlows = emptyList()
+            check("url.open other scheme untrusted stops", runCatching { run("""{"action":"url.open","args":{"url":"ms-settings:display"}}""", trust = false) }.exceptionOrNull() is FlowStopped, true)
+            check("url.open unlisted host stops", runCatching { run("""{"action":"url.open","args":{"url":"https://evil.invalid/?q={first}"}}""") }.exceptionOrNull() is FlowStopped, true)
             // apps
             var t = System.nanoTime()
             val cat = WinApps.catalog(refresh = true)

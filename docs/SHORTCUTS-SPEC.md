@@ -98,6 +98,20 @@ Inside `each` / `repeat`: `{var.index}` (1, 2, …) and `{var.item}` (the curren
 
 Per item: `{item}` `{item.name}` `{item.stem}` `{item.ext}` `{item.parent}` `{item.folder}` `{item.index:000}` `{item.modified:fmt}` `{item.created:fmt}` `{item.taken:fmt}` `{item.size}` `{item.width}` `{item.height}` `{item.camera}` `{item.artist}` `{item.album}` `{item.title}` `{item.track:00}` `{item.field:Name}`
 
+## Permissions
+
+A shortcut file cannot grant itself permissions; the app keeps them (Shortcuts → Permissions).
+
+**Trusted hosts.** `http.request` and `url.open` (http/https) reach only hosts on the list without asking; any other host asks
+first (*allow this time* / *always trust*) and stops when refused. Entries: `example.com` (that host), `*.example.com` (the domain
+and its subdomains), `10.0.0.5`, `192.168.0.0/16`, `::1`. Redirects are followed by the app and each hop is checked; https never
+redirects to http. Default list: `api.github.com`, `www.bing.com`.
+
+**Trusted shortcuts.** These steps ask before they run unless the shortcut is trusted: `shell.run`, `app.launch`, `app.cli`,
+`open`, `open.with`, `email.send`, `sms.send`, `flow.run`, and `url.open` with a non-web address (`mailto:` excepted).
+Trust covers exactly those steps (with their arguments): changing one asks again, other edits don't. Imported shortcuts start
+untrusted; built-in samples are trusted as shipped; a dry run never asks.
+
 ## Actions
 
 ### 取得輸入/Get input
