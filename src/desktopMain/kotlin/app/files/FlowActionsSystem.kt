@@ -59,7 +59,8 @@ internal fun systemActions(): List<FlowAction> = listOf(
         val b = HttpRequest.newBuilder(URI(url.replace(" ", "%20"))).timeout(Duration.ofSeconds(int(st, "timeout", 30).toLong().coerceIn(1, 3600)))
         keyValues(arg(st, "headers")).forEach { (k, v) -> b.header(k, v) }
         val bodyText = arg(st, "body")
-        val publisher: HttpRequest.BodyPublisher = when (arg(st, "bodyType")) {
+        // HEAD never carries a body (RFC 9110 §9.3.2: content in a HEAD request has no defined meaning).
+        val publisher: HttpRequest.BodyPublisher = if (method == "HEAD") HttpRequest.BodyPublishers.noBody() else when (arg(st, "bodyType")) {
             "json" -> { b.header("Content-Type", "application/json; charset=utf-8"); HttpRequest.BodyPublishers.ofString(bodyText.ifBlank { Json.write(items) }) }
             "text" -> { b.header("Content-Type", "text/plain; charset=utf-8"); HttpRequest.BodyPublishers.ofString(bodyText.ifEmpty { items.joinToString("\n") }) }
             "form" -> { b.header("Content-Type", "application/x-www-form-urlencoded"); HttpRequest.BodyPublishers.ofString(keyValues(bodyText).joinToString("&") { (k, v) -> java.net.URLEncoder.encode(k, Charsets.UTF_8) + "=" + java.net.URLEncoder.encode(v, Charsets.UTF_8) }) }

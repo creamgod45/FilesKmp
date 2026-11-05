@@ -243,6 +243,8 @@ internal fun moreActions(): List<FlowAction> = listOf(
         input = VType.Text, output = VType.Text) { st ->
         val f = rawArg(st, "find"); val g = int(st, "group", 0)
         val rx = Regex(if (bool(st, "regex")) f else Regex.escape(f), if (bool(st, "ignoreCase")) setOf(RegexOption.IGNORE_CASE) else emptySet())
+        val groupCount = rx.toPattern().matcher("").groupCount()
+        if (g !in 0..groupCount) throw FlowStopped(if (S.zh) "擷取群組 $g 不存在（共 $groupCount 個）" else "Capture group $g does not exist ($groupCount in the pattern)")
         items = items.flatMap { v -> rx.findAll(v).map { it.groups[g]?.value ?: "" }.toList() }
     },
     FlowAction("text.test", "檢查文字", "Test text", CAT_TEXT, "包含、開頭、結尾、相等、比對正規表示式、比大小…；可篩選或得到是/否。", "Contains, starts/ends with, equals, regex, compare…; filter the values or get true/false.",
@@ -488,7 +490,11 @@ internal fun moreActions(): List<FlowAction> = listOf(
     FlowAction("base64.decode", "Base64 解碼", "Base64 decode", CAT_DATA, "把 Base64 解回文字，或存成檔案（可用 {item.index} 標記）。", "Decodes Base64 to text, or saves it as files ({item.index} tokens allowed).",
         listOf(ArgSpec("to", "結果", "Result", "choice", "text", listOf("text", "file")), ArgSpec("path", "檔案路徑", "File path", "path", "{desktop}\\decoded-{item.index:00}.bin")),
         input = VType.Text, outputFor = { st -> if ((st.args["to"] ?: "text") == "file") VType.Files else VType.Text }) { st ->
-        fun dec(v: String): ByteArray { val t = v.trim().substringAfter("base64,").replace(Regex("\\s"), ""); return if (t.contains('-') || t.contains('_')) java.util.Base64.getUrlDecoder().decode(t) else java.util.Base64.getDecoder().decode(t) }
+        fun dec(v: String): ByteArray {
+            val t = v.trim().substringAfter("base64,").replace(Regex("\\s"), "")
+            return try { if (t.contains('-') || t.contains('_')) java.util.Base64.getUrlDecoder().decode(t) else java.util.Base64.getDecoder().decode(t) }
+            catch (e: IllegalArgumentException) { throw FlowStopped((if (S.zh) "不是有效的 Base64：" else "Not valid Base64: ") + e.message) }
+        }
         items = if (arg(st, "to") == "file") items.mapIndexed { i, v ->
             val f = freeName(File(expand(rawArg(st, "path"), "", i)))
             if (dryRun) log("   → ${f.path}") else { f.parentFile?.mkdirs(); f.writeBytes(dec(v)) }

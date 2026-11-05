@@ -327,6 +327,9 @@ fun main(args: Array<String>) {
             val bin = File(dir, "bin.dat").apply { writeBytes(ByteArray(300) { it.toByte() }) }
             val dec = run("""{"action":"base64.encode","args":{"source":"file"}},{"action":"base64.decode","args":{"to":"file","path":"${j(dir.path)}\\out.dat"}}""", listOf(bin.path)).items
             check("base64 file round trip", File(dec.first()).readBytes().contentEquals(bin.readBytes()), true)
+            check("base64 invalid stops", runCatching { run("""{"action":"text.set","args":{"text":"not*base64"}},{"action":"base64.decode"}""") }.exceptionOrNull() is FlowStopped, true)
+            check("text.find missing group stops", runCatching { run("""{"action":"text.set","args":{"text":"id=1"}},{"action":"text.find","args":{"find":"id=(\\d)","regex":true,"group":2}}""") }.exceptionOrNull() is FlowStopped, true)
+            check("text.find unmatched optional group", run("""{"action":"text.set","args":{"text":"a ab"}},{"action":"text.find","args":{"find":"a(b)?","regex":true,"group":1}}""").items, listOf("", "b"))
             // control: input sources, saveAs, if, repeat, flow.run, wait
             check("input var + saveAs", run("""{"action":"list.make","args":{"items":"a\nb"},"saveAs":"letters"},{"action":"text.set","args":{"text":"x"}},{"action":"list.count","input":"var:letters"}""").items, listOf("2"))
             check("input shortcut", run("""{"action":"text.set","args":{"text":"x"}},{"action":"list.count","input":"shortcut"}""", listOf("p", "q", "r")).items, listOf("3"))
@@ -348,6 +351,8 @@ fun main(args: Array<String>) {
             srv.createContext("/json") { ex -> val b = """{"repo":{"stars":42,"tags":["a","b"]}}""".toByteArray(); ex.responseHeaders.add("Content-Type", "application/json"); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
             srv.createContext("/echo") { ex -> val got = ex.requestBody.readAllBytes(); val b = ("${ex.requestMethod} ${ex.requestHeaders.getFirst("Content-Type")?.substringBefore(';')} ${got.size} " + String(got).contains("filename=\"bin.dat\"")).toByteArray(); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
             srv.createContext("/missing") { ex -> ex.sendResponseHeaders(404, -1); ex.close() }
+            val headSeen = java.util.concurrent.atomic.AtomicReference("")
+            srv.createContext("/head") { ex -> headSeen.set("${ex.requestMethod} ${ex.requestHeaders.getFirst("Content-Length") ?: "-"} ${ex.requestBody.readAllBytes().size}"); ex.sendResponseHeaders(200, -1); ex.close() }
             srv.start()
             val base = "http://127.0.0.1:${srv.address.port}"
             check("http json + json.get", run("""{"action":"http.request","args":{"url":"$base/json","output":"json"}},{"action":"json.get","args":{"path":"repo.stars"}}""").items, listOf("42"))
@@ -355,6 +360,8 @@ fun main(args: Array<String>) {
             check("http status 404 (no stop)", run("""{"action":"http.request","args":{"url":"$base/missing","output":"status","failOnError":false}}""").items, listOf("404"))
             check("http 404 stops", runCatching { run("""{"action":"http.request","args":{"url":"$base/missing"}}""") }.exceptionOrNull() is FlowStopped, true)
             check("http download", run("""{"action":"http.request","args":{"url":"$base/json","output":"file","saveTo":"${j(dir.path)}\\"}}""").items.map { File(it).name to File(it).length() }, listOf("json" to 38L))
+            run("""{"action":"http.request","args":{"method":"HEAD","url":"$base/head","bodyType":"json","body":"{\"a\":1}","output":"status"}}""")
+            check("http HEAD sends no body", headSeen.get().substringAfter(' ').let { it == "- 0" || it == "0 0" }, true)
             check("http POST skipped in dry run", run("""{"action":"http.request","args":{"method":"POST","url":"$base/echo","output":"status"}}""", dry = true).items, emptyList<String>())
             srv.stop(0)
             // apps
