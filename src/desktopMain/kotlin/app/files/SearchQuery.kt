@@ -62,7 +62,68 @@ class SearchQuery private constructor(private val clauses: List<List<Term>>, val
 
     val isEmpty get() = clauses.isEmpty()
 
+    /** One piece of the syntax as typed ("file:", "size:>10mb"), and what it does. */
+    class Hint(val text: String, val zh: String, val en: String) {
+        val description get() = tr(en, zh)
+    }
+
     companion object {
+        /** The filters, with examples: offered while typing a query, listed in the shortcut spec for the AI. */
+        val hints = listOf(
+            Hint("file:", "只要檔案（不含資料夾）", "Files only (no folders)"),
+            Hint("folder:", "只要資料夾", "Folders only"),
+            Hint("ext:", "副檔名，多個用 ; 分隔，例如 ext:jpg;png", "Extensions, ; between several, e.g. ext:jpg;png"),
+            Hint("size:>10mb", "大於 10 MB（也可用 <、>=、<=；單位 b kb mb gb tb）", "Bigger than 10 MB (also <, >=, <=; units b kb mb gb tb)"),
+            Hint("size:1kb..5mb", "大小介於兩者之間", "Size between the two"),
+            Hint("size:empty", "空檔案（0 位元組）", "Empty files (0 bytes)"),
+            Hint("dm:today", "今天修改（也可 yesterday、thisweek、thismonth、thisyear）", "Modified today (also yesterday, thisweek, thismonth, thisyear)"),
+            Hint("dm:>7d", "最近 7 天內修改", "Modified in the last 7 days"),
+            Hint("dm:<30d", "超過 30 天沒有修改", "Not modified for over 30 days"),
+            Hint("dm:>2025-01-01", "這天之後修改", "Modified on or after that day"),
+            Hint("dm:2025-01-01..2025-02-01", "這段期間內修改", "Modified between the two days"),
+            Hint("dc:thisweek", "建立日期（寫法同 dm:）", "Date created (same forms as dm:)"),
+            Hint("path:", "比對完整路徑而不是檔名，例如 path:\\Photos\\", "Matches the full path instead of the name, e.g. path:\\Photos\\"),
+            Hint("regex:", "正規表示式比對檔名，例如 regex:^IMG_\\d+", "Regular expression on the name, e.g. regex:^IMG_\\d+"),
+        )
+
+        private val keyNames = setOf("regex", "ext", "size", "dm", "datemodified", "dc", "datecreated", "file", "folder", "path")
+
+        /** The term being typed just left of [caret] when it starts with a letter ("a.txt fi" → "fi"), or null. */
+        fun typingTerm(text: String, caret: Int): String? =
+            Regex("(?:^|[\\s|])!?([A-Za-z][^\\s|\"{}]*)$").find(text.substring(0, caret.coerceIn(0, text.length)))?.groupValues?.get(1)
+
+        /**
+         * Mistakes in [text] that make terms match nothing or be dropped: an unknown filter ("kind:file"),
+         * "file:" with a value, a size or date that can't be read, a bad regex. Values with {tokens} aren't checked.
+         */
+        fun problems(text: String): List<String> {
+            val out = ArrayList<String>()
+            val all = "file: folder: ext: size: dm: dc: path: regex:"
+            for (tok in tokens(text.trim())) {
+                val t = tok.removePrefix("!")
+                val key = t.substringBefore(':', "")
+                if (key.isEmpty()) continue
+                val k = key.lowercase()
+                val value = t.substringAfter(':')
+                val templated = '{' in value
+                when {
+                    k !in keyNames -> if (key.length > 1 && k.all { it in 'a'..'z' })
+                        out += tr("Unknown filter “$key:”: it is searched as plain text and matches nothing. Filters: $all",
+                            "不認識的條件「$key:」：會被當成一般文字比對檔名，因此什麼都不會符合。可用的條件：$all")
+                    (k == "file" || k == "folder") && value.isNotEmpty() ->
+                        out += tr("“$k:” takes no value: put a space after it (“$k: $value”).", "「$k:」後面不接值，請在後面加空格（「$k: $value」）。")
+                    k == "ext" && value.isEmpty() -> out += tr("“ext:” needs extensions, e.g. ext:jpg;png.", "「ext:」後面要寫副檔名，例如 ext:jpg;png。")
+                    templated -> {}
+                    k == "size" && sizeRange(value) == null ->
+                        out += tr("Can't read the size “$value” (e.g. >10mb, 1kb..5mb, empty): this filter is ignored.", "看不懂大小「$value」（例如 >10mb、1kb..5mb、empty），這個條件會被忽略。")
+                    (k == "dm" || k == "datemodified" || k == "dc" || k == "datecreated") && dateRange(value) == null ->
+                        out += tr("Can't read the date “$value” (e.g. today, >7d, <30d, 2025-01-01..2025-02-01): this filter is ignored.", "看不懂日期「$value」（例如 today、>7d、<30d、2025-01-01..2025-02-01），這個條件會被忽略。")
+                    k == "regex" -> try { compile(value, 0) } catch (e: IllegalArgumentException) { out += e.message.orEmpty() }
+                }
+            }
+            return out.distinct()
+        }
+
         /** Null when the query is blank; throws IllegalArgumentException with a readable message for a bad regex. */
         fun parse(text: String, regex: Boolean = false, caseSensitive: Boolean = false): SearchQuery? {
             val q = text.trim()

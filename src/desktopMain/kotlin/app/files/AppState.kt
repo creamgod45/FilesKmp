@@ -25,6 +25,8 @@ const val TAG_PREFIX = "::tag:"
 const val SEARCH_PREFIX = "::search:"
 /** The 網路 page: servers found on the network (see NetworkFs). */
 const val NETWORK = "::network"
+/** 更新資訊與介紹: what changed in the last update (Updates.kt), and an introduction to the app. */
+const val UPDATES = "::updates"
 private const val SEP = "\u0001"
 
 fun searchLocation(root: String, query: String) = "$SEARCH_PREFIX$root$SEP$query"
@@ -38,6 +40,7 @@ class TabState(start: String) {
     val isTag: Boolean get() = location.startsWith(TAG_PREFIX)
     val isSearch: Boolean get() = location.startsWith(SEARCH_PREFIX)
     val isNetwork: Boolean get() = location == NETWORK
+    val isUpdates: Boolean get() = location == UPDATES
     /** 資源回收筒 (RecycleBin.kt): deleted items; restore or delete them for good. */
     val isRecycleBin: Boolean get() = location == RECYCLE_BIN
     /** `\\server`: the list of a server's shares, not a folder. */
@@ -69,6 +72,7 @@ class TabState(start: String) {
             isTag -> "${S.tags}: $tagName"
             isSearch -> "${S.search}: $searchQuery"
             isNetwork -> S.network
+            isUpdates -> tr("What's new", "更新資訊")
             isRecycleBin -> S.recycleBin
             isServer -> NetworkFs.hostOf(location).let { if (NetworkFs.isWslHost(it)) S.wsl else it }
             else -> Fs.displayName(location)
@@ -164,7 +168,13 @@ class AppState(val scope: CoroutineScope) {
 
     // ---- background picture rotation (several pictures, switched on a timer / at each start, per-folder rules)
     val bgImages = mutableStateListOf<String>().apply { addAll(Prefs.str("bgImages", "").split(SEP).filter { it.isNotBlank() }) }
-    var bgMode by mutableStateOf(runCatching { BgMode.valueOf(Prefs.str("bgMode", "Single")) }.getOrDefault(BgMode.Single))
+    // When to change: any of these together (they used to be one choice, "bgMode"; read for settings from before 1.2).
+    private val legacyBgMode = Prefs.raw("bgMode")
+    var bgOnStart by mutableStateOf(Prefs.bool("bgOnStart", legacyBgMode == "OnStartup"))
+    var bgOnTimer by mutableStateOf(Prefs.bool("bgOnTimer", legacyBgMode == "Timer"))
+    /** Change when the window comes back from being minimized. */
+    var bgOnRestore by mutableStateOf(Prefs.bool("bgOnRestore", false))
+    /** Order: random (each picture once before any repeats) or the list's order. */
     var bgShuffle by mutableStateOf(Prefs.bool("bgShuffle", false))
     var bgIntervalMin by mutableStateOf(Prefs.int("bgInterval", M.BG_DEFAULT_INTERVAL_MIN).coerceIn(1, 1440))
     var bgIndex by mutableStateOf(Prefs.int("bgIndex", 0))
@@ -174,16 +184,31 @@ class AppState(val scope: CoroutineScope) {
         })
     }
 
-    /** Moves to the next picture in the list (or a random other one when shuffling). */
+    /** Random order: the pictures not shown yet in this round (a shuffled deck, so none repeats before all were shown). */
+    private val bgDeck = ArrayDeque<Int>()
+
+    /** Moves to the next picture in the list, or the next of a shuffled round when random. */
     fun nextBackground() {
         if (bgImages.isEmpty()) return
         bgIndex = if (bgShuffle && bgImages.size > 1) {
-            var n: Int
-            do { n = (bgImages.indices).random() } while (n == bgIndex)
-            n
+            if (bgDeck.isEmpty() || bgDeck.any { it >= bgImages.size }) {
+                bgDeck.clear()
+                val round = bgImages.indices.shuffled()
+                bgDeck.addAll(if (round.first() == bgIndex) round.drop(1) + round.first() else round)
+            }
+            bgDeck.removeFirst()
         } else (bgIndex + 1) % bgImages.size
         backgroundImage = bgImages[bgIndex]
     }
+
+    /** The window came back from the taskbar (was minimized). */
+    fun onWindowRestored() {
+        ErrorLog.crumb("window restored")
+        if (bgOnRestore && bgImages.size > 1) nextBackground()
+    }
+
+    /** Windows' own right-click menu (ShellMenu.kt): the Windows 11 one, the classic one, or none. */
+    var shellMenuMode by mutableStateOf(runCatching { ShellMenuMode.valueOf(Prefs.str("shellMenu", "Auto")) }.getOrDefault(ShellMenuMode.Auto))
 
     /** The picture to show now: a matching folder rule (most specific folder wins), else the current one. */
     fun effectiveBackground(): String {
@@ -286,13 +311,17 @@ class AppState(val scope: CoroutineScope) {
                 tabs.forEach { load(it.left) }
             }
         }
-        // Background rotation: a new picture at each start, and/or on a timer.
-        if (bgMode == BgMode.OnStartup && bgImages.size > 1) nextBackground()
+        // Background rotation: at each start, on a timer and/or when the window is restored (any of them).
+        if (bgOnStart && bgImages.size > 1) nextBackground()
         else if (bgImages.isNotEmpty() && backgroundImage.isBlank()) backgroundImage = bgImages[bgIndex.coerceIn(0, bgImages.size - 1)]
         scope.launch {
-            while (true) {
-                delay(bgIntervalMin.minutes)
-                if (bgMode == BgMode.Timer && bgImages.size > 1) nextBackground()
+            // Restarts whenever the timer is switched or its interval changes.
+            snapshotFlow { bgOnTimer to bgIntervalMin }.collectLatest { (on, minutes) ->
+                if (!on) return@collectLatest
+                while (true) {
+                    delay(minutes.minutes)
+                    if (bgImages.size > 1) nextBackground()
+                }
             }
         }
         // Disk usage readings while 記錄磁碟空間使用量 is on: at once, then every 30 minutes.
@@ -330,7 +359,8 @@ class AppState(val scope: CoroutineScope) {
         "backgroundImageAlign" to backgroundImageAlign,
         "translucentWindow" to translucentWindow, "windowOpacity" to windowOpacity, "blurBehind" to blurBehind,
         "gradientOn" to gradientOn, "gradientIndex" to gradientIndex, "gradientAngle" to gradientAngle, "gradientStrength" to gradientStrength,
-        "bgImages" to bgImages.joinToString(SEP), "bgMode" to bgMode, "bgShuffle" to bgShuffle, "bgInterval" to bgIntervalMin,
+        "bgImages" to bgImages.joinToString(SEP), "bgMode" to null, "bgOnStart" to bgOnStart, "bgOnTimer" to bgOnTimer, "bgOnRestore" to bgOnRestore, "bgShuffle" to bgShuffle,
+        "shellMenu" to shellMenuMode, "bgInterval" to bgIntervalMin,
         "bgIndex" to bgIndex, "bgRules" to bgRules.joinToString(SEP) { "${it.folder}\u0002${it.image}\u0002${if (it.includeSubfolders) 1 else 0}" },
         "session" to tabs.map { it.left.location }.filter { !it.startsWith("::") || it == HOME }.joinToString(SEP),
         "sessionIndex" to tabIndex,
@@ -535,6 +565,7 @@ class AppState(val scope: CoroutineScope) {
     // ------------------------------------------------------------ navigation
 
     fun navigate(target: String, t: TabState = tab) {
+        ErrorLog.crumb("navigate ${target.take(200)}")
         if (NetworkFs.isNfsUrl(target) && !NetworkFs.nfsClientInstalled) { toast = S.netNfsMissing; return }
         val path = NetworkFs.normalize(target)
         // Network paths always open here (an unreachable one shows its error in the pane) instead
@@ -582,7 +613,7 @@ class AppState(val scope: CoroutineScope) {
         if (!keepSelection) t.selection = emptySet()
         t.renaming = null
         t.error = null
-        if (t.isHome) { t.raw = emptyList(); t.loading = false; return }
+        if (t.isHome || t.isUpdates) { t.raw = emptyList(); t.loading = false; return }
         val path = t.location
         t.loading = true
         if (t.isSearch) {
@@ -790,6 +821,15 @@ class AppState(val scope: CoroutineScope) {
     var gitBranchDialog by mutableStateOf(false)
     // ---- 捷徑 (Flows.kt / FlowsUi.kt)
     var flowsOpen by mutableStateOf(false)
+    /** The shortcut the 捷徑 dialog opens on (screenshots). */
+    var flowsInitial: String? = null
+    /**
+     * Unsaved edits per shortcut id. Kept when the dialog closes (Run / Dry run from the editor close it),
+     * so reopening shows them again; dropped when saved or discarded.
+     */
+    val flowDrafts = androidx.compose.runtime.mutableStateMapOf<String, Flow>()
+    /** 捷徑 → AI 助手 (AiAgent.kt): kept for the session so closing the dialog keeps the conversation. */
+    val aiChat by lazy { AiChat(scope, this) }
     var flowRun by mutableStateOf<FlowRunState?>(null)
     var flowPrompt by mutableStateOf<FlowPrompt?>(null)
 
@@ -877,6 +917,24 @@ class AppState(val scope: CoroutineScope) {
     var quickLook by mutableStateOf<String?>(null)
     /** 鍵盤快速鍵 list (F1). */
     var shortcutsOpen by mutableStateOf(false)
+    /** 鍵盤快速鍵 editor: waiting for a key to record (null answer = cancelled). */
+    var keyCapture by mutableStateOf<((String?) -> Unit)?>(null)
+    /** Settings opens on this section next time (e.g. "Shortcuts"), with this filter in the keymap editor. */
+    var settingsSectionRequest by mutableStateOf<String?>(null)
+    var keymapFilter by mutableStateOf("")
+    /** The last update's report (Updates.kt); shown on the 更新資訊 tab. */
+    var updateReport by mutableStateOf<UpdateReport?>(null)
+
+    /** Opens (or switches to) the 更新資訊 tab. */
+    fun openUpdates() {
+        val i = tabs.indexOfFirst { it.left.isUpdates }
+        if (i >= 0) tabIndex = i else newTab(UPDATES)
+    }
+
+    /** Opens settings on 鍵盤快速鍵, filtered to [filter] (a key or a name). */
+    fun openKeymap(filter: String = "") {
+        keymapFilter = filter; settingsSectionRequest = "Shortcuts"; settingsOpen = true
+    }
 
     /** Space: preview the focused (last selected) item; Space again closes it. */
     fun toggleQuickLook() {

@@ -1,0 +1,432 @@
+package app.files
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import java.io.File
+
+private class Checks {
+    var pass = 0; var fail = 0
+    fun check(name: String, ok: Boolean, info: Any? = null) { if (ok) { pass++; println("PASS $name") } else { fail++; println("FAIL $name ${info ?: ""}") } }
+}
+
+private fun dump(items: List<ShellItem>, indent: String = "   ") {
+    items.forEach { i ->
+        if (i.separator) println("$indent----")
+        else println("$indent${i.label}  [verb=${i.verb}] ${if (!i.enabled) "(disabled) " else ""}${if (i.icon != null) "(icon) " else ""}${if (i.children.isNotEmpty()) "▸ ${i.children.size}" else ""}")
+        if (i.children.isNotEmpty() && indent.length < 9) dump(i.children, "$indent   ")
+    }
+}
+
+/**
+ * --test-shell-menu <dir>: reads Windows' right-click menus for files this test makes (Windows 11 and
+ * classic, a folder's empty space, and the fallback when the Windows 11 menu can't be read).
+ * Only reads menus: nothing is invoked.
+ */
+fun shellMenuTest(dir: File) {
+    val c = Checks()
+    dir.mkdirs()
+    val txt = File(dir, "note.txt").apply { writeText("hello") }
+    val png = File(dir, "pic.png").apply { javax.imageio.ImageIO.write(java.awt.image.BufferedImage(4, 4, 2), "png", this) }
+    val sub = File(dir, "sub").apply { mkdirs() }
+    println("Windows build ${ShellMenu.build}, Windows 11: ${ShellMenu.isWindows11}")
+    var t = System.nanoTime()
+    val handlers = ModernHandlers.all()
+    println("Windows 11 menu handlers: ${handlers.size} (${(System.nanoTime() - t) / 1_000_000} ms)")
+    c.check("handlers read", !ShellMenu.isWindows11 || handlers.isNotEmpty())
+    c.check("types: file", ModernHandlers.typesOf(txt.path) == setOf("*", ".txt"))
+    c.check("types: folder", ModernHandlers.typesOf(sub.path) == setOf("directory"))
+    c.check("types: drive", "drive" in ModernHandlers.typesOf("C:\\"))
+
+    fun run(name: String, paths: List<String>, bg: String? = null, mode: ShellMenuMode = ShellMenuMode.Auto): ShellMenuResult {
+        t = System.nanoTime()
+        val r = ShellMenu.query(paths, bg, mode)
+        println("\n== $name: ${r.source}, top ${r.top.size}, more ${r.more.size}, ${(System.nanoTime() - t) / 1_000_000} ms ${r.note ?: ""}")
+        dump(r.top)
+        if (r.more.isNotEmpty()) { println("   [Show more options]"); dump(r.more, "      ") }
+        return r
+    }
+    val a = run("text file (auto)", listOf(txt.path))
+    c.check("text file: Windows 11 menu", a.source == ShellMenuResult.Source.Modern || !ShellMenu.isWindows11, a.note)
+    c.check("text file: classic menu under Show more options", a.more.size >= 3 || a.source == ShellMenuResult.Source.Classic)
+    c.check("classic has Properties", (a.more + a.top).any { it.verb.equals("properties", true) })
+    c.check("a submenu has items (filled when opened)", (a.more + a.top).any { it.children.size >= 2 })
+    val b = run("picture", listOf(png.path))
+    c.check("picture: Windows 11 menu", b.source == ShellMenuResult.Source.Modern || !ShellMenu.isWindows11)
+    run("two files", listOf(txt.path, png.path))
+    val f = run("folder", listOf(sub.path))
+    c.check("folder: read", f.source != ShellMenuResult.Source.Unavailable, f.note)
+    val bg = run("folder background", emptyList(), bg = dir.path)
+    c.check("background: read", bg.source != ShellMenuResult.Source.Unavailable && (bg.top + bg.more).isNotEmpty(), bg.note)
+    // Running an item inside a submenu: 新增 ▸ 資料夾 in this test's own folder (makes one empty folder there).
+    val newMenu = (bg.top + bg.more).firstOrNull { i -> i.children.any { it.verb.equals("NewFolder", true) } }
+    c.check("background: 新增 ▸ submenu read", newMenu != null)
+    val before = dir.listFiles { f -> f.isDirectory }!!.map { it.name }.toSet()
+    newMenu?.children?.first { it.verb.equals("NewFolder", true) }?.run?.invoke()
+    var made: List<String> = emptyList()
+    repeat(40) { if (made.isEmpty()) { Thread.sleep(100); made = dir.listFiles { f -> f.isDirectory }!!.map { it.name }.filter { it !in before } } }
+    c.check("submenu item runs (a new folder appeared)", made.size == 1, made)
+    val classic = run("classic only", listOf(txt.path), mode = ShellMenuMode.Classic)
+    c.check("classic mode", classic.source == ShellMenuResult.Source.Classic && classic.top.size >= 3)
+    c.check("classic submenus are read (Send to, Open with, 7-Zip…)", classic.top.count { it.children.size >= 2 } >= 2, classic.top.filter { it.children.isNotEmpty() }.map { it.label })
+
+    // The Windows 11 menu can't be read (handlers registered, none can be created): fall back to classic.
+    ModernHandlers.testSet(listOf(ModernHandlers.Handler("Broken", "*", "x", "00000000-1111-2222-3333-444444444444")))
+    val fb = run("fallback", listOf(txt.path))
+    c.check("fallback to classic", fb.source == ShellMenuResult.Source.Classic && fb.top.size >= 3 && fb.note != null, fb.source)
+    val strict = run("Windows 11 only, broken", listOf(txt.path), mode = ShellMenuMode.Modern)
+    c.check("Windows 11 only: says unavailable", strict.source == ShellMenuResult.Source.Unavailable)
+    ModernHandlers.testSet(null)
+    c.check("off", ShellMenu.query(listOf(txt.path), mode = ShellMenuMode.Off).source == ShellMenuResult.Source.Unavailable)
+
+    // Names as people read them.
+    listOf("開啟檔案(&H)" to "開啟檔案", "傳送到(&N)" to "傳送到", "Open wit&h..." to "Open with...", "&Copy\tCtrl+C" to "Copy",
+        "Save && quit" to "Save & quit", "開啟檔案(&H)..." to "開啟檔案...").forEach { (raw, want) ->
+        c.check("label '$raw'", ShellMenu.cleanLabel(raw) == want, ShellMenu.cleanLabel(raw))
+    }
+    // What the person chose to show where.
+    ShellMenuPrefs.testReset()
+    val a1 = ShellItem("Edit in Notepad", null); val open = ShellItem("Open", "open"); val b1 = ShellItem("7-Zip", "SevenZip")
+    val sep = ShellItem("", null, separator = true); val c1 = ShellItem("Properties", "properties")
+    ShellMenuPrefs.noteSeen(listOf(a1), listOf(open, b1, sep, c1))
+    var (main, rest) = ShellMenuPrefs.arrange(listOf(a1, open), listOf(open, b1, sep, c1))
+    c.check("default: Windows 11 items in the main menu, duplicates hidden there", main.map { it.label } == listOf("Edit in Notepad"), main.map { it.label })
+    c.check("default: classic menu complete under more", rest.map { it.label } == listOf("Open", "7-Zip", "", "Properties"), rest.map { it.label })
+    ShellMenuPrefs.set("7-Zip", ShellPlace.Top); ShellMenuPrefs.set("Edit in Notepad", ShellPlace.Hidden); ShellMenuPrefs.set("Properties", ShellPlace.Hidden)
+    ShellMenuPrefs.arrange(listOf(a1), listOf(open, b1, sep, c1)).let { main = it.first; rest = it.second }
+    c.check("pinned to main, hidden gone", main.map { it.label } == listOf("7-Zip") && rest.none { it.label == "Properties" || it.label == "Edit in Notepad" }, main.map { it.label } to rest.map { it.label })
+    c.check("no separator left at the end", rest.lastOrNull()?.separator != true, rest.map { it.label })
+    ShellMenuPrefs.changeShowMore(false)
+    c.check("show more off", ShellMenuPrefs.arrange(listOf(a1), listOf(open, b1)).second.isEmpty())
+    ShellMenuPrefs.testReset()
+    println("\nSHELL MENU TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-errorlog <dir>: records, groups, limits, redacts and exports errors, all inside <dir>. */
+fun errorLogTest(dir: File) {
+    val c = Checks()
+    val logs = File(dir, "Logs").apply { deleteRecursively(); mkdirs() }
+    ErrorLog.testDir = logs; ErrorLog.enabled = true; ErrorLog.keepTrail = true
+    ErrorLog.crumb("navigate " + System.getProperty("user.home") + "\\Documents")
+    ErrorLog.crumb("key Ctrl+B → ToggleSidebar")
+    fun boom(): Nothing = throw IllegalStateException("test failure in " + System.getProperty("user.home") + "\\file.txt")
+    val r = runCatching { boom() }.exceptionOrNull()!!.let { ErrorLog.record(it, "test") }
+    c.check("recorded", r != null && File(logs, "${r.id}.json").exists())
+    val back = ErrorLog.reports().firstOrNull()
+    c.check("read back", back != null && back.type == "java.lang.IllegalStateException" && back.trail.size == 2 && back.version == AppInfo.version && back.stack.contains("boom"))
+    repeat(30) { runCatching { boom() }.exceptionOrNull()!!.let { ErrorLog.record(it, "test") } }
+    c.check("same error kept at most 20 times", ErrorLog.reports().count { it.signature == r!!.signature } == 20)
+    runCatching { listOf<Int>()[3] }.exceptionOrNull()!!.let { ErrorLog.record(it, "other") }
+    c.check("different error, different group", ErrorLog.reports().map { it.signature }.distinct().size == 2)
+    val red = ErrorLog.redact(back!!.text())
+    c.check("redact hides the user folder", !red.contains(System.getProperty("user.home"), true) && red.contains("%USERPROFILE%"))
+    val zip = ErrorLog.export(ErrorLog.reports(), dir, hideUser = true)
+    val entries = java.util.zip.ZipFile(zip).use { z -> z.entries().toList().map { e -> e.name to z.getInputStream(e).readBytes().decodeToString() } }
+    c.check("export zip", entries.size == 21 && entries.none { it.second.contains(System.getProperty("user.home"), true) }, entries.size)
+    // An uncaught error on another thread is recorded by the installed handler.
+    ErrorLog.install()
+    val th = Thread({ throw UnsupportedOperationException("uncaught test") }, "test-thread")
+    th.start(); th.join()
+    c.check("uncaught error recorded", ErrorLog.reports().any { it.type.endsWith("UnsupportedOperationException") && it.thread == "test-thread" })
+    ErrorLog.record(RuntimeException("crash"), "window", fatal = true)
+    c.check("crash noticed next start, once", ErrorLog.takeLastCrash() != null && ErrorLog.takeLastCrash() == null)
+    ErrorLog.enabled = false
+    c.check("off: nothing recorded", ErrorLog.record(RuntimeException("x"), "test") == null)
+    ErrorLog.enabled = true
+    ErrorLog.clear()
+    c.check("clear", ErrorLog.reports().isEmpty())
+    println("\nERROR LOG TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-background <dir>: the picture triggers, random rounds and the migration from "bgMode". */
+fun backgroundTest(dir: File) {
+    val c = Checks()
+    if (!Prefs.dir.canonicalPath.startsWith(dir.canonicalPath)) { println("REFUSED"); return }
+    Prefs.readOnly = true
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    s.bgImages.clear(); s.bgImages.addAll((1..5).map { "C:\\pics\\$it.jpg" }); s.bgIndex = 0; s.backgroundImage = s.bgImages[0]
+    s.bgShuffle = false
+    s.nextBackground(); c.check("list order", s.bgIndex == 1)
+    s.bgShuffle = true
+    var last = s.bgIndex
+    val seen = ArrayList<Int>()
+    var repeatsInRow = 0
+    repeat(50) { s.nextBackground(); if (s.bgIndex == last) repeatsInRow++; last = s.bgIndex; seen += s.bgIndex }
+    c.check("random: never the same picture twice in a row", repeatsInRow == 0)
+    c.check("random: every picture once per round", seen.chunked(5).all { it.toSet().size == 5 }, seen)
+    s.bgOnRestore = false; val before = s.bgIndex; s.onWindowRestored()
+    c.check("restore: off → no change", s.bgIndex == before)
+    s.bgOnRestore = true; s.onWindowRestored()
+    c.check("restore: on → next picture", s.bgIndex != before)
+    // Old settings: "bgMode" becomes the matching switch.
+    val m = Updates.migrations.first { it.id == "1.2.0-background-triggers" }
+    c.check("migrate Timer", m.apply(mapOf("bgMode" to "Timer")) == mapOf("bgOnTimer" to "true", "bgMode" to null))
+    c.check("migrate OnStartup", m.apply(mapOf("bgMode" to "OnStartup")) == mapOf("bgOnStart" to "true", "bgMode" to null))
+    c.check("migrate Single", m.apply(mapOf("bgMode" to "Single")) == mapOf("bgMode" to null))
+    c.check("nothing to migrate", m.apply(emptyMap()).isEmpty())
+    println("\nBACKGROUND TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/**
+ * --test-sha-flow <flow.fkflow.json> <dir>: runs a "verify SHA-256" shortcut (dry run: notifications are only
+ * logged, the clipboard isn't touched) on a file it makes, with a matching and a wrong expected hash.
+ */
+fun shaFlowTest(flowFile: File, dir: File) {
+    val c = Checks()
+    if (!Prefs.dir.canonicalPath.startsWith(dir.canonicalPath)) { println("REFUSED"); return }
+    Prefs.readOnly = true
+    dir.mkdirs()
+    val f = File(dir, "download.bin").apply { writeBytes(ByteArray(300_000) { (it * 31).toByte() }) }
+    val hash = java.security.MessageDigest.getInstance("SHA-256").digest(f.readBytes()).joinToString("") { "%02x".format(it) }
+    // Why the original failed: the hash used to come with the file name, so "equals" never matched.
+    c.check("old output (hash + name) never equals the bare hash", !FlowCompare.test("equals", "$hash  ${f.name}", hash))
+    c.check("equals ignores case and the line break a copied hash ends with", FlowCompare.test("equals", hash, hash.uppercase() + "\r\n"))
+    val flow = Flow.fromJson("test", flowFile.readText(Charsets.UTF_8))
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    s.tab.selection = setOf(f.path)
+    fun run(expected: String): List<String> {
+        val log = java.util.Collections.synchronizedList(ArrayList<String>())
+        val r = FlowRun(s, flow, listOf(f.path), mapOf("SHA" to expected), true, { null }, { log += it })
+        kotlinx.coroutines.runBlocking { r.runSteps(flow.steps) }
+        return log
+    }
+    val ok = run(hash.uppercase() + "\n")
+    ok.forEach { println("   $it") }
+    c.check("matching hash → ✅", ok.any { "✅" in it } && ok.none { "❌" in it })
+    val bad = run("0".repeat(64))
+    bad.filter { "🔔" in it }.forEach { println("   $it") }
+    c.check("wrong hash → ❌ with both values", bad.any { "❌" in it && hash in it })
+    s.tab.selection = emptySet()
+    val none = runCatching { run(hash) }
+    c.check("nothing selected → stops with a message", none.exceptionOrNull()?.message?.contains("選取") == true, none.exceptionOrNull()?.message)
+    println("\nSHA FLOW TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-tokens: what a shortcut field offers and flags ({var.x} set before, {param.x}, unknown tokens, a missing }). */
+fun tokensTest() {
+    val c = Checks()
+    val steps = listOf(
+        FlowStep("files.selected", saveAs = "FILES"),
+        FlowStep("file.hash", saveAs = "FILESHA"),
+        FlowStep("if", mapOf("then" to listOf(FlowStep("clipboard.get", saveAs = "INNER")))),
+        FlowStep("wait.skippable"),
+        FlowStep("notify"),
+    )
+    c.check("vars before step 1", FlowTokens.varsSetBy(steps.take(0)).isEmpty())
+    c.check("vars before step 3", FlowTokens.varsSetBy(steps.take(2)) == listOf("FILES", "FILESHA"))
+    c.check("vars set inside if count afterwards", "INNER" in FlowTokens.varsSetBy(steps.take(3)))
+    c.check("wait.skippable sets skipped", "skipped" in FlowTokens.varsSetBy(steps.take(4)))
+    val vars = listOf("FILES", "FILESHA"); val params = listOf("SHA")
+    c.check("valid text has no problems", FlowTokens.check("{var.FILESHA} vs {param.SHA} {first} {date:yyyyMMdd} {item.name} {env.PATH}{newline}", params, vars).isEmpty())
+    c.check("variable not set yet", FlowTokens.check("{var.COPYSHA}", params, vars).single().contains("COPYSHA"))
+    c.check("unknown parameter", FlowTokens.check("{param.X}", params, vars).single().contains("X"))
+    c.check("unknown token", FlowTokens.check("{frist}", params, vars).single().contains("frist"))
+    c.check("missing }", FlowTokens.check("hash: {var.FILESHA", params, vars).isNotEmpty())
+    c.check("plain braces in JSON are fine", FlowTokens.check("{\"a\": 1}", params, vars).isEmpty())
+    c.check("typing after {", FlowTokens.typing("hash {va", 8) == "va" && FlowTokens.typing("x {", 3) == "" && FlowTokens.typing("{var.A} x", 9) == null)
+    val cat = FlowTokens.catalog(params, vars)
+    c.check("catalog: variables first, then parameters", cat[0].text == "{var.FILES}" && cat[2].text == "{param.SHA}")
+    c.check("catalog has the built-ins", listOf("{first}", "{clipboard}", "{item.name}", "{newline}").all { t -> cat.any { it.text == t } })
+
+    // Search syntax in query fields: suggestions while typing, and mistakes that would make a filter match nothing.
+    c.check("typing a search term", SearchQuery.typingTerm("a.txt fi", 8) == "fi" && SearchQuery.typingTerm("!ext", 4) == "ext" && SearchQuery.typingTerm("x ", 2) == null)
+    c.check("fi offers file: and folder:", FlowTokens.searchMatches("fi").map { it.text } == listOf("file:"))
+    c.check("f offers file: and folder:", FlowTokens.searchMatches("f").map { it.text } == listOf("file:", "folder:"))
+    c.check("dm: offers its examples", FlowTokens.searchMatches("dm:").size >= 3 && FlowTokens.searchMatches("file:").isEmpty())
+    c.check("valid queries have no problems", listOf("file:", "folder: !ext:tmp", "ext:jpg;png size:>10mb dm:<30d", "file: dm:{param.D}", "regex:^a|b$", "C:\\x *.log", "\"a b\" | c").all { SearchQuery.problems(it).isEmpty() })
+    c.check("kind:file is flagged", SearchQuery.problems("kind:file").single().contains("kind:"))
+    c.check("file:pdf is flagged", SearchQuery.problems("file:pdf").isNotEmpty())
+    c.check("bad size / date / regex are flagged", SearchQuery.problems("size:big").isNotEmpty() && SearchQuery.problems("dm:someday").isNotEmpty() && SearchQuery.problems("regex:(").isNotEmpty())
+    c.check("file: really keeps only files", SearchQuery.parse("file:")!!.let { q ->
+        q.matches(SearchQuery.Candidate("a.txt", "a.txt", false, 1, 0, 0) { "C:\\a.txt" }) && !q.matches(SearchQuery.Candidate("d", "d", true, 0, 0, 0) { "C:\\d" })
+    })
+
+    // The AI's validator explains what the parser will do with the shortcut it drafted.
+    fun aiCheck(steps: String) = AiTools.check("""{"schema":"fileskmp.shortcut/v1","name":"t","accepts":["files"],"steps":[$steps]}""")
+    c.check("validator: kind:file", aiCheck("""{"action":"files.filter","args":{"query":"kind:file"}}""").any { "kind:" in it })
+    c.check("validator: {item} outside a per-item argument", aiCheck("""{"action":"notify","args":{"title":"{item.name}"}}""").any { "per-item" in it })
+    c.check("validator: {item} in a per-item argument is fine", aiCheck("""{"action":"file.rename","args":{"name":"{item.stem}-1.{item.ext}"}}""").none { "per-item" in it })
+    c.check("validator: variable not set yet", aiCheck("""{"action":"notify","args":{"text":"{var.h}"}},{"action":"file.hash","saveAs":"h"}""").any { "“h”" in it || "「h」" in it })
+    c.check("validator: variable set before is fine", aiCheck("""{"action":"file.hash","saveAs":"h"},{"action":"notify","args":{"text":"{var.h}"}}""").none { "Step 2" in it })
+    c.check("validator: non-ASCII saveAs", aiCheck("""{"action":"file.hash","saveAs":"雜湊"}""").any { "saveAs" in it })
+    c.check("validator: bad choice", aiCheck("""{"action":"stop.if","args":{"when":"nothing"}}""").any { "not one of" in it })
+    c.check("validator: inside each, {var.item} is known", aiCheck("""{"action":"each","args":{"steps":[{"action":"notify","args":{"text":"{var.item} {var.index}"}}]}}""").none { "Step 1.steps" in it })
+    val sampleProblems = FlowStore.samples().flatMap { f -> AiTools.check(f.toJson()).filter { !it.startsWith("Note") }.map { "${f.name}: $it" } }
+    c.check("built-in samples pass the validator", sampleProblems.isEmpty(), sampleProblems.joinToString("\n"))
+    val spec = FlowActions.specMarkdown()
+    c.check("spec documents the search syntax, per-item args and conditions", listOf("## Search syntax", "`file:`", "*per item*", "## Conditions", "stays exactly as typed").all { it in spec })
+    println("\nTOKENS TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** A small uncompressed AVI (moving colour bars) for the media test. */
+private fun writeTestAvi(f: File, w: Int = 64, h: Int = 48, frames: Int = 20, fps: Int = 10) {
+    val frameBytes = w * 3 * h
+    val b = java.io.ByteArrayOutputStream()
+    fun i32(v: Int) { b.write(v and 255); b.write(v shr 8 and 255); b.write(v shr 16 and 255); b.write(v shr 24 and 255) }
+    fun i16(v: Int) { b.write(v and 255); b.write(v shr 8 and 255) }
+    fun cc(s: String) = b.write(s.toByteArray(Charsets.US_ASCII))
+    val strl = 4 + (8 + 56) + (8 + 40)
+    val hdrl = 4 + (8 + 56) + (8 + strl)
+    val movi = 4 + frames * (8 + frameBytes)
+    val idx = frames * 16
+    cc("RIFF"); i32(4 + (8 + hdrl) + (8 + movi) + (8 + idx)); cc("AVI ")
+    cc("LIST"); i32(hdrl); cc("hdrl")
+    cc("avih"); i32(56); i32(1_000_000 / fps); i32(frameBytes * fps); i32(0); i32(0x10); i32(frames); i32(0); i32(1); i32(frameBytes); i32(w); i32(h); repeat(4) { i32(0) }
+    cc("LIST"); i32(strl); cc("strl")
+    cc("strh"); i32(56); cc("vids"); cc("DIB "); i32(0); i16(0); i16(0); i32(0); i32(1); i32(fps); i32(0); i32(frames); i32(frameBytes); i32(-1); i32(0); i16(0); i16(0); i16(w); i16(h)
+    cc("strf"); i32(40); i32(40); i32(w); i32(h); i16(1); i16(24); i32(0); i32(frameBytes); i32(0); i32(0); i32(0); i32(0)
+    cc("LIST"); i32(movi); cc("movi")
+    repeat(frames) { n ->
+        cc("00db"); i32(frameBytes)
+        for (y in 0 until h) for (x in 0 until w) { val v = ((x + n * 3) * 4) and 255; b.write(v); b.write(255 - v); b.write((y * 5) and 255) }
+    }
+    cc("idx1"); i32(idx)
+    repeat(frames) { n -> cc("00db"); i32(0x10); i32(4 + n * (8 + frameBytes)); i32(frameBytes) }
+    f.writeBytes(b.toByteArray())
+}
+
+/**
+ * --test-media <dir> [video.mp4]: plays a WAV and an AVI this test writes (and the given video, read
+ * only) with Windows' Media Foundation, muted, in an invisible off-screen window.
+ */
+fun mediaTest(dir: File, extra: File?) {
+    val c = Checks()
+    dir.mkdirs()
+    val wav = File(dir, "tone.wav")
+    run {
+        val rate = 44100f; val secs = 2
+        val pcm = ByteArray((rate * secs).toInt() * 2) { 0 }
+        for (i in 0 until pcm.size / 2) { val v = (Math.sin(i * 2 * Math.PI * 440 / rate) * 8000).toInt(); pcm[i * 2] = v.toByte(); pcm[i * 2 + 1] = (v shr 8).toByte() }
+        val fmt = javax.sound.sampled.AudioFormat(rate, 16, 1, true, false)
+        javax.sound.sampled.AudioSystem.write(javax.sound.sampled.AudioInputStream(java.io.ByteArrayInputStream(pcm), fmt, (pcm.size / 2).toLong()),
+            javax.sound.sampled.AudioFileFormat.Type.WAVE, wav)
+    }
+    val avi = File(dir, "bars.avi").also { writeTestAvi(it) }
+    // An invisible host window for the video (off screen, no taskbar button).
+    val host = java.awt.Window(null as java.awt.Frame?).apply { setBounds(-4000, -4000, 320, 240); isVisible = true }
+    val canvas = java.awt.Canvas().apply { setSize(320, 240) }
+    host.add(canvas); host.validate()
+    Thread.sleep(300)
+    val hwnd = WindowCorners.hwnd(canvas) ?: 0L
+    c.check("video surface has a window handle", hwnd != 0L)
+
+    fun exercise(name: String, f: File, h: Long, expectSize: Pair<Int, Int>?, expectLen: Double?) {
+        val pl = MediaEngine.open(f.path, h, autoPlay = false)
+        c.check("$name: opened", pl != null)
+        if (pl == null) return
+        pl.mute(true); pl.volume(0f); pl.play()
+        var len = 0.0
+        repeat(40) { if (len <= 0.0) { Thread.sleep(100); len = pl.duration() } }
+        println("   $name: length ${"%.2f".format(len)} s, state ${pl.state()}, size ${pl.videoSize()}")
+        c.check("$name: length known", len > 0 && (expectLen == null || kotlin.math.abs(len - expectLen) < 0.3), len)
+        if (expectSize != null) c.check("$name: picture size", pl.videoSize() == expectSize, pl.videoSize())
+        val p0 = pl.position(); Thread.sleep(700); val p1 = pl.position()
+        c.check("$name: plays (position moves)", pl.state() == MediaEngine.State.Playing && p1 > p0, "$p0 → $p1")
+        pl.pause(); Thread.sleep(200)
+        c.check("$name: pause", pl.state() == MediaEngine.State.Paused)
+        pl.seek(len / 2); Thread.sleep(300)
+        c.check("$name: seek", kotlin.math.abs(pl.position() - len / 2) < 0.4, pl.position())
+        pl.close()
+        c.check("$name: closed", pl.state() == MediaEngine.State.Closed)
+    }
+    exercise("wav", wav, 0L, null, 2.0)
+    exercise("avi", avi, hwnd, 64 to 48, 2.0)
+    if (extra != null && extra.isFile) exercise("mp4 (H.264)", extra, hwnd, null, null)
+    c.check("not a media file: refused or fails cleanly", runCatching {
+        val pl = MediaEngine.open(File(dir, "tone.wav").path + ".missing", 0L, autoPlay = false); pl?.close(); pl == null
+    }.getOrDefault(false))
+    host.dispose()
+    println("\nMEDIA TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-xls <file.xls>...: reads old Excel workbooks (read only) and prints their sheets. */
+fun xlsTest(files: List<File>) {
+    val c = Checks()
+    files.forEach { f ->
+        val r = runCatching { Xls.read(f) }
+        c.check("${f.name}: read", r.isSuccess, r.exceptionOrNull())
+        r.getOrNull()?.forEach { sh ->
+            println("   [${sh.name}] ${sh.total} rows")
+            sh.rows.filter { row -> row.any { it.isNotBlank() } }.take(4).forEach { row -> println("      " + row.joinToString(" | ").take(160)) }
+        }
+        c.check("${f.name}: has sheets with cells", r.getOrNull().orEmpty().any { sh -> sh.rows.any { row -> row.any { it.isNotBlank() } } })
+    }
+    println("\nXLS TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-archives <file>...: lists archives (read only) and prints a summary of each. */
+fun archivesTest(files: List<File>) {
+    val c = Checks()
+    files.forEach { f ->
+        val r = runCatching { Archives.list(f) }
+        val l = r.getOrNull()
+        println("   ${f.name}: ${l?.format} ${l?.entries?.size} entries ${l?.note ?: ""} ${r.exceptionOrNull()?.message ?: ""}")
+        l?.entries?.take(6)?.forEach { e -> println("      ${if (e.dir) "[D]" else "   "} ${e.path}  ${e.size}  packed ${e.packed}  ${if (e.modified > 0) java.time.Instant.ofEpochMilli(e.modified) else ""}") }
+        c.check("${f.name}: listed", l != null && l.entries.isNotEmpty(), r.exceptionOrNull())
+    }
+    println("\nARCHIVES TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** A one-page PDF with a line of text (offsets in the xref table computed). */
+private fun writeTestPdf(f: File) {
+    val objs = listOf(
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        "<< /Length 44 >>\nstream\nBT /F1 24 Tf 40 100 Td (FilesKmp PDF) Tj ET\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    )
+    val sb = StringBuilder("%PDF-1.4\n")
+    val offsets = ArrayList<Int>()
+    objs.forEachIndexed { i, o -> offsets += sb.length; sb.append("${i + 1} 0 obj\n$o\nendobj\n") }
+    val xref = sb.length
+    sb.append("xref\n0 ${objs.size + 1}\n0000000000 65535 f \n")
+    offsets.forEach { sb.append("%010d 00000 n \n".format(it)) }
+    sb.append("trailer\n<< /Size ${objs.size + 1} /Root 1 0 R >>\nstartxref\n$xref\n%%EOF\n")
+    f.writeText(sb.toString(), Charsets.ISO_8859_1)
+}
+
+/** A minimal Word document (one paragraph). */
+private fun writeTestDocx(f: File) {
+    java.util.zip.ZipOutputStream(f.outputStream()).use { z ->
+        fun put(n: String, t: String) { z.putNextEntry(java.util.zip.ZipEntry(n)); z.write(t.toByteArray(Charsets.UTF_8)); z.closeEntry() }
+        put("[Content_Types].xml", """<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>""")
+        put("_rels/.rels", """<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>""")
+        put("word/document.xml", """<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>FilesKmp 預覽測試</w:t></w:r></w:p></w:body></w:document>""")
+    }
+}
+
+/**
+ * --test-shell-preview <dir> [file...]: opens a PDF and a .docx this test writes (and any files given,
+ * read only) with Windows' preview handlers in an invisible off-screen window.
+ */
+fun shellPreviewTest(dir: File, extra: List<File>) {
+    val c = Checks()
+    dir.mkdirs()
+    val pdf = File(dir, "test.pdf").also { writeTestPdf(it) }
+    val docx = File(dir, "test.docx").also { writeTestDocx(it) }
+    val findChild = java.lang.foreign.Linker.nativeLinker().downcallHandle(
+        java.lang.foreign.SymbolLookup.libraryLookup("user32", java.lang.foreign.Arena.global()).find("FindWindowExW").orElseThrow(),
+        java.lang.foreign.FunctionDescriptor.of(java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS))
+    listOf("txt", "csv", "xlsx").forEach { e -> c.check("own previewer kept for .$e", ShellPreview.handlerFor(e) == null) }
+    (listOf(pdf, docx) + extra).forEach { f ->
+        val ext = f.name.substringAfterLast('.').lowercase()
+        val clsid = ShellPreview.handlerFor(ext)
+        println("   .$ext handler: $clsid")
+        c.check("${f.name}: handler registered", clsid != null)
+        if (clsid == null) return@forEach
+        val host = java.awt.Window(null as java.awt.Frame?).apply { setBounds(-4000, -4000, 640, 480); isVisible = true }
+        val canvas = java.awt.Canvas().apply { setSize(640, 480) }
+        host.add(canvas); host.validate(); Thread.sleep(300)
+        val hwnd = WindowCorners.hwnd(canvas) ?: 0L
+        val t0 = System.nanoTime()
+        val r = runCatching { ShellPreview.open(f.path, clsid, hwnd, 640, 480) }
+        println("   ${f.name}: ${if (r.isSuccess) "shown" else r.exceptionOrNull()?.message} in ${(System.nanoTime() - t0) / 1_000_000} ms")
+        c.check("${f.name}: preview opened", r.isSuccess, r.exceptionOrNull())
+        var child = 0L
+        repeat(50) { if (child == 0L) { Thread.sleep(100); child = (findChild.invokeWithArguments(java.lang.foreign.MemorySegment.ofAddress(hwnd), java.lang.foreign.MemorySegment.NULL, java.lang.foreign.MemorySegment.NULL, java.lang.foreign.MemorySegment.NULL) as java.lang.foreign.MemorySegment).address() } }
+        c.check("${f.name}: the handler drew its window inside ours", child != 0L)
+        r.getOrNull()?.let { h -> h.resize(800, 600); h.close() }
+        host.dispose()
+    }
+    println("\nSHELL PREVIEW TEST: ${c.pass} passed, ${c.fail} failed")
+}

@@ -43,8 +43,13 @@ sealed class QlContent {
     class Markdown(val blocks: List<MdBlock>, val source: Text, val dir: File?) : QlContent()
     /** CSV or a workbook: sheets of rows ([total] = rows in the file, more than shown when large). */
     class Table(val sheets: List<Sheet>) : QlContent()
-    class Media(val poster: ImageBitmap?, val video: Boolean) : QlContent()
+    /** Video or sound: played here when [playable] (MediaPlayer.kt), else its poster and the default player. */
+    class Media(val poster: ImageBitmap?, val video: Boolean, val playable: Boolean = false) : QlContent()
     class Message(val text: String) : QlContent()
+    /** What's inside a zip / tar / gz / rar / 7z / xz (Archives.kt). */
+    class Archive(val listing: ArchListing) : QlContent()
+    /** A format Windows has a preview handler for (PDF, Word, PowerPoint…): drawn by that handler (ShellPreview.kt). */
+    class Shell(val path: String, val clsid: String) : QlContent()
     class Sheet(val name: String, val rows: List<List<String>>, val total: Int)
 }
 
@@ -78,19 +83,28 @@ object QuickLook {
                 val src = text(f) as QlContent.Text
                 QlContent.Markdown(Markdown.parse(src.lines.joinToString("\n")), src, f.parentFile)
             }
+            Archives.handles(f.name) -> QlContent.Archive(Archives.list(f))
             ext == "csv" || ext == "tsv" -> csv(f, if (ext == "tsv") '\t' else null)
             ext == "xlsx" || ext == "xlsm" -> xlsx(f)
-            ext == "xls" -> QlContent.Message(S.qlXlsOld)
-            ext in Thumbnails.videoExt || ext in audioExt -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), ext in Thumbnails.videoExt)
-            ext in FsExtra.textExt || ext in moreText || ext.isEmpty() || looksLikeText(f) -> text(f)
+            ext == "xls" -> QlContent.Table(Xls.read(f, TABLE_MAX_ROWS, SHEET_MAX).map { QlContent.Sheet(it.name, it.rows, it.total) }.ifEmpty { return QlContent.Message(S.qlNoPreview) })
+            ext in Thumbnails.videoExt || ext in audioExt -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), ext in Thumbnails.videoExt, playable = true)
+            ext in FsExtra.textExt || ext in moreText -> text(f)
+            // PDF, Word, PowerPoint…: Windows' own preview handler, when this PC has one for the type.
+            ShellPreview.handlerFor(ext) != null -> QlContent.Shell(item.path, ShellPreview.handlerFor(ext)!!)
+            ext.isEmpty() || looksLikeText(f) -> text(f)
             Thumbnails.supports(item) -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), false)
             else -> QlContent.Message(S.qlNoPreview)
         }
     }
 
-    /** The first bytes contain no NULs: treat it as text. */
+    /** Starts of binary formats that can begin with readable bytes (PDF, PostScript, RTF with pictures…). */
+    private val binarySignatures = listOf("%PDF-", "%!PS", "PK\u0003\u0004", "Rar!", "7z\u00BC\u00AF", "MZ")
+
+    /** The first bytes contain no NULs and aren't a known binary format: treat it as text. */
     private fun looksLikeText(f: File): Boolean = try {
-        f.inputStream().use { val b = it.readNBytes(4096); b.isNotEmpty() && b.none { x -> x == 0.toByte() } }
+        f.inputStream().use { val b = it.readNBytes(4096)
+            val start = String(b, 0, minOf(8, b.size), Charsets.ISO_8859_1)
+            b.isNotEmpty() && b.none { x -> x == 0.toByte() } && binarySignatures.none { start.startsWith(it) } }
     } catch (_: Exception) { false }
 
     /** UTF-8 (with or without BOM) or UTF-16 by BOM; otherwise Windows' own code page (Big5 here). */
@@ -287,7 +301,10 @@ fun QuickLookDialog(s: AppState, path: String) {
                         }
                     }
                     is QlContent.Table -> TablePreview(c)
-                    is QlContent.Media -> MediaPreview(c, item) { Fs.open(path) }
+                    is QlContent.Archive -> ArchivePreview(c.listing)
+                    is QlContent.Shell -> ShellPreviewView(c.path, c.clsid, s.translucentActive) { s.quickLook = null; Fs.open(path) }
+                    is QlContent.Media -> if (c.playable) MediaPlayerView(path, c.video, c.poster, item, s.translucentActive) { s.quickLook = null; Fs.open(path) }
+                        else MediaPreview(c, item) { Fs.open(path) }
                     is QlContent.Message -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                         if (item != null) FileIcon(item, 96.dp)
                         Spacer(Modifier.height(12.dp))

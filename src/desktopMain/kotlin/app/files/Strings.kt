@@ -293,7 +293,11 @@ object S {
     val qlOpen = t("Open", "開啟")
     val qlPlay = t("Play in the default app", "以預設應用程式播放")
     val qlNoPreview = t("No preview for this kind of file", "此類型的檔案沒有預覽")
-    val qlXlsOld = t("Old .xls workbooks can't be previewed here; open it in Excel.", "舊版 .xls 活頁簿無法在此預覽，請以 Excel 開啟。")
+    val qlAdobeSlow = t(
+        "This PDF is previewed by Adobe, which is slow to start and can leave the app not responding for a while. Please wait, or switch this PC's PDF preview handler to Microsoft PDF Previewer (Edge).",
+        "此 PDF 由 Adobe 預覽，開啟較久，可能導致應用程式暫時無回應，請稍候。也可以嘗試把電腦的 PDF 預覽預設處理常式改為 Microsoft PDF Previewer（Edge）。",
+    )
+    val qlXlsOld =t("Old .xls workbooks can't be previewed here; open it in Excel.", "舊版 .xls 活頁簿無法在此預覽，請以 Excel 開啟。")
     fun qlRowsShown(shown: Int, total: Int) = t("Showing $shown of $total rows", "顯示 $total 列中的前 $shown 列")
     val mdPreview = t("Preview", "預覽")
     val mdSource = t("Source", "原始碼")
@@ -390,6 +394,84 @@ object S {
     val flowStop = t("Stop", "停止"); val flowRunning = t("Running…", "執行中…"); val flowDone = t("Done", "完成"); val flowStopped = t("Stopped", "已停止")
     val flowCopyResult = t("Copy result", "複製結果"); val flowContinue = t("Continue", "繼續")
     val flowBusy = t("A shortcut is already running", "已有捷徑正在執行")
+    val flowIn = t("Input", "輸入"); val flowOut = t("Output", "輸出")
+    val flowInputFrom = t("Works on", "輸入來源"); val flowSaveAs = t("Save result as variable", "結果存成變數")
+    val flowSearchActions = t("Search actions…", "搜尋動作…")
+    val flowAccounts = t("Accounts", "帳戶")
+    val flowBrowseApps = t("Browse…", "瀏覽…"); val flowCliHelp = t("Command-line options", "命令列選項")
+    val flowAppsLoading = t("Looking for apps…", "正在尋找應用程式…")
+    val flowCliHint = t("Click an option to add it to the arguments.", "按一下選項即可加入參數。")
+    val flowWaitSkip = t("Press any key or click to continue", "按任意鍵或按一下以繼續")
+    val flowShowValues = t("values", "個值")
+    val flowSmtp = t("Email (SMTP)", "電子郵件（SMTP）"); val flowTwilio = t("Text messages (Twilio)", "簡訊（Twilio）")
+    val flowAccountsHint = t(
+        "Used by Send email (smtp) and Send text message (twilio). Passwords and tokens are encrypted with Windows DPAPI: only your Windows account on this PC can read them. Drafts and Outlook need no account.",
+        "供「寄送電子郵件（smtp）」與「傳送簡訊（twilio）」使用。密碼與權杖以 Windows DPAPI 加密，只有這台電腦上你的 Windows 帳戶能解開。草稿與 Outlook 方式不需要帳戶。")
+    val flowHost = t("Server", "伺服器"); val flowPort = t("Port", "連接埠"); val flowSecurity = t("Security", "加密")
+    val flowUser = t("User name", "使用者名稱"); val flowPassword = t("Password", "密碼"); val flowFrom = t("From", "寄件者")
+    val flowPasswordKeep = t("(saved — leave empty to keep)", "（已儲存，留白則不變）")
+    val flowUnsaved = t("unsaved changes", "尚未儲存的修改"); val flowDiscard = t("Discard changes", "放棄修改")
+    val flowBackToEditor = t("Back to editor", "返回編輯")
+    // 捷徑 → AI 助手 (AiAgent.kt)
+    val aiTab = t("AI assistant", "AI 助手"); val aiSettings = t("Settings", "設定"); val aiNewChat = t("New chat", "新對話")
+    val aiSend = t("Send", "傳送"); val aiStop = t("Stop", "停止"); val aiThinking = t("Thinking…", "思考中…")
+    val aiPlaceholder = t("Describe the shortcut you want, e.g. \"rename the selected photos by date taken\"", "描述你想要的捷徑，例如「把選取的相片依拍攝日期重新命名」")
+    val aiIntro = t(
+        "Describe what you want to automate. The assistant drafts a shortcut, checks it, and asks you before adding it. It can't run shortcuts, read your files or reach anything else: it only has the tools listed under Settings.",
+        "描述你想自動化的事，助手會設計捷徑、檢查後再請你同意加入。它不能執行捷徑、讀取檔案或做其他事，只能使用「設定」中列出的工具。")
+    val aiKey = t("Anthropic API key", "Anthropic API 金鑰"); val aiModel = t("Model", "模型"); val aiEffort = t("Effort", "思考深度")
+    val aiKeyHint = t(
+        "Encrypted with Windows DPAPI: only your Windows account on this PC can read it. Leave empty to use the ANTHROPIC_API_KEY environment variable. Conversations are sent to the selected API.",
+        "以 Windows DPAPI 加密，只有這台電腦上你的 Windows 帳戶能解開。留白則使用環境變數 ANTHROPIC_API_KEY。對話內容會傳送到所選的 API。")
+    val aiKeyRemove = t("Remove key", "移除金鑰"); val aiKeyShort = t("API key", "API 金鑰")
+    val aiProvider = t("Provider", "提供者"); val aiBaseUrl = t("API address", "API 網址")
+    val aiProviderClaudeCompat = t("Claude-compatible API", "Claude 相容 API"); val aiProviderOpenAiCompat = t("OpenAI-compatible API", "OpenAI 相容 API")
+    val aiEffortDefault = t("not sent", "不指定")
+    val aiAnthropicHint = t("Anthropic's own API (api.anthropic.com).", "Anthropic 官方 API（api.anthropic.com）。")
+    val aiClaudeCompatHint = t(
+        "Any server that speaks the Claude Messages API (a gateway, proxy or another host). Enter its base address without /v1/messages. Set Effort to \"not sent\" if the server rejects it.",
+        "任何支援 Claude Messages API 的伺服器（閘道、代理或其他服務）。輸入基本網址，不含 /v1/messages。若伺服器不接受「思考深度」，請設為「不指定」。")
+    val aiOpenAiCompatHint = t(
+        "Any server that speaks OpenAI's chat completions with function calling: OpenAI, Azure OpenAI, OpenRouter, Ollama, LM Studio, vLLM… Enter the base address that ends before /chat/completions (often …/v1). The model must support tool calls. A server on this PC may need no key.",
+        "任何支援 OpenAI chat completions 與 function calling 的伺服器：OpenAI、Azure OpenAI、OpenRouter、Ollama、LM Studio、vLLM… 輸入 /chat/completions 之前的基本網址（通常以 /v1 結尾）。模型必須支援工具呼叫。本機伺服器可不填金鑰。")
+    val aiModelHintOpenAi = t("model id, e.g. the name your server lists", "模型名稱，例如伺服器列出的名稱")
+    val aiApiFormat = t("API format", "API 格式")
+    val aiApiChat = t("Chat Completions (/chat/completions)", "Chat Completions（/chat/completions）")
+    val aiApiResponses = t("Responses (/responses, OpenAI reasoning models)", "Responses（/responses，OpenAI 推理模型）")
+    val aiOpenAiApiHint = t(
+        "Most compatible servers only have Chat Completions. OpenAI reasoning models (e.g. gpt-5.x) can't use tools with reasoning there: the assistant then retries with reasoning \"none\". Choose Responses to keep reasoning on.",
+        "多數相容伺服器只支援 Chat Completions。OpenAI 推理模型（例如 gpt-5.x）在 Chat Completions 無法同時推理與使用工具，此時助手會自動改用 reasoning「none」重試。若要保留推理，請改用 Responses。")
+    val aiReasoningNone = t("(this model can't reason and use tools on Chat Completions: retried with reasoning_effort \"none\"; choose Responses under Settings to keep reasoning)",
+        "（此模型在 Chat Completions 無法同時推理與使用工具：已改用 reasoning_effort「none」重試；若要保留推理，請在「設定」改用 Responses）")
+    val aiProviderChanged = t("(provider changed: new conversation)", "（已切換提供者：開始新對話）")
+    val aiTools = t("Tools the assistant may call", "助手可以呼叫的工具")
+    val aiToolsHint = t(
+        "These are the only tools; there is no way for the assistant to add others. Auto: runs without asking. Ask: you approve every call. Off: not offered. Proposing a shortcut always asks, and what you accept is an untrusted shortcut: it is never run for you, and its program / data-sending steps still ask when you run it.",
+        "助手只能使用這些工具，無法自行增加。自動：不經詢問。詢問：每次呼叫都需要你同意。關閉：不提供給助手。「提出捷徑」一定會詢問；你接受的捷徑不受信任，不會自動執行，執行程式或傳送資料的步驟在執行時仍會詢問。")
+    val aiPolicyAuto = t("Auto", "自動"); val aiPolicyAsk = t("Ask", "詢問"); val aiPolicyOff = t("Off", "關閉")
+    val aiAllow = t("Allow", "允許"); val aiAllowed = t("Allowed", "已允許"); val aiDenied = t("Declined", "已拒絕"); val aiOpen = t("Open", "開啟")
+    val aiNoKey = t("No API key: add one under Settings (or set ANTHROPIC_API_KEY).", "尚未設定 API 金鑰：請在「設定」中加入（或設定環境變數 ANTHROPIC_API_KEY）。")
+    val aiBadKey = t("The API key was rejected.", "API 金鑰無效。")
+    val aiRateLimited = t("Rate limited by the API; try again in a moment.", "API 請求太頻繁，請稍後再試。")
+    val aiNetwork = t("Can't reach the API: ", "無法連線到 API：")
+    val aiStopped = t("Stopped.", "已停止。")
+    val aiRefused = t("The model declined this request. ", "模型拒絕了這個要求。")
+    val aiFallback = t("(answered by a fallback model)", "（由備援模型回答）")
+    val aiTooLong = t("The reply was cut off (too long); nothing it asked for was run. Try a smaller request.", "回覆過長被截斷，其中的工具呼叫未執行。請把需求拆小一點。")
+    val aiTooManySteps = t("Stopped after too many steps in one turn.", "單次回合步驟過多，已停止。")
+    // 捷徑 → 權限 (FlowSafety.kt)
+    val flowPermissions = t("Permissions", "權限"); val flowDeny = t("Deny", "拒絕")
+    val flowNetTitle = t("Trusted hosts", "信任的網域")
+    val flowNetRestrict = t("Ask before connecting to a host not on this list", "連線到清單以外的主機前先詢問")
+    val flowNetHint = t(
+        "HTTP request and Open URL may reach these hosts without asking; anything else asks first. One per line: example.com (that host only), *.example.com (the domain and every subdomain), 10.0.0.5, 192.168.0.0/16, ::1. A pasted URL is cut down to its host. Redirects are checked too.",
+        "「HTTP 請求」與「開啟網址」可以不經詢問連到這些主機，其他主機會先詢問。每行一個：example.com（只有這個主機）、*.example.com（網域與所有子網域）、10.0.0.5、192.168.0.0/16、::1。貼上網址會只保留主機名稱。重新導向也會檢查。")
+    val flowNetBad = t("Not a host or address, skipped: ", "不是主機或位址，已略過：")
+    val flowTrustTitle = t("Trusted shortcuts", "受信任的捷徑")
+    val flowTrustHint = t(
+        "Steps that run programs or send data out (Run script, Start app, Open, Open with, Send email, Send text message, Run shortcut, Open URL with a non-web address) ask before they run, unless you trusted the shortcut. Imported shortcuts start untrusted; changing one of those steps asks again. Built-in samples are trusted as shipped.",
+        "會執行程式或把資料送出的步驟（執行指令碼、啟動應用程式、開啟、以應用程式開啟、寄送電子郵件、傳送簡訊、執行捷徑、開啟非網頁的網址）在執行前會先詢問，除非你已信任這個捷徑。匯入的捷徑一開始不受信任；修改這些步驟後會重新詢問。內建範例在未修改時視為受信任。")
+    val flowTrustReset = t("Forget all trusted shortcuts", "取消信任所有捷徑")
     // 圖示大小
     val iconSize = t("Icon size", "圖示大小")
     // 分割畫面

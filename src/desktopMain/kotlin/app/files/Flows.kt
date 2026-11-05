@@ -30,7 +30,28 @@ import kotlin.coroutines.coroutineContext
  */
 
 class FlowParam(val id: String, val label: String, val type: String = "text", val default: String = "")
-class FlowStep(val action: String, val args: Map<String, Any?> = emptyMap(), val enabled: Boolean = true)
+
+/**
+ * What a step takes and leaves. Every value is carried as text; the type says what the text means
+ * (a file path, a number, "true"/"false", a JSON document, a date) so the editor can show it and
+ * warn when a step gets something it can't use.
+ */
+enum class VType(val zh: String, val en: String) {
+    None("無", "nothing"), Anything("任何值", "anything"), Files("檔案", "files"), Text("文字", "text"),
+    Number("數字", "number"), Bool("是/否", "true/false"), Json("字典/JSON", "dictionary/JSON"), Date("日期時間", "date"),
+    /** Output only: the step hands on what it got. */
+    Same("同輸入", "same as input");
+    val label get() = if (S.zh) zh else en
+}
+
+/**
+ * One step. [input] picks what it works on: "" (the previous step's result), "nothing",
+ * "shortcut" (what the shortcut was started with) or "var:NAME". [saveAs] also keeps the result
+ * in a variable ({var.NAME}).
+ */
+class FlowStep(val action: String, val args: Map<String, Any?> = emptyMap(), val enabled: Boolean = true, val input: String = "", val saveAs: String = "") {
+    fun with(args: Map<String, Any?> = this.args, enabled: Boolean = this.enabled, input: String = this.input, saveAs: String = this.saveAs) = FlowStep(action, args, enabled, input, saveAs)
+}
 
 class Flow(
     val id: String,
@@ -57,7 +78,9 @@ class Flow(
     companion object {
         fun stepsJson(steps: List<FlowStep>): List<Any?> = steps.map { st ->
             val m = linkedMapOf<String, Any?>("action" to st.action)
+            if (st.input.isNotEmpty()) m["input"] = st.input
             if (st.args.isNotEmpty()) m["args"] = st.args.mapValues { (_, v) -> if (v is List<*> && v.all { it is FlowStep }) stepsJson(v.filterIsInstance<FlowStep>()) else v }
+            if (st.saveAs.isNotEmpty()) m["saveAs"] = st.saveAs
             if (!st.enabled) m["enabled"] = false
             m
         }
@@ -69,7 +92,7 @@ class Flow(
             val args = (m["args"] as? Map<String, Any?>).orEmpty().mapValues { (k, v) ->
                 if (FlowActions.byId[action]?.args?.firstOrNull { it.id == k }?.type == "steps") stepsFrom(v) else v
             }
-            FlowStep(action, args, m["enabled"] as? Boolean ?: true)
+            FlowStep(action, args, m["enabled"] as? Boolean ?: true, m["input"] as? String ?: "", m["saveAs"] as? String ?: "")
         }
 
         /** Reads one shortcut; throws with a readable message when it isn't valid. */
@@ -91,7 +114,10 @@ class Flow(
     }
 }
 
-/** One argument of an action: its type drives the editor ("text", "multiline", "path", "folder", "bool", "number", "choice", "steps"). */
+/**
+ * One argument of an action: its type drives the editor ("text", "multiline", "query" (search syntax), "path", "folder",
+ * "bool", "number", "choice", "steps", "app" (an app on this PC), "flow" (another shortcut)).
+ */
 class ArgSpec(val id: String, val zh: String, val en: String, val type: String = "text", val default: Any? = "", val choices: List<String> = emptyList()) {
     val label get() = if (S.zh) zh else en
 }
@@ -101,16 +127,37 @@ class FlowAction(
     val args: List<ArgSpec> = emptyList(),
     /** Changes files or the system: skipped (only logged) in a dry run. */
     val changes: Boolean = false,
+    /** What it works on ([VType.None] = ignores the values it gets). */
+    val input: VType = VType.Anything,
+    /** What it leaves ([VType.Same] = hands its input on unchanged). */
+    val output: VType = VType.Same,
+    /** When the output type depends on an argument (e.g. http.request's "output"). */
+    val outputFor: ((FlowStep) -> VType)? = null,
     val run: suspend FlowRun.(FlowStep) -> Unit,
 ) {
     val label get() = if (S.zh) zh else en
     val description get() = if (S.zh) descZh else descEn
+    fun retyped(input: VType, output: VType, category: String) = FlowAction(id, zh, en, category, descZh, descEn, args, changes, input, output, outputFor, run)
+    fun outputOf(st: FlowStep, incoming: VType): VType = (outputFor?.invoke(st) ?: output).let { if (it == VType.Same) incoming else it }
+    /** "檔案 → 文字" */
+    val ioLabel get() = input.label + " → " + (if (outputFor != null) (if (S.zh) "依設定" else "depends") else output.label)
 }
 
-/** Questions a shortcut asks while it runs (ui.input / ui.choose / ui.confirm). */
+/** Questions a shortcut asks while it runs (ui.input / ui.choose / ui.confirm / wait.skippable / debug.show). */
 class FlowPrompt(val kind: String, val title: String, val options: List<String>, val default: String, val answer: kotlinx.coroutines.CompletableDeferred<String?>)
 
 class FlowStopped(msg: String) : Exception(msg)
+
+fun inputLabel(input: String): String = when {
+    input.isEmpty() || input == "previous" -> if (S.zh) "上一步的結果" else "previous step"
+    input == "nothing" -> if (S.zh) "不使用輸入" else "nothing"
+    input == "shortcut" -> if (S.zh) "捷徑的輸入" else "shortcut input"
+    input.startsWith("var:") -> (if (S.zh) "變數 " else "variable ") + input.removePrefix("var:")
+    else -> input
+}
+
+/** A number as text without a needless ".0". */
+fun numText(d: Double): String = if (d == Math.rint(d) && kotlin.math.abs(d) < 1e15) d.toLong().toString() else d.toString()
 
 /** One run of a shortcut: the current values, variables, the log, and how to ask the person. */
 class FlowRun(
@@ -121,10 +168,18 @@ class FlowRun(
     val dryRun: Boolean,
     val ask: suspend (FlowPrompt) -> String?,
     val onLog: (String) -> Unit,
+    /** How deep in flow.run calls this run is (a shortcut may call others, up to [MAX_DEPTH]). */
+    val depth: Int = 0,
 ) {
+    /** Steps and hosts the person allowed once during this run (FlowSafety.kt). */
+    val permissions = FlowPermissions()
+    /** What the shortcut was started with (a step's input "shortcut"). */
+    val initial: List<String> = input
     var items: List<String> = input
     val vars = HashMap<String, List<String>>()
     var stepNo = 0
+
+    companion object { const val MAX_DEPTH = 8 }
 
     fun log(text: String) = onLog(text)
 
@@ -157,6 +212,11 @@ class FlowRun(
             key == "count" -> items.size.toString()
             key == "input" -> items.joinToString("\n")
             key == "first" -> items.firstOrNull() ?: ""
+            key == "last" -> items.lastOrNull() ?: ""
+            key == "newline" -> "\n"; key == "tab" -> "\t"
+            key == "music" -> known("Music"); key == "videos" -> known("Videos")
+            key == "temp" -> System.getProperty("java.io.tmpdir").trimEnd('\\')
+            key.startsWith("env.") -> System.getenv(key.removePrefix("env.")) ?: ""
             key == "date" -> LocalDateTime.now().format(runCatching { DateTimeFormatter.ofPattern(a.ifEmpty { "yyyy-MM-dd" }) }.getOrDefault(DateTimeFormatter.ISO_LOCAL_DATE))
             key == "folder" -> if (s.tab.isVirtual) home else s.tab.location
             key == "home" -> home
@@ -191,9 +251,20 @@ class FlowRun(
             if (!st.enabled) continue
             val action = FlowActions.byId[st.action] ?: throw FlowStopped((if (S.zh) "未知的動作：" else "Unknown action: ") + st.action)
             stepNo++
-            log("▶ $stepNo. ${action.label}" + if (dryRun && action.changes) (if (S.zh) "（試執行）" else " (dry run)") else "")
+            items = when {
+                st.input.isEmpty() || st.input == "previous" -> items
+                st.input == "nothing" -> emptyList()
+                st.input == "shortcut" -> initial
+                st.input.startsWith("var:") -> vars[st.input.removePrefix("var:")] ?: emptyList()
+                else -> items
+            }
+            log("▶ $stepNo. ${action.label}  [${action.ioLabel}]" + (if (st.input.isNotEmpty()) "  ← " + inputLabel(st.input) else "") +
+                if (dryRun && action.changes) (if (S.zh) "（試執行）" else " (dry run)") else "")
+            // url.open asks only for a non-web address; a web address goes through the host list instead.
+            if (action.id in FlowTrust.gated && action.id != "url.open") requireTrust(st)
             action.run(this, st)
-            log("   → " + summary(items))
+            if (st.saveAs.isNotBlank()) vars[st.saveAs.trim()] = items
+            log("   → " + summary(items) + if (st.saveAs.isNotBlank()) "  ⇒ {var.${st.saveAs.trim()}}" else "")
         }
     }
 
@@ -210,6 +281,11 @@ class FlowRun(
         return d
     }
 
+    /** Numbers among the values (text that isn't a number is skipped). */
+    fun numbers(): List<Double> = items.mapNotNull { it.trim().replace(",", "").toDoubleOrNull() }
+
+    fun stop(): Nothing = throw FlowStopped(if (S.zh) "已取消" else "Cancelled")
+
     fun freeName(f: File): File {
         if (!f.exists()) return f
         val stem = f.nameWithoutExtension; val ext = if (f.extension.isEmpty()) "" else "." + f.extension
@@ -220,21 +296,61 @@ class FlowRun(
 
 /** Every action a shortcut can use (the registry the editor, the runner and the spec share). */
 object FlowActions {
-    private const val CAT_INPUT = "輸入與文字|Input & text"
-    private const val CAT_FILES = "檔案|Files"
-    private const val CAT_IMAGE = "影像|Images"
-    private const val CAT_SYSTEM = "Windows|Windows"
-    private const val CAT_CONTROL = "流程控制|Control"
+    const val CAT_INPUT = "取得輸入|Get input"
+    const val CAT_TEXT = "文字|Text"
+    const val CAT_LIST = "清單與字典|Lists & dictionaries"
+    const val CAT_DATA = "數字、日期與編碼|Numbers, dates & encoding"
+    const val CAT_FILES = "檔案|Files"
+    const val CAT_IMAGE = "影像|Images"
+    const val CAT_WEB = "網路|Web"
+    const val CAT_APPS = "應用程式|Apps"
+    const val CAT_MEDIA = "聲音與語音|Sound & speech"
+    const val CAT_SYSTEM = "Windows 系統|Windows"
+    const val CAT_SHARE = "郵件與簡訊|Mail & messages"
+    const val CAT_CONTROL = "流程控制|Control"
+    const val CAT_DEBUG = "除錯|Debug"
 
     fun categoryLabel(c: String) = if (S.zh) c.substringBefore('|') else c.substringAfter('|')
 
-    val all: List<FlowAction> = listOf(
+    private class Io(val input: VType, val output: VType, val category: String? = null)
+
+    /** Input and output of the first actions (defined below without them), and where they're listed. */
+    private val coreIo: Map<String, Io> = mapOf(
+        "files.selected" to Io(VType.None, VType.Files), "files.list" to Io(VType.None, VType.Files),
+        "text.set" to Io(VType.None, VType.Text, CAT_TEXT), "text.replace" to Io(VType.Text, VType.Text, CAT_TEXT),
+        "text.split" to Io(VType.Text, VType.Text, CAT_TEXT), "text.join" to Io(VType.Text, VType.Text, CAT_TEXT),
+        "clipboard.get" to Io(VType.None, VType.Text), "clipboard.set" to Io(VType.Text, VType.Same, CAT_TEXT),
+        "ui.input" to Io(VType.None, VType.Text), "ui.choose" to Io(VType.Anything, VType.Same),
+        "files.filter" to Io(VType.Files, VType.Files), "files.sort" to Io(VType.Files, VType.Files), "files.limit" to Io(VType.Anything, VType.Same, CAT_LIST),
+        "file.copy" to Io(VType.Files, VType.Files), "file.move" to Io(VType.Files, VType.Files), "file.rename" to Io(VType.Files, VType.Files),
+        "file.delete" to Io(VType.Files, VType.None), "folder.create" to Io(VType.None, VType.Files), "file.zip" to Io(VType.Files, VType.Files),
+        "file.unzip" to Io(VType.Files, VType.Files), "file.readText" to Io(VType.Files, VType.Text), "file.writeText" to Io(VType.Text, VType.Files),
+        "file.hash" to Io(VType.Files, VType.Text), "file.info" to Io(VType.Files, VType.Text), "app.navigate" to Io(VType.Files, VType.Same),
+        "image.convert" to Io(VType.Files, VType.Files), "image.resize" to Io(VType.Files, VType.Files),
+        "open" to Io(VType.Files, VType.Same, CAT_APPS), "open.with" to Io(VType.Files, VType.Same, CAT_APPS), "url.open" to Io(VType.Anything, VType.Same, CAT_WEB),
+        "app.settings" to Io(VType.None, VType.Same), "shell.run" to Io(VType.Anything, VType.Text, CAT_APPS), "notify" to Io(VType.Anything, VType.Same),
+        "speak" to Io(VType.Text, VType.Same, CAT_MEDIA), "wallpaper.set" to Io(VType.Files, VType.Same), "screen.lock" to Io(VType.None, VType.Same),
+        "ui.confirm" to Io(VType.Anything, VType.Same), "var.set" to Io(VType.Anything, VType.Same), "var.get" to Io(VType.None, VType.Anything),
+        "stop.if" to Io(VType.Anything, VType.Same), "each" to Io(VType.Anything, VType.Anything),
+    )
+
+    /** Display order of the categories. */
+    private val order = listOf(CAT_INPUT, CAT_TEXT, CAT_LIST, CAT_DATA, CAT_FILES, CAT_IMAGE, CAT_WEB, CAT_APPS, CAT_MEDIA, CAT_SYSTEM, CAT_SHARE, CAT_CONTROL, CAT_DEBUG)
+
+    val all: List<FlowAction> by lazy {
+        val core = coreActions().map { a -> coreIo[a.id]?.let { a.retyped(it.input, it.output, it.category ?: a.category) } ?: a }
+        val list = core + moreActions() + systemActions()
+        // The registry: actions grouped by category in display order, the original order kept within each.
+        list.sortedBy { order.indexOf(it.category).let { i -> if (i < 0) order.size else i } }
+    }
+
+    private fun coreActions(): List<FlowAction> = listOf(
         // ---------------------------------------------------------------- input & text
         FlowAction("files.selected", "取得選取的項目", "Get selected items", CAT_INPUT, "目前選取的檔案與資料夾（沒有選取時為開啟中的資料夾）。", "The selected files and folders (the open folder when nothing is selected).") {
             items = s.tab.selection.toList().ifEmpty { if (s.tab.isVirtual) emptyList() else listOf(s.tab.location) }
         },
         FlowAction("files.list", "列出資料夾內容", "List folder", CAT_INPUT, "列出資料夾中的項目，可篩選與包含子資料夾。", "Items in a folder, optionally filtered and including subfolders.",
-            listOf(ArgSpec("folder", "資料夾", "Folder", "folder", "{folder}"), ArgSpec("query", "篩選（搜尋語法）", "Filter (search syntax)", "text", ""),
+            listOf(ArgSpec("folder", "資料夾", "Folder", "folder", "{folder}"), ArgSpec("query", "篩選（搜尋語法）", "Filter (search syntax)", "query", ""),
                 ArgSpec("recursive", "包含子資料夾", "Include subfolders", "bool", false))) { st ->
             val q = arg(st, "query").takeIf { it.isNotBlank() }?.let { SearchQuery.parse(it) }
             val out = ArrayList<String>()
@@ -283,8 +399,8 @@ object FlowActions {
             items = listOf(a)
         },
         // ---------------------------------------------------------------- files
-        FlowAction("files.filter", "篩選", "Filter", CAT_FILES, "只留下符合搜尋語法的項目（ext:、size:、dm:、萬用字元、regex: …）。", "Keeps the items matching the search syntax (ext:, size:, dm:, wildcards, regex: …).",
-            listOf(ArgSpec("query", "條件", "Condition", "text", "ext:jpg;png"))) { st ->
+        FlowAction("files.filter", "篩選", "Filter", CAT_FILES, "只留下符合搜尋語法的項目（file:、folder:、ext:、size:、dm:、萬用字元、regex: …）。", "Keeps the items matching the search syntax (file:, folder:, ext:, size:, dm:, wildcards, regex: …).",
+            listOf(ArgSpec("query", "條件", "Condition", "query", "ext:jpg;png"))) { st ->
             val q = SearchQuery.parse(arg(st, "query")) ?: return@FlowAction
             items = items.filter { p ->
                 val f = FsExtra.item(p)
@@ -370,13 +486,16 @@ object FlowActions {
             if (dryRun) log("   ${text.length} chars → ${f.path}") else { f.parentFile?.mkdirs(); if (bool(st, "append")) f.appendText(text + "\r\n") else f.writeText(text) }
             items = listOf(f.path)
         },
-        FlowAction("file.hash", "計算雜湊值", "Hash", CAT_FILES, "每個檔案的雜湊值（SHA-256 / SHA-1 / MD5）。", "Each file's hash (SHA-256 / SHA-1 / MD5).",
-            listOf(ArgSpec("algorithm", "演算法", "Algorithm", "choice", "SHA-256", listOf("SHA-256", "SHA-1", "MD5")))) { st ->
+        FlowAction("file.hash", "計算雜湊值", "Hash", CAT_FILES, "每個檔案的雜湊值（SHA-256 / SHA-1 / MD5），小寫十六進位；可只要雜湊值（拿來比對）或附上檔名。",
+            "Each file's hash (SHA-256 / SHA-1 / MD5) in lowercase hex: the hash alone (for comparing) or with the file name.",
+            listOf(ArgSpec("algorithm", "演算法", "Algorithm", "choice", "SHA-256", listOf("SHA-256", "SHA-1", "MD5")),
+                ArgSpec("format", "結果", "Result", "choice", "hash", listOf("hash", "hash+name")))) { st ->
             val algo = arg(st, "algorithm")
+            val withName = arg(st, "format") == "hash+name"
             items = files().filter { File(it).isFile }.map { p ->
                 val md = java.security.MessageDigest.getInstance(algo)
                 File(p).inputStream().use { inp -> val buf = ByteArray(1 shl 20); while (true) { val n = inp.read(buf); if (n < 0) break; md.update(buf, 0, n) } }
-                md.digest().joinToString("") { "%02x".format(it) } + "  " + File(p).name
+                md.digest().joinToString("") { "%02x".format(it) } + if (withName) "  " + File(p).name else ""
             }
         },
         FlowAction("file.info", "檔案資訊", "File info", CAT_FILES, "每個項目的名稱、大小與修改日期（以 Tab 分隔）。", "Name, size and date of each item (tab separated).") {
@@ -427,7 +546,16 @@ object FlowActions {
         FlowAction("url.open", "開啟網址", "Open URL", CAT_SYSTEM, "在瀏覽器開啟網址（可用標記）。", "Opens a web address (tokens allowed).",
             listOf(ArgSpec("url", "網址", "URL", "text", "https://www.bing.com/search?q={first}")), changes = true) { st ->
             val u = arg(st, "url")
-            if (dryRun) log("   $u") else runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(u.replace(" ", "%20"))) }
+            if (dryRun) { log("   $u"); return@FlowAction }
+            val uri = runCatching { java.net.URI(u.trim().replace(" ", "%20")) }.getOrElse { throw FlowStopped((if (S.zh) "網址無效：" else "Not a valid address: ") + u) }
+            // A web page: the host list. mailto: opens a draft. Anything else (file:, ms-…:, custom
+            // protocols) can start a program, so it needs a trusted shortcut.
+            when (uri.scheme?.lowercase()) {
+                "http", "https" -> requireHost(uri)
+                "mailto" -> {}
+                else -> requireTrust(st)
+            }
+            runCatching { java.awt.Desktop.getDesktop().browse(uri) }
         },
         FlowAction("app.settings", "開啟 Windows 設定頁", "Open a Settings page", CAT_SYSTEM, "例如 display、bluetooth、network-wifi、storagesense、windowsupdate。", "e.g. display, bluetooth, network-wifi, storagesense, windowsupdate.",
             listOf(ArgSpec("page", "設定頁", "Page", "choice", "display", listOf("display", "sound", "bluetooth", "network-wifi", "storagesense", "windowsupdate", "apps-volume", "personalization-background", "defaultapps", "privacy"))), changes = true) { st ->
@@ -454,13 +582,6 @@ object FlowActions {
             listOf(ArgSpec("title", "標題", "Title", "text", "FilesKmp"), ArgSpec("text", "內容", "Text", "text", "{count} 個項目已完成"))) { st ->
             val t = arg(st, "title"); val m = arg(st, "text")
             if (dryRun) log("   🔔 $t — $m") else Notifier.show(t, m)
-        },
-        FlowAction("speak", "朗讀文字", "Speak", CAT_SYSTEM, "以 Windows 語音朗讀文字。", "Reads text aloud with Windows' voice.",
-            listOf(ArgSpec("text", "文字", "Text", "text", "{first}")), changes = true) { st ->
-            val t = arg(st, "text")
-            if (dryRun) log("   🔊 $t") else withContext(Dispatchers.IO) {
-                Fs.powershell("Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(\$env:FILES_TEXT)", 120_000, mapOf("FILES_TEXT" to t))
-            }
         },
         FlowAction("wallpaper.set", "設為桌面背景", "Set as desktop background", CAT_SYSTEM, "把第一張圖片設為桌面背景。", "Makes the first picture the desktop background.", changes = true) {
             val img = files().firstOrNull { it.substringAfterLast('.', "").lowercase() in FsExtra.imageExt } ?: return@FlowAction
@@ -489,14 +610,81 @@ object FlowActions {
             val all = items
             val out = ArrayList<String>()
             all.forEachIndexed { i, v ->
-                items = listOf(v); vars["index"] = listOf((i + 1).toString())
+                items = listOf(v); vars["index"] = listOf((i + 1).toString()); vars["item"] = listOf(v)
                 runSteps(inner); out += items
             }
             items = out
         },
     )
 
-    val byId = all.associateBy { it.id }
+    val byId: Map<String, FlowAction> by lazy { all.associateBy { it.id } }
+
+    /**
+     * The arguments that are filled in once per value, so {item…} tokens work in them (FlowRun.expand with an item).
+     * Keep in step with the actions: everywhere else {item…} stays as typed.
+     */
+    val perItemArgs: Map<String, Set<String>> = mapOf(
+        "file.copy" to setOf("to"), "file.move" to setOf("to"), "file.rename" to setOf("name"), "file.unzip" to setOf("to"),
+        "image.convert" to setOf("to"), "image.resize" to setOf("to"), "text.template" to setOf("template"),
+        "json.make" to setOf("entries"), "json.set" to setOf("value"), "number.calc" to setOf("formula"),
+        "base64.decode" to setOf("path"), "app.launch" to setOf("args"),
+    )
+
+    class StepType(val incoming: VType, val outgoing: VType, val warning: String?)
+
+    /** Whether a step that wants [want] can use [got]. Everything is text, so text accepts anything. */
+    fun accepts(want: VType, got: VType): Boolean = when (want) {
+        VType.None, VType.Anything, VType.Text, VType.Same -> true
+        VType.Files -> got == VType.Files || got == VType.Anything
+        VType.Number, VType.Bool, VType.Json, VType.Date -> got == want || got == VType.Text || got == VType.Anything
+    }
+
+    /** The type entering a shortcut, from what it accepts. */
+    fun startType(accepts: List<String>): VType = when {
+        accepts.isEmpty() || accepts == listOf("none") -> VType.None
+        accepts.all { it == "files" || it == "folder" } -> VType.Files
+        accepts == listOf("text") -> VType.Text
+        else -> VType.Anything
+    }
+
+    /**
+     * What goes into and comes out of each step, following inputs, variables and nested steps — the
+     * editor shows it on every step and warns when a step can't use what it gets.
+     */
+    fun typeFlow(steps: List<FlowStep>, start: VType, shortcutInput: VType = start, varTypes: MutableMap<String, VType> = HashMap()): List<StepType> {
+        var cur = start
+        return steps.map { st ->
+            val a = byId[st.action]
+            val incoming = when {
+                st.input == "nothing" -> VType.None
+                st.input == "shortcut" -> shortcutInput
+                st.input.startsWith("var:") -> varTypes[st.input.removePrefix("var:")] ?: VType.Anything
+                else -> cur
+            }
+            if (a == null || !st.enabled) return@map StepType(incoming, incoming, null)
+            @Suppress("UNCHECKED_CAST") fun inner(id: String) = (st.args[id] as? List<FlowStep>).orEmpty()
+            val out = when (st.action) {
+                "var.get" -> varTypes[st.args["name"]?.toString() ?: "saved"] ?: VType.Anything
+                "each", "repeat" -> typeFlow(inner("steps"), incoming, shortcutInput, HashMap(varTypes)).lastOrNull()?.outgoing ?: incoming
+                "if" -> {
+                    val t = typeFlow(inner("then"), incoming, shortcutInput, HashMap(varTypes)).lastOrNull()?.outgoing ?: incoming
+                    val e = typeFlow(inner("else"), incoming, shortcutInput, HashMap(varTypes)).lastOrNull()?.outgoing ?: incoming
+                    if (t == e) t else VType.Anything
+                }
+                else -> a.outputOf(st, incoming)
+            }
+            if (st.action == "var.set") varTypes[st.args["name"]?.toString() ?: "saved"] = incoming
+            if (st.saveAs.isNotBlank()) varTypes[st.saveAs.trim()] = out
+            val warn = when {
+                a.input == VType.None || a.input == VType.Anything -> null
+                incoming == VType.None -> if (S.zh) "這個步驟需要${a.input.zh}，但沒有任何輸入" else "This step needs ${a.input.en} but gets nothing"
+                !accepts(a.input, incoming) -> if (S.zh) "這個步驟需要${a.input.zh}，但收到的是${incoming.zh}" else "This step needs ${a.input.en} but gets ${incoming.en}"
+                else -> null
+            }
+            cur = out
+            StepType(incoming, out, warn)
+        }
+    }
 
     private fun writeImage(img: org.jetbrains.skia.Image, fmt: String, quality: Int, out: File) {
         val f = when (fmt) { "png" -> org.jetbrains.skia.EncodedImageFormat.PNG; "webp" -> org.jetbrains.skia.EncodedImageFormat.WEBP; else -> org.jetbrains.skia.EncodedImageFormat.JPEG }
@@ -540,15 +728,69 @@ object FlowActions {
         append("| `schema` | Always `${FlowStore.SCHEMA}` |\n| `name`, `description`, `icon` | Shown in the shortcut list |\n")
         append("| `hotkey` | Optional, e.g. `Ctrl+Alt+1` |\n| `accepts` | `files`, `folder`, `text`, `none` |\n")
         append("| `params` | Values asked before running: `id`, `label`, `type` (`text`/`folder`/`path`), `default`; used as `{param.id}` |\n")
-        append("| `steps` | Actions run in order: `action`, `args`, optional `enabled: false` |\n\n")
-        append("## Tokens\n\n`{param.x}` `{var.x}` `{count}` `{input}` `{first}` `{date:yyyy-MM-dd}` `{folder}` `{home}` `{desktop}` `{documents}` `{downloads}` `{pictures}` `{clipboard}`\n\n")
-        append("Per item: `{item}` `{item.name}` `{item.stem}` `{item.ext}` `{item.parent}` `{item.folder}` `{item.index:000}` `{item.modified:fmt}` `{item.created:fmt}` `{item.taken:fmt}` `{item.size}` `{item.width}` `{item.height}` `{item.camera}` `{item.artist}` `{item.album}` `{item.title}` `{item.track:00}` `{item.field:Name}`\n\n")
+        append("| `steps` | Actions run in order (see *Steps*) |\n\n")
+        append("## Steps\n\n")
+        append("```json\n{ \"action\": \"file.hash\", \"input\": \"var:photos\", \"args\": { \"algorithm\": \"SHA-256\" }, \"saveAs\": \"hashes\", \"enabled\": true }\n```\n\n")
+        append("| Field | Meaning |\n|---|---|\n")
+        append("| `action` | The action id (below) |\n| `args` | The action's arguments; text may use tokens |\n")
+        append("| `input` | What the step works on: omitted = the previous step's result, `nothing`, `shortcut` (what the shortcut was started with), `var:NAME` |\n")
+        append("| `saveAs` | Also keeps the step's result in a variable, used as `{var.NAME}` or `input: \"var:NAME\"` |\n")
+        append("| `enabled` | `false` skips the step |\n\n")
+        append("## Values and types\n\nSteps pass a **list of values** along. Every value is text; each action declares what it takes and leaves:\n\n")
+        append("| Type | Values are |\n|---|---|\n")
+        append("| `files` | Full paths of files or folders |\n| `text` | Any text (one value per item; `text.split` / `text.join` convert) |\n")
+        append("| `number` | Decimal numbers (`3`, `2.5`) |\n| `true/false` | `true` or `false` |\n| `dictionary/JSON` | A JSON document (`{\"a\": 1}` or `[1, 2]`) |\n")
+        append("| `date` | `yyyy-MM-dd HH:mm:ss` unless a format is chosen |\n| `nothing` | The action ignores its input / leaves no values |\n| `same as input` | The values are handed on unchanged (for actions done for their effect) |\n\n")
+        append("## Running\n\n")
+        append("- The shortcut starts with the selected files and folders (full paths). With nothing selected it starts with nothing, ")
+        append("unless `accepts` includes `folder`: then it starts with the open folder. A `files.selected` step gives the selection, or the open folder when nothing is selected.\n")
+        append("- Each step replaces the values with its result; `input` picks other values for one step. `saveAs` names (and `var.set` names) ")
+        append("must be ASCII letters, digits or `_` (e.g. `fileHash`), or `{var.NAME}` won't be recognised.\n")
+        append("- File actions only use values that are full paths of existing files or folders; any other value is skipped silently.\n")
+        append("- `stop.if` looks at how many values there are, not at their text: one empty text is still a value. To test text, use `if` with `isEmpty`.\n")
+        append("- A step that fails, or `stop.if` / a declined `ui.confirm`, ends the whole run and shows its message.\n\n")
+        append("## Tokens (how text arguments are filled in)\n\n")
+        append("Every text argument may contain `{name}` or `{name:format}`. Rules of the parser:\n\n")
+        append("- A name is ASCII letters, digits, `_` and `.`, starting with a letter. Anything else (`{var.檔案}`, `{var.my-hash}`) is not a token.\n")
+        append("- An unknown token stays exactly as typed, with no error. A `{param.x}` or `{var.x}` that doesn't exist becomes empty text.\n")
+        append("- `{var.x}` and `{input}` holding several values become one text with a line break between the values.\n")
+        append("- Date formats are Java DateTimeFormatter patterns (`yyyy` `MM` `dd` `HH` `mm` `ss`); the default is `yyyy-MM-dd`.\n")
+        append("- Tokens are filled in once, when the step runs; their results are not searched for tokens again.\n\n")
+        append("| Token | Value |\n|---|---|\n")
+        append("| `{param.ID}` | A parameter's answer (`params`) |\n| `{var.NAME}` | A variable set by an earlier step (`saveAs` / `var.set`) |\n")
+        FlowTokens.tokens.filter { it.group != TokenInfo.Group.Item }.forEach { append("| `${it.text}` | ${it.en} |\n") }
+        append("\nInside `each` the current value is `{var.item}` (and `{first}`, since the inner steps get just that value); `{var.index}` is 1, 2, … ")
+        append("Inside `repeat`: `{var.index}`.\n\n")
+        append("### `{item…}` tokens: only in *per item* arguments\n\n")
+        append("These are filled in for each value in turn, and **only** in the arguments marked *per item* in the action list: ")
+        append(perItemArgs.entries.joinToString(", ") { (a, g) -> "`$a` (${g.joinToString("/") { "`$it`" }})" })
+        append(". Anywhere else (`notify` text, `if` subject, `text.set` …) they stay as typed: use `{first}` or `{var.item}` inside `each` instead.\n\n")
+        append("| Token | Value |\n|---|---|\n")
+        FlowTokens.tokens.filter { it.group == TokenInfo.Group.Item }.forEach { append("| `${it.text}` | ${it.en} |\n") }
+        append("\n`{item.index}` counts from 1. Metadata tokens are empty when the file has none. In metadata and date tokens, characters a file name ")
+        append("can't hold (`<>:\"/\\|?*`) become `_`, so `{item.modified:HH:mm}` gives `12_30`.\n\n")
+        append("## Conditions (`if`, `text.test`)\n\n")
+        append("`if` compares `subject` with `value` (both may use tokens) using `op`: ${FlowCompare.ops.joinToString(" ") { "`$it`" }}.\n\n")
+        append("- When both sides are numbers they compare as numbers (`10 > 9`); otherwise as text, ignoring case unless `ignoreCase` is false.\n")
+        append("- `equals` / `notEquals` ignore spaces and line breaks around both sides. `contains`, `startsWith`, `endsWith` don't trim.\n")
+        append("- `matches` is a regular expression found anywhere in the subject (anchor with `^…\$`). `isEmpty` / `notEmpty` ignore `value` and treat blank text as empty.\n")
+        append("- The subject is one text: `{first}` for the first value, `{input}` for all of them joined by line breaks.\n\n")
+        append("## Search syntax (`query` arguments)\n\n")
+        append("Arguments of type `query` (`files.filter`, `files.list`) use the file search syntax. Only these filters exist; ")
+        append("any other `word:` (e.g. `kind:file`, `type:folder`, `name:x`) is searched as plain text in the name and matches nothing.\n\n")
+        append("- Words separated by spaces must all match (AND); `a | b` matches either; `!word` (or `!ext:tmp`) excludes; `\"quoted text\"` keeps spaces\n")
+        append("- Plain text matches part of the name, ignoring case; `*` and `?` wildcards match the whole name (`*.log`, `IMG_????.jpg`); text with a `\\` matches the full path\n")
+        SearchQuery.hints.forEach { h -> append("- `${h.text}` — ${h.en}\n") }
+        append("- `file:` and `folder:` take no value: `file: ext:pdf`, not `file:pdf`\n\n")
+        append(SAFETY_SPEC)
         append("## Actions\n\n")
         all.groupBy { it.category }.forEach { (cat, acts) ->
             append("### ${cat.replace('|', '/')}\n\n")
             acts.forEach { a ->
-                append("- **`${a.id}`** — ${a.en} / ${a.zh}${if (a.changes) " *(changes files or the system; skipped in a dry run)*" else ""}. ${a.descEn}\n")
-                a.args.forEach { g -> append("  - `${g.id}` (${g.type}${if (g.choices.isNotEmpty()) ": " + g.choices.joinToString("|") else ""}) ${g.en}${g.default.let { d -> if (d is String && d.isEmpty() || d is List<*>) "" else ", default `$d`" }}\n") }
+                val outText = if (a.outputFor != null) "depends on the arguments" else a.output.en
+                append("- **`${a.id}`** — ${a.en} / ${a.zh}${if (a.changes) " *(changes files or the system; skipped in a dry run)*" else ""}. ${a.descEn}  \n")
+                append("  Input: *${a.input.en}* → Output: *$outText*\n")
+                a.args.forEach { g -> append("  - `${g.id}` (${g.type}${if (g.choices.isNotEmpty()) ": " + g.choices.joinToString("|") else ""}) ${g.en}${g.default.let { d -> if (d is String && d.isEmpty() || d is List<*>) "" else ", default `$d`" }}${if (g.id in perItemArgs[a.id].orEmpty()) " — *per item*: `{item…}` tokens work here" else ""}\n") }
             }
             append('\n')
         }
@@ -583,9 +825,13 @@ object FlowStore {
             try { ok += Flow.fromJson(f.name.removeSuffix(".fkflow.json"), f.readText(Charsets.UTF_8)) } catch (e: Exception) { bad += "${f.name}: ${e.message}" }
         }
         mine = ok; errors = bad
+        FlowTrust.loaded(ok)
     }
 
-    fun all(): List<Flow> = mine + samples()
+    /** Tests only: shortcuts that exist without being saved. */
+    internal var testFlows: List<Flow> = emptyList()
+
+    fun all(): List<Flow> = mine + testFlows + samples()
 
     fun save(f: Flow): Flow {
         val id = if (f.builtIn || f.id.isBlank()) uniqueId(f.name) else f.id
@@ -622,7 +868,7 @@ object FlowStore {
                 ), builtIn = true),
             Flow("builtin:hash", if (zh) "計算 SHA-256 並複製" else "Copy SHA-256 hashes",
                 if (zh) "計算選取檔案的 SHA-256，複製到剪貼簿。" else "Hashes the selected files and copies the list.", "fingerprint",
-                steps = listOf(FlowStep("files.selected"), FlowStep("file.hash"), FlowStep("text.join"), FlowStep("clipboard.set"),
+                steps = listOf(FlowStep("files.selected"), FlowStep("file.hash", mapOf("format" to "hash+name")), FlowStep("text.join"), FlowStep("clipboard.set"),
                     FlowStep("notify", mapOf("title" to "SHA-256", "text" to if (zh) "已複製到剪貼簿" else "Copied to the clipboard"))), builtIn = true),
             Flow("builtin:webp", if (zh) "圖片縮小並轉成 WebP" else "Shrink pictures to WebP",
                 if (zh) "最長邊縮到 1920 像素，轉成 WebP 存到「webp」資料夾。" else "Longest side 1920 px, saved as WebP in a webp folder.", "image",
@@ -646,6 +892,67 @@ object FlowStore {
             Flow("builtin:zip-desktop", if (zh) "壓縮到桌面" else "Zip to the desktop",
                 if (zh) "把選取的項目壓縮成桌面上的 zip，並在此顯示。" else "Zips the selection onto the desktop and shows it.", "archive",
                 steps = listOf(FlowStep("files.selected"), FlowStep("file.zip", mapOf("to" to "{desktop}\\{date:yyyyMMdd-HHmm}.zip")), FlowStep("app.navigate")), builtIn = true),
+            Flow("builtin:mail-files", if (zh) "以郵件寄出選取的檔案" else "Email the selected files",
+                if (zh) "詢問收件者，把選取的檔案附加到郵件草稿（用預設郵件程式開啟）。示範「存成變數」與「輸入來源」。" else "Asks for a recipient and attaches the selection to a mail draft. Shows Save as variable and Works on.", "mail",
+                steps = listOf(
+                    FlowStep("files.selected", saveAs = "files"),
+                    FlowStep("files.filter", mapOf("query" to "file:")),
+                    FlowStep("stop.if", mapOf("when" to "empty", "message" to if (zh) "請先選取檔案" else "Select some files first")),
+                    FlowStep("ui.input", mapOf("label" to if (zh) "收件者電子郵件" else "Recipient's email", "default" to ""), saveAs = "to"),
+                    FlowStep("email.send", mapOf("to" to "{var.to}", "subject" to if (zh) "{count} 個檔案" else "{count} files",
+                        "body" to if (zh) "附件：\n{input}" else "Attached:\n{input}", "method" to "draft"), input = "var:files"),
+                ), builtIn = true),
+            Flow("builtin:focus", if (zh) "專注 25 分鐘" else "Focus for 25 minutes",
+                if (zh) "關閉通知橫幅並降低音量，倒數 25 分鐘（按任意鍵提前結束），結束後恢復並提醒。" else "Banners off and volume down for 25 minutes (any key ends early), then restores and reminds you.", "timer",
+                accepts = listOf("none"),
+                steps = listOf(
+                    FlowStep("volume", mapOf("op" to "get"), saveAs = "volume"),
+                    FlowStep("dnd", mapOf("op" to "on")),
+                    FlowStep("volume", mapOf("op" to "set", "value" to 15)),
+                    FlowStep("wait.skippable", mapOf("seconds" to 1500, "message" to if (zh) "專注中…按任意鍵提前結束" else "Focusing… press any key to end early")),
+                    FlowStep("dnd", mapOf("op" to "off")),
+                    FlowStep("volume", mapOf("op" to "set", "value" to "{var.volume}")),
+                    FlowStep("sound.play", mapOf("sound" to "asterisk")),
+                    FlowStep("speak", mapOf("text" to if (zh) "時間到，休息一下吧" else "Time's up, take a break")),
+                ), builtIn = true),
+            Flow("builtin:cli", if (zh) "探索程式的命令列" else "Explore a program's command line",
+                if (zh) "找出程式的命令列選項，選一個執行並顯示輸出。" else "Finds a program's command-line options, runs the one you pick and shows the output.", "terminal",
+                accepts = listOf("none"),
+                steps = listOf(
+                    FlowStep("ui.input", mapOf("label" to if (zh) "程式名稱（例如 winget、git、ping）" else "Program (e.g. winget, git, ping)", "default" to "winget"), saveAs = "app"),
+                    FlowStep("app.cli", mapOf("app" to "{var.app}", "output" to "options")),
+                    FlowStep("ui.choose", mapOf("title" to if (zh) "要執行哪個選項？" else "Which option?")),
+                    FlowStep("text.find", mapOf("find" to "^[^\\s,|=\\[<]+", "regex" to true)),
+                    FlowStep("app.launch", mapOf("app" to "{var.app}", "args" to "{first}", "wait" to true, "output" to "output", "timeout" to 60)),
+                    FlowStep("debug.show", mapOf("title" to "{var.app} {first}")),
+                ), builtIn = true),
+            Flow("builtin:api", if (zh) "讀取網路 API（JSON）" else "Read a web API (JSON)",
+                if (zh) "呼叫 GitHub API，取出專案的星星數與說明。示範 HTTP 與字典。" else "Calls the GitHub API and picks out the stars and description. Shows HTTP and dictionaries.", "web",
+                accepts = listOf("none"),
+                steps = listOf(
+                    FlowStep("http.request", mapOf("url" to "https://api.github.com/repos/creamgod45/FilesKmp", "headers" to "Accept: application/vnd.github+json", "output" to "json"), saveAs = "repo"),
+                    FlowStep("json.get", mapOf("path" to "stargazers_count"), saveAs = "stars"),
+                    FlowStep("json.get", mapOf("path" to "description"), input = "var:repo"),
+                    FlowStep("text.template", mapOf("template" to "★ {var.stars} — {item}")),
+                    FlowStep("debug.show", mapOf("title" to "FilesKmp")),
+                ), builtIn = true),
+            Flow("builtin:battery", if (zh) "電量不足時提醒" else "Low battery reminder",
+                if (zh) "電量低於 20% 且沒有充電時，顯示通知並朗讀。" else "Under 20% and not charging: a notification and a spoken reminder.", "battery",
+                accepts = listOf("none"),
+                steps = listOf(
+                    FlowStep("battery", mapOf("get" to "charging"), saveAs = "charging"),
+                    FlowStep("battery", mapOf("get" to "percent")),
+                    FlowStep("if", mapOf("subject" to "{first}", "op" to "<", "value" to "20", "then" to listOf(
+                        FlowStep("if", mapOf("subject" to "{var.charging}", "op" to "equals", "value" to "false", "then" to listOf(
+                            FlowStep("notify", mapOf("title" to if (zh) "電量不足" else "Battery low", "text" to if (zh) "剩下 {first}%" else "{first}% left")),
+                            FlowStep("speak", mapOf("text" to if (zh) "電量剩下 {first}%，請接上電源" else "Battery at {first} percent, please plug in")),
+                        ))),
+                    ))),
+                ), builtIn = true),
+            Flow("builtin:screenshot", if (zh) "螢幕截圖並顯示" else "Screenshot and show it",
+                if (zh) "擷取所有螢幕存到「圖片\\Screenshots」，複製到剪貼簿並在此顯示。" else "Captures every screen to Pictures\\Screenshots, copies it and shows it here.", "photo",
+                accepts = listOf("none"),
+                steps = listOf(FlowStep("screenshot", mapOf("copy" to true)), FlowStep("sound.play", mapOf("sound" to "asterisk", "wait" to false)), FlowStep("app.navigate")), builtIn = true),
         )
     }
 }

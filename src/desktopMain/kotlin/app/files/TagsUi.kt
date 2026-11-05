@@ -112,7 +112,7 @@ fun ColorRow(selected: Long, onPick: (Long) -> Unit) {
 }
 
 @Composable
-fun PlainField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier, placeholder: String = "") {
+fun PlainField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier, placeholder: String = "", password: Boolean = false) {
     val p = LocalPalette.current
     val app = LocalAppState.current
     Box(
@@ -125,6 +125,7 @@ fun PlainField(value: String, onChange: (String) -> Unit, modifier: Modifier = M
             value, onChange, singleLine = true,
             textStyle = androidx.compose.ui.text.TextStyle(color = p.text, fontSize = 14.sp),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(p.text),
+            visualTransformation = if (password) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
             // While typing here, the app's single-key shortcuts (Delete, F2, Backspace…) stay off.
             modifier = Modifier.fillMaxWidth().onFocusChanged { app?.textFocus = it.isFocused },
         )
