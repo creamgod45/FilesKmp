@@ -16,6 +16,18 @@ val windowsArch = when (System.getProperty("os.arch").lowercase()) {
     else -> error("Only Windows x64 and ARM64 are supported")
 }
 
+// Product information for FilesKmp.exe's version resource, the MSI and Windows' installed-apps list.
+// English only: jpackage reads its arguments in the system code page.
+object Product {
+    const val vendor = "creamgod45"
+    const val description = "FilesKmp - file manager for Windows with tabs, split panes, Quick Look and shortcuts"
+    const val copyright = "Copyright (c) 2025-2026 creamgod45"
+    const val aboutUrl = "https://github.com/creamgod45/FilesKmp"
+    const val helpUrl = "https://github.com/creamgod45/FilesKmp/blob/master/docs/USER-GUIDE.en.md"
+    const val updateUrl = "https://github.com/creamgod45/FilesKmp/releases"
+}
+val productArgs = listOf("--vendor", Product.vendor, "--copyright", Product.copyright)
+
 // Lets WindowCorners.kt reach the window handle and call DWM (Windows 11 rounded corners).
 val windowJvmOptions = listOf(
     "--add-exports=java.desktop/sun.awt=ALL-UNNAMED",
@@ -95,7 +107,13 @@ fun findWix(): File? {
 /** Runs jpackage with WiX on PATH; fails with its output. */
 fun runJpackage(args: List<String>, what: String) {
     val pb = ProcessBuilder(listOf(findJpackage().absolutePath) + args).redirectErrorStream(true)
-    findWix()?.let { pb.environment()["PATH"] = it.absolutePath + File.pathSeparator + (pb.environment()["PATH"] ?: "") }
+    findWix()?.let { wix ->
+        // Windows usually names it "Path", and Java's map is case-sensitive: adding "PATH" next to it
+        // would leave two variables, and jpackage would read the one without WiX.
+        val env = pb.environment()
+        val key = env.keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "Path"
+        env[key] = wix.absolutePath + File.pathSeparator + (env[key] ?: "")
+    }
     val p = pb.start()
     val log = p.inputStream.bufferedReader().readText()
     if (p.waitFor() != 0) throw GradleException("$what failed:\n$log")
@@ -132,7 +150,9 @@ val windowsApp by tasks.registering {
             "--add-modules", "java.base,java.desktop,java.logging,jdk.unsupported,jdk.zipfs,java.management,jdk.localedata,java.net.http,jdk.charsets",
             "--java-options", "-Dfile.encoding=UTF-8",
             "--java-options", "-Dsun.stdout.encoding=UTF-8",
-        ) + windowJvmOptions.flatMap { listOf("--java-options", it) }
+            // The exe's description is what Task Manager lists the process as: keep it the name.
+            "--description", "FilesKmp",
+        ) + productArgs + windowJvmOptions.flatMap { listOf("--java-options", it) }
         runJpackage(cmd, "jpackage")
         val dest = layout.buildDirectory.dir("FilesKmp").get().asFile
         dest.deleteRecursively()
@@ -169,6 +189,13 @@ val windowsMsi by tasks.registering {
         }
         patch("Id=\"\$(var.JpProductCode)\"", "Id=\"*\"")
         patch("IncludeMaximum=\"\$(var.JpUpgradeVersionOnlyDetectUpgrade)\"", "IncludeMaximum=\"yes\"")
+        // (4) the wizard's pictures (packaging/make-msi-art.ps1 draws them from icon.ico).
+        val banner = file("packaging/msi-banner.bmp").copyTo(File(work, "msi-banner.bmp"))
+        val dialog = file("packaging/msi-dialog.bmp").copyTo(File(work, "msi-dialog.bmp"))
+        patch("<UIRef Id=\"JpUI\"/>", """
+            <WixVariable Id="WixUIBannerBmp" Value="${banner.absolutePath}" />
+            <WixVariable Id="WixUIDialogBmp" Value="${dialog.absolutePath}" />
+            <UIRef Id="JpUI"/>""".trimIndent())
         patch("<UIRef Id=\"JpUI\"/>", """
             <SetDirectory Id="INSTALLDIR" Value="[LocalAppDataFolder]Programs\FilesKmp\" Sequence="both">NOT Installed</SetDirectory>
             <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch FilesKmp" After="CostFinalize" Sequence="ui">NOT Installed</SetProperty>
@@ -186,7 +213,11 @@ val windowsMsi by tasks.registering {
             "--resource-dir", resources.absolutePath,
             "--win-menu", "--win-shortcut", "--win-shortcut-prompt", "--win-dir-chooser", "--win-per-user-install",
             "--win-upgrade-uuid", if (windowsArch == "arm64") "a816d2b1-9605-43ab-b441-70ae0e83e548" else "1ab430d5-5393-48a5-9bbb-5f98bf171a14",
-        )
+            // Installed-apps entry: icon, publisher, support links.
+            "--icon", file("packaging/icon.ico").copyTo(File(work, "icon.ico")).absolutePath,
+            "--about-url", Product.aboutUrl, "--win-help-url", Product.helpUrl, "--win-update-url", Product.updateUrl,
+            "--description", Product.description,
+        ) + productArgs
         runJpackage(cmd, "MSI packaging")
         val msi = out.listFiles()?.singleOrNull { it.extension == "msi" }
             ?: throw GradleException("jpackage did not produce one MSI in $out")
