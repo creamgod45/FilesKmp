@@ -1,9 +1,17 @@
 package app.files
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,6 +76,10 @@ object ShellPreview {
         val pp = a.allocate(A)
         return if (com(o, 0, FunctionDescriptor.of(I, A, A, A), guid(a, iid), pp) as Int == 0) pp.get(A, 0) else null
     }
+
+    /** Adobe Reader / Acrobat's PDF preview handler: slow to start, and the app can stop responding meanwhile. */
+    private const val CLSID_ADOBE_PDF = "DC6EFB56-9CFA-464D-8880-44885D7DC193"
+    fun isAdobe(clsid: String) = clsid.trim('{', '}').equals(CLSID_ADOBE_PDF, ignoreCase = true)
 
     /** The preview handler registered for [ext] ("pdf"), or null. */
     fun handlerFor(ext: String): String? {
@@ -184,12 +196,26 @@ fun ShellPreviewView(path: String, clsid: String, translucent: Boolean, openExte
             T(e ?: "", size = 13.sp, color = p.textSecondary, maxLines = 3)
             Spacer(Modifier.height(10.dp))
             DialogButton(S.qlOpen, primary = true) { openExternally() }
-        } else SwingPanel(factory = {
-            canvas.apply {
-                addComponentListener(object : java.awt.event.ComponentAdapter() {
-                    override fun componentResized(ev: java.awt.event.ComponentEvent?) { handle?.let { x -> Thread { x.resize(width, height) }.start() } }
-                })
+        } else Column(Modifier.fillMaxSize()) {
+            // Adobe's handler is slow to start and can freeze the app meanwhile: say so, and what to change.
+            if (ShellPreview.isAdobe(clsid)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(6.dp)).background(p.card)
+                        .border(1.dp, p.cardStroke, RoundedCornerShape(6.dp)).padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.WarningAmber, null, Modifier.size(18.dp), tint = Color(0xFFC98500))
+                    Spacer(Modifier.width(10.dp))
+                    T(S.qlAdobeSlow, Modifier.weight(1f), size = 12.sp, maxLines = 3)
+                }
             }
-        }, modifier = Modifier.fillMaxSize())
+            SwingPanel(factory = {
+                canvas.apply {
+                    addComponentListener(object : java.awt.event.ComponentAdapter() {
+                        override fun componentResized(ev: java.awt.event.ComponentEvent?) { handle?.let { x -> Thread { x.resize(width, height) }.start() } }
+                    })
+                }
+            }, modifier = Modifier.weight(1f).fillMaxWidth())
+        }
     }
 }
