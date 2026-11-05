@@ -213,16 +213,37 @@ object AiTools {
         @Suppress("UNCHECKED_CAST")
         val rawSteps = ((Json.parse(json) as? Map<String, Any?>)?.get("steps") as? List<*>).orEmpty()
         if (rawSteps.size != f.steps.size) out += "Some steps were dropped: each step needs an \"action\" string."
-        fun walk(steps: List<FlowStep>, path: String) {
+        val params = f.params.map { it.id }
+        val nameRx = Regex("[A-Za-z][A-Za-z0-9_]*")
+        // What the runner does with each argument, so the parser isn't a black box: tokens, search syntax, choices, names.
+        fun walk(steps: List<FlowStep>, path: String, varsIn: List<String>) {
             steps.forEachIndexed { i, st ->
                 val at = "$path${i + 1}"
                 val a = FlowActions.byId[st.action]
                 if (a == null) { out += "Step $at: unknown action \"${st.action}\"."; return@forEachIndexed }
+                val here = (varsIn + FlowTokens.varsSetBy(steps.take(i))).distinct()
                 st.args.keys.filter { k -> a.args.none { it.id == k } }.forEach { out += "Step $at (${st.action}): unknown argument \"$it\"." }
-                a.args.filter { it.type == "steps" }.forEach { g -> walk((st.args[g.id] as? List<*>).orEmpty().filterIsInstance<FlowStep>(), "$at.${g.id}.") }
+                if (st.saveAs.isNotBlank() && !nameRx.matches(st.saveAs.trim()))
+                    out += "Step $at: saveAs \"${st.saveAs}\" must be ASCII letters, digits or _ (starting with a letter), or {var.${st.saveAs}} won't be recognised."
+                if (st.input.startsWith("var:") && st.input.removePrefix("var:") !in here)
+                    out += "Step $at: input \"${st.input}\" uses a variable no earlier step sets."
+                a.args.forEach { g ->
+                    val v = st.args[g.id] as? String ?: return@forEach
+                    val pre = "Step $at (${st.action}) ${g.id}: "
+                    FlowTokens.check(v, params, here).forEach { out += pre + it }
+                    if (g.type == "query") SearchQuery.problems(v).forEach { out += pre + it }
+                    if (g.type == "choice" && '{' !in v && v !in g.choices && !(g.id == "op" && (v == "==" || v == "!="))) out +=pre + "\"$v\" is not one of ${g.choices.joinToString("|")}."
+                    if ("{item" in v && g.id !in FlowActions.perItemArgs[a.id].orEmpty())
+                        out += pre + "{item…} tokens only work in per-item arguments; here they stay as typed. Use {first}, or {var.item} inside each."
+                    if (st.action == "var.set" && g.id == "name" && !nameRx.matches(v.trim()))
+                        out += pre + "variable names must be ASCII letters, digits or _ (starting with a letter)."
+                }
+                a.args.filter { it.type == "steps" }.forEach { g ->
+                    walk((st.args[g.id] as? List<*>).orEmpty().filterIsInstance<FlowStep>(), "$at.${g.id}.", here + FlowTokens.insideOf[st.action].orEmpty())
+                }
             }
         }
-        walk(f.steps, "")
+        walk(f.steps, "", emptyList())
         if (f.steps.isEmpty()) out += "The shortcut has no steps."
         FlowActions.typeFlow(f.steps, FlowActions.startType(f.accepts)).forEachIndexed { i, t -> t.warning?.let { out += "Step ${i + 1}: $it" } }
         val gated = FlowTrust.gatedSteps(f.steps).map { it.action }.distinct()

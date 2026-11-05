@@ -347,6 +347,7 @@ private fun StepCard(st: FlowStep, index: Int, total: Int, depth: Int, type: Flo
                 when (g.type) {
                     "bool" -> FlowCheck(cur == true || cur.toString() == "true", "") { set(!(cur == true || cur.toString() == "true")) }
                     "multiline" -> TokenField(cur.toString(), { set(it) }, Modifier.weight(1f), multiline = true, mono = st.action == "shell.run")
+                    "query" -> TokenField(cur.toString(), { set(it) }, Modifier.weight(1f), search = true)
                     "choice" -> {
                         var open by remember { mutableStateOf(false) }
                         Box {

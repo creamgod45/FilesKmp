@@ -115,7 +115,7 @@ class Flow(
 }
 
 /**
- * One argument of an action: its type drives the editor ("text", "multiline", "path", "folder",
+ * One argument of an action: its type drives the editor ("text", "multiline", "query" (search syntax), "path", "folder",
  * "bool", "number", "choice", "steps", "app" (an app on this PC), "flow" (another shortcut)).
  */
 class ArgSpec(val id: String, val zh: String, val en: String, val type: String = "text", val default: Any? = "", val choices: List<String> = emptyList()) {
@@ -350,7 +350,7 @@ object FlowActions {
             items = s.tab.selection.toList().ifEmpty { if (s.tab.isVirtual) emptyList() else listOf(s.tab.location) }
         },
         FlowAction("files.list", "列出資料夾內容", "List folder", CAT_INPUT, "列出資料夾中的項目，可篩選與包含子資料夾。", "Items in a folder, optionally filtered and including subfolders.",
-            listOf(ArgSpec("folder", "資料夾", "Folder", "folder", "{folder}"), ArgSpec("query", "篩選（搜尋語法）", "Filter (search syntax)", "text", ""),
+            listOf(ArgSpec("folder", "資料夾", "Folder", "folder", "{folder}"), ArgSpec("query", "篩選（搜尋語法）", "Filter (search syntax)", "query", ""),
                 ArgSpec("recursive", "包含子資料夾", "Include subfolders", "bool", false))) { st ->
             val q = arg(st, "query").takeIf { it.isNotBlank() }?.let { SearchQuery.parse(it) }
             val out = ArrayList<String>()
@@ -399,8 +399,8 @@ object FlowActions {
             items = listOf(a)
         },
         // ---------------------------------------------------------------- files
-        FlowAction("files.filter", "篩選", "Filter", CAT_FILES, "只留下符合搜尋語法的項目（ext:、size:、dm:、萬用字元、regex: …）。", "Keeps the items matching the search syntax (ext:, size:, dm:, wildcards, regex: …).",
-            listOf(ArgSpec("query", "條件", "Condition", "text", "ext:jpg;png"))) { st ->
+        FlowAction("files.filter", "篩選", "Filter", CAT_FILES, "只留下符合搜尋語法的項目（file:、folder:、ext:、size:、dm:、萬用字元、regex: …）。", "Keeps the items matching the search syntax (file:, folder:, ext:, size:, dm:, wildcards, regex: …).",
+            listOf(ArgSpec("query", "條件", "Condition", "query", "ext:jpg;png"))) { st ->
             val q = SearchQuery.parse(arg(st, "query")) ?: return@FlowAction
             items = items.filter { p ->
                 val f = FsExtra.item(p)
@@ -619,6 +619,17 @@ object FlowActions {
 
     val byId: Map<String, FlowAction> by lazy { all.associateBy { it.id } }
 
+    /**
+     * The arguments that are filled in once per value, so {item…} tokens work in them (FlowRun.expand with an item).
+     * Keep in step with the actions: everywhere else {item…} stays as typed.
+     */
+    val perItemArgs: Map<String, Set<String>> = mapOf(
+        "file.copy" to setOf("to"), "file.move" to setOf("to"), "file.rename" to setOf("name"), "file.unzip" to setOf("to"),
+        "image.convert" to setOf("to"), "image.resize" to setOf("to"), "text.template" to setOf("template"),
+        "json.make" to setOf("entries"), "json.set" to setOf("value"), "number.calc" to setOf("formula"),
+        "base64.decode" to setOf("path"), "app.launch" to setOf("args"),
+    )
+
     class StepType(val incoming: VType, val outgoing: VType, val warning: String?)
 
     /** Whether a step that wants [want] can use [got]. Everything is text, so text accepts anything. */
@@ -730,9 +741,47 @@ object FlowActions {
         append("| `files` | Full paths of files or folders |\n| `text` | Any text (one value per item; `text.split` / `text.join` convert) |\n")
         append("| `number` | Decimal numbers (`3`, `2.5`) |\n| `true/false` | `true` or `false` |\n| `dictionary/JSON` | A JSON document (`{\"a\": 1}` or `[1, 2]`) |\n")
         append("| `date` | `yyyy-MM-dd HH:mm:ss` unless a format is chosen |\n| `nothing` | The action ignores its input / leaves no values |\n| `same as input` | The values are handed on unchanged (for actions done for their effect) |\n\n")
-        append("## Tokens\n\n`{param.x}` `{var.x}` `{count}` `{input}` `{first}` `{last}` `{date:yyyy-MM-dd}` `{folder}` `{home}` `{desktop}` `{documents}` `{downloads}` `{pictures}` `{music}` `{videos}` `{temp}` `{clipboard}` `{env.NAME}` `{newline}` `{tab}`\n\n")
-        append("Inside `each` / `repeat`: `{var.index}` (1, 2, …) and `{var.item}` (the current value).\n\n")
-        append("Per item: `{item}` `{item.name}` `{item.stem}` `{item.ext}` `{item.parent}` `{item.folder}` `{item.index:000}` `{item.modified:fmt}` `{item.created:fmt}` `{item.taken:fmt}` `{item.size}` `{item.width}` `{item.height}` `{item.camera}` `{item.artist}` `{item.album}` `{item.title}` `{item.track:00}` `{item.field:Name}`\n\n")
+        append("## Running\n\n")
+        append("- The shortcut starts with the selected files and folders (full paths). With nothing selected it starts with nothing, ")
+        append("unless `accepts` includes `folder`: then it starts with the open folder. A `files.selected` step gives the selection, or the open folder when nothing is selected.\n")
+        append("- Each step replaces the values with its result; `input` picks other values for one step. `saveAs` names (and `var.set` names) ")
+        append("must be ASCII letters, digits or `_` (e.g. `fileHash`), or `{var.NAME}` won't be recognised.\n")
+        append("- File actions only use values that are full paths of existing files or folders; any other value is skipped silently.\n")
+        append("- `stop.if` looks at how many values there are, not at their text: one empty text is still a value. To test text, use `if` with `isEmpty`.\n")
+        append("- A step that fails, or `stop.if` / a declined `ui.confirm`, ends the whole run and shows its message.\n\n")
+        append("## Tokens (how text arguments are filled in)\n\n")
+        append("Every text argument may contain `{name}` or `{name:format}`. Rules of the parser:\n\n")
+        append("- A name is ASCII letters, digits, `_` and `.`, starting with a letter. Anything else (`{var.檔案}`, `{var.my-hash}`) is not a token.\n")
+        append("- An unknown token stays exactly as typed, with no error. A `{param.x}` or `{var.x}` that doesn't exist becomes empty text.\n")
+        append("- `{var.x}` and `{input}` holding several values become one text with a line break between the values.\n")
+        append("- Date formats are Java DateTimeFormatter patterns (`yyyy` `MM` `dd` `HH` `mm` `ss`); the default is `yyyy-MM-dd`.\n")
+        append("- Tokens are filled in once, when the step runs; their results are not searched for tokens again.\n\n")
+        append("| Token | Value |\n|---|---|\n")
+        append("| `{param.ID}` | A parameter's answer (`params`) |\n| `{var.NAME}` | A variable set by an earlier step (`saveAs` / `var.set`) |\n")
+        FlowTokens.tokens.filter { it.group != TokenInfo.Group.Item }.forEach { append("| `${it.text}` | ${it.en} |\n") }
+        append("\nInside `each` the current value is `{var.item}` (and `{first}`, since the inner steps get just that value); `{var.index}` is 1, 2, … ")
+        append("Inside `repeat`: `{var.index}`.\n\n")
+        append("### `{item…}` tokens: only in *per item* arguments\n\n")
+        append("These are filled in for each value in turn, and **only** in the arguments marked *per item* in the action list: ")
+        append(perItemArgs.entries.joinToString(", ") { (a, g) -> "`$a` (${g.joinToString("/") { "`$it`" }})" })
+        append(". Anywhere else (`notify` text, `if` subject, `text.set` …) they stay as typed: use `{first}` or `{var.item}` inside `each` instead.\n\n")
+        append("| Token | Value |\n|---|---|\n")
+        FlowTokens.tokens.filter { it.group == TokenInfo.Group.Item }.forEach { append("| `${it.text}` | ${it.en} |\n") }
+        append("\n`{item.index}` counts from 1. Metadata tokens are empty when the file has none. In metadata and date tokens, characters a file name ")
+        append("can't hold (`<>:\"/\\|?*`) become `_`, so `{item.modified:HH:mm}` gives `12_30`.\n\n")
+        append("## Conditions (`if`, `text.test`)\n\n")
+        append("`if` compares `subject` with `value` (both may use tokens) using `op`: ${FlowCompare.ops.joinToString(" ") { "`$it`" }}.\n\n")
+        append("- When both sides are numbers they compare as numbers (`10 > 9`); otherwise as text, ignoring case unless `ignoreCase` is false.\n")
+        append("- `equals` / `notEquals` ignore spaces and line breaks around both sides. `contains`, `startsWith`, `endsWith` don't trim.\n")
+        append("- `matches` is a regular expression found anywhere in the subject (anchor with `^…\$`). `isEmpty` / `notEmpty` ignore `value` and treat blank text as empty.\n")
+        append("- The subject is one text: `{first}` for the first value, `{input}` for all of them joined by line breaks.\n\n")
+        append("## Search syntax (`query` arguments)\n\n")
+        append("Arguments of type `query` (`files.filter`, `files.list`) use the file search syntax. Only these filters exist; ")
+        append("any other `word:` (e.g. `kind:file`, `type:folder`, `name:x`) is searched as plain text in the name and matches nothing.\n\n")
+        append("- Words separated by spaces must all match (AND); `a | b` matches either; `!word` (or `!ext:tmp`) excludes; `\"quoted text\"` keeps spaces\n")
+        append("- Plain text matches part of the name, ignoring case; `*` and `?` wildcards match the whole name (`*.log`, `IMG_????.jpg`); text with a `\\` matches the full path\n")
+        SearchQuery.hints.forEach { h -> append("- `${h.text}` — ${h.en}\n") }
+        append("- `file:` and `folder:` take no value: `file: ext:pdf`, not `file:pdf`\n\n")
         append(SAFETY_SPEC)
         append("## Actions\n\n")
         all.groupBy { it.category }.forEach { (cat, acts) ->
@@ -741,7 +790,7 @@ object FlowActions {
                 val outText = if (a.outputFor != null) "depends on the arguments" else a.output.en
                 append("- **`${a.id}`** — ${a.en} / ${a.zh}${if (a.changes) " *(changes files or the system; skipped in a dry run)*" else ""}. ${a.descEn}  \n")
                 append("  Input: *${a.input.en}* → Output: *$outText*\n")
-                a.args.forEach { g -> append("  - `${g.id}` (${g.type}${if (g.choices.isNotEmpty()) ": " + g.choices.joinToString("|") else ""}) ${g.en}${g.default.let { d -> if (d is String && d.isEmpty() || d is List<*>) "" else ", default `$d`" }}\n") }
+                a.args.forEach { g -> append("  - `${g.id}` (${g.type}${if (g.choices.isNotEmpty()) ": " + g.choices.joinToString("|") else ""}) ${g.en}${g.default.let { d -> if (d is String && d.isEmpty() || d is List<*>) "" else ", default `$d`" }}${if (g.id in perItemArgs[a.id].orEmpty()) " — *per item*: `{item…}` tokens work here" else ""}\n") }
             }
             append('\n')
         }

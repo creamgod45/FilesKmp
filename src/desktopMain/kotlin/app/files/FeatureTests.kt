@@ -226,6 +226,34 @@ fun tokensTest() {
     val cat = FlowTokens.catalog(params, vars)
     c.check("catalog: variables first, then parameters", cat[0].text == "{var.FILES}" && cat[2].text == "{param.SHA}")
     c.check("catalog has the built-ins", listOf("{first}", "{clipboard}", "{item.name}", "{newline}").all { t -> cat.any { it.text == t } })
+
+    // Search syntax in query fields: suggestions while typing, and mistakes that would make a filter match nothing.
+    c.check("typing a search term", SearchQuery.typingTerm("a.txt fi", 8) == "fi" && SearchQuery.typingTerm("!ext", 4) == "ext" && SearchQuery.typingTerm("x ", 2) == null)
+    c.check("fi offers file: and folder:", FlowTokens.searchMatches("fi").map { it.text } == listOf("file:"))
+    c.check("f offers file: and folder:", FlowTokens.searchMatches("f").map { it.text } == listOf("file:", "folder:"))
+    c.check("dm: offers its examples", FlowTokens.searchMatches("dm:").size >= 3 && FlowTokens.searchMatches("file:").isEmpty())
+    c.check("valid queries have no problems", listOf("file:", "folder: !ext:tmp", "ext:jpg;png size:>10mb dm:<30d", "file: dm:{param.D}", "regex:^a|b$", "C:\\x *.log", "\"a b\" | c").all { SearchQuery.problems(it).isEmpty() })
+    c.check("kind:file is flagged", SearchQuery.problems("kind:file").single().contains("kind:"))
+    c.check("file:pdf is flagged", SearchQuery.problems("file:pdf").isNotEmpty())
+    c.check("bad size / date / regex are flagged", SearchQuery.problems("size:big").isNotEmpty() && SearchQuery.problems("dm:someday").isNotEmpty() && SearchQuery.problems("regex:(").isNotEmpty())
+    c.check("file: really keeps only files", SearchQuery.parse("file:")!!.let { q ->
+        q.matches(SearchQuery.Candidate("a.txt", "a.txt", false, 1, 0, 0) { "C:\\a.txt" }) && !q.matches(SearchQuery.Candidate("d", "d", true, 0, 0, 0) { "C:\\d" })
+    })
+
+    // The AI's validator explains what the parser will do with the shortcut it drafted.
+    fun aiCheck(steps: String) = AiTools.check("""{"schema":"fileskmp.shortcut/v1","name":"t","accepts":["files"],"steps":[$steps]}""")
+    c.check("validator: kind:file", aiCheck("""{"action":"files.filter","args":{"query":"kind:file"}}""").any { "kind:" in it })
+    c.check("validator: {item} outside a per-item argument", aiCheck("""{"action":"notify","args":{"title":"{item.name}"}}""").any { "per-item" in it })
+    c.check("validator: {item} in a per-item argument is fine", aiCheck("""{"action":"file.rename","args":{"name":"{item.stem}-1.{item.ext}"}}""").none { "per-item" in it })
+    c.check("validator: variable not set yet", aiCheck("""{"action":"notify","args":{"text":"{var.h}"}},{"action":"file.hash","saveAs":"h"}""").any { "“h”" in it || "「h」" in it })
+    c.check("validator: variable set before is fine", aiCheck("""{"action":"file.hash","saveAs":"h"},{"action":"notify","args":{"text":"{var.h}"}}""").none { "Step 2" in it })
+    c.check("validator: non-ASCII saveAs", aiCheck("""{"action":"file.hash","saveAs":"雜湊"}""").any { "saveAs" in it })
+    c.check("validator: bad choice", aiCheck("""{"action":"stop.if","args":{"when":"nothing"}}""").any { "not one of" in it })
+    c.check("validator: inside each, {var.item} is known", aiCheck("""{"action":"each","args":{"steps":[{"action":"notify","args":{"text":"{var.item} {var.index}"}}]}}""").none { "Step 1.steps" in it })
+    val sampleProblems = FlowStore.samples().flatMap { f -> AiTools.check(f.toJson()).filter { !it.startsWith("Note") }.map { "${f.name}: $it" } }
+    c.check("built-in samples pass the validator", sampleProblems.isEmpty(), sampleProblems.joinToString("\n"))
+    val spec = FlowActions.specMarkdown()
+    c.check("spec documents the search syntax, per-item args and conditions", listOf("## Search syntax", "`file:`", "*per item*", "## Conditions", "stays exactly as typed").all { it in spec })
     println("\nTOKENS TEST: ${c.pass} passed, ${c.fail} failed")
 }
 

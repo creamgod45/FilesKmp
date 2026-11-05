@@ -26,15 +26,16 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 
-/** One token people can type inside { }: what is inserted, what it means, and its group. */
-class TokenInfo(val key: String, private val zh: String, private val en: String, val group: Group) {
+/** One token people can type inside { } (or, when [literal], search syntax inserted as is): what is inserted, what it means, and its group. */
+class TokenInfo(val key: String, val zh: String, val en: String, val group: Group, val literal: Boolean = false) {
     enum class Group(private val zhName: String, private val enName: String) {
+        Search("搜尋語法", "Search syntax"),
         Var("變數", "Variables"), Param("參數", "Parameters"), Values("目前的值", "Current values"),
         Item("逐一處理的檔案", "Each file"), Folders("資料夾", "Folders"), Other("其他", "Other");
         val text get() = tr(enName, zhName)
     }
     val description get() = tr(en, zh)
-    val text get() = "{$key}"
+    val text get() = if (literal) key else "{$key}"
 }
 
 /**
@@ -54,11 +55,20 @@ object FlowTokens {
         TokenInfo("item.parent", "所在資料夾的路徑", "Its folder's path", TokenInfo.Group.Item),
         TokenInfo("item.folder", "所在資料夾的名稱", "Its folder's name", TokenInfo.Group.Item),
         TokenInfo("item.index:000", "第幾個（補零到 3 位）", "Its number (zero-padded to 3)", TokenInfo.Group.Item),
-        TokenInfo("item.size", "大小", "Size", TokenInfo.Group.Item),
+        TokenInfo("item.size", "大小（易讀文字，例如 1.2MB，不是位元組數）", "Size as readable text, e.g. 1.2MB (not bytes)", TokenInfo.Group.Item),
         TokenInfo("item.modified:yyyy-MM-dd", "修改日期（可改格式）", "Date modified (any format)", TokenInfo.Group.Item),
-        TokenInfo("item.taken:yyyy-MM-dd", "拍攝日期（相片）", "Date taken (photos)", TokenInfo.Group.Item),
+        TokenInfo("item.created:yyyy-MM-dd", "建立日期（可改格式）", "Date created (any format)", TokenInfo.Group.Item),
+        TokenInfo("item.taken:yyyy-MM-dd", "拍攝日期（相片；沒有時用修改日期）", "Date taken (photos; the date modified when missing)", TokenInfo.Group.Item),
         TokenInfo("item.width", "寬度（圖片／影片）", "Width (pictures / videos)", TokenInfo.Group.Item),
         TokenInfo("item.height", "高度（圖片／影片）", "Height (pictures / videos)", TokenInfo.Group.Item),
+        TokenInfo("item.camera", "相機型號", "Camera model", TokenInfo.Group.Item),
+        TokenInfo("item.artist", "演出者（音樂）", "Artist (music)", TokenInfo.Group.Item),
+        TokenInfo("item.album", "專輯（音樂）", "Album (music)", TokenInfo.Group.Item),
+        TokenInfo("item.title", "標題（檔案內容的中繼資料）", "Title (from the file's metadata)", TokenInfo.Group.Item),
+        TokenInfo("item.track:00", "曲目編號（補零）", "Track number (zero-padded)", TokenInfo.Group.Item),
+        TokenInfo("item.duration", "長度（影音；: 會變成 .）", "Length (audio / video; : becomes .)", TokenInfo.Group.Item),
+        TokenInfo("item.tags", "標籤（以空格分隔）", "Tags (space separated)", TokenInfo.Group.Item),
+        TokenInfo("item.field:Name", "自訂欄位的值（把 Name 換成欄位名稱）", "A custom field's value (replace Name)", TokenInfo.Group.Item),
         TokenInfo("folder", "目前開啟的資料夾", "The open folder", TokenInfo.Group.Folders),
         TokenInfo("home", "使用者資料夾", "Your user folder", TokenInfo.Group.Folders),
         TokenInfo("desktop", "桌面", "Desktop", TokenInfo.Group.Folders),
@@ -75,6 +85,9 @@ object FlowTokens {
         TokenInfo("env.USERNAME", "環境變數（把 USERNAME 換成需要的名稱）", "An environment variable (replace USERNAME)", TokenInfo.Group.Other),
     )
     private val plainKeys = builtIn.map { it.key.substringBefore(':') }.filter { '.' !in it }.toSet()
+
+    /** The built-in tokens (for the shortcut spec). */
+    val tokens: List<TokenInfo> get() = builtIn
 
     /** Variables some actions set by themselves, and the actions whose inner steps get them. */
     val setBy: Map<String, List<String>> = mapOf("wait.skippable" to listOf("skipped"), "volume" to listOf("muted"))
@@ -123,6 +136,13 @@ object FlowTokens {
     /** The token being typed just left of [caret] ("{va" → "va"), or null. */
     fun typing(text: String, caret: Int): String? =
         Regex("\\{([a-zA-Z][\\w.:-]*)?$").find(text.substring(0, caret.coerceIn(0, text.length)))?.groupValues?.get(1)
+
+    /** The search filters, for fields that take search syntax ("query" arguments). */
+    val searchHints: List<TokenInfo> by lazy { SearchQuery.hints.map { TokenInfo(it.text, it.zh, it.en, TokenInfo.Group.Search, literal = true) } }
+
+    /** Filters offered while typing [term] in a search field ("fi" → file:, "dm:" → dm:today …); empty when it's already complete. */
+    fun searchMatches(term: String): List<TokenInfo> =
+        searchHints.filter { it.key.startsWith(term, true) && !it.key.equals(term, true) }
 }
 
 /** Which parameters and variables a step's fields can use (provided by the shortcut editor). */
@@ -132,9 +152,10 @@ val LocalFlowFields = compositionLocalOf { FlowFieldContext(emptyList(), emptyLi
 /**
  * A text field for shortcut steps: typing { lists the tokens and variables usable here (↑ ↓ to pick,
  * Enter or Tab to insert, Esc to close), the { } button lists them all, and problems show under it.
+ * With [search], it takes search syntax: typing a word offers the filters (file:, ext:, size: …) and mistakes are flagged too.
  */
 @Composable
-fun TokenField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier, multiline: Boolean = false, mono: Boolean = false, placeholder: String = "") {
+fun TokenField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier, multiline: Boolean = false, mono: Boolean = false, placeholder: String = "", search: Boolean = false) {
     val p = LocalPalette.current
     val app = LocalAppState.current
     val ctx = LocalFlowFields.current
@@ -147,16 +168,26 @@ fun TokenField(value: String, onChange: (String) -> Unit, modifier: Modifier = M
     var height by remember { mutableStateOf(0) }
     val catalog = remember(ctx.params, ctx.vars) { FlowTokens.catalog(ctx.params, ctx.vars) }
     val typed = FlowTokens.typing(tfv.text, tfv.selection.end)
-    val prefix = if (listAll) "" else typed
-    val open = listAll || (focused && typed != null && dismissed != tfv.text)
-    val shown = if (!open) emptyList() else catalog.filter { prefix.isNullOrEmpty() || it.key.contains(prefix, true) || it.description.contains(prefix, true) }
+    val term = if (search && typed == null) SearchQuery.typingTerm(tfv.text, tfv.selection.end) else null
+    val open = listAll || (focused && (typed != null || term != null) && dismissed != tfv.text)
+    val shown = when {
+        !open -> emptyList()
+        listAll -> (if (search) FlowTokens.searchHints else emptyList()) + catalog
+        typed != null -> catalog.filter { typed.isEmpty() || it.key.contains(typed, true) || it.description.contains(typed, true) }
+        else -> FlowTokens.searchMatches(term.orEmpty())
+    }
     if (sel >= shown.size) sel = 0
 
     fun insert(t: TokenInfo) {
         val caret = tfv.selection.end
         val text = tfv.text
-        val start = if (!listAll && typed != null) caret - typed.length - 1 else caret
-        val after = text.substring(caret).let { if (it.startsWith("}")) it.drop(1) else it }
+        val start = when {
+            listAll -> caret
+            typed != null -> caret - typed.length - 1
+            term != null -> caret - term.length
+            else -> caret
+        }
+        val after = text.substring(caret).let { if (!t.literal && it.startsWith("}")) it.drop(1) else it }
         val ins = t.text
         tfv = TextFieldValue(text.substring(0, start) + ins + after, TextRange(start + ins.length))
         onChange(tfv.text); listAll = false; dismissed = null
@@ -173,7 +204,7 @@ fun TokenField(value: String, onChange: (String) -> Unit, modifier: Modifier = M
                     cursorBrush = SolidColor(p.text),
                     modifier = Modifier.fillMaxWidth().then(if (multiline) Modifier.heightIn(min = 70.dp) else Modifier.height(32.dp))
                         .background(if (p.dark) Color(0xFF1F1F1F) else Color.White, RoundedCornerShape(4.dp))
-                        .border(1.dp, if (open) p.accent else p.controlStroke, RoundedCornerShape(4.dp))
+                        .border(1.dp, if (open && shown.isNotEmpty()) p.accent else p.controlStroke, RoundedCornerShape(4.dp))
                         .padding(horizontal = 8.dp, vertical = if (multiline) 8.dp else 7.dp)
                         .onSizeChanged { height = it.height }
                         .onFocusChanged { focused = it.isFocused; app?.textFocus = it.isFocused; if (it.isFocused) listAll = false }
@@ -206,7 +237,9 @@ fun TokenField(value: String, onChange: (String) -> Unit, modifier: Modifier = M
             IconBtn(androidx.compose.material.icons.Icons.Outlined.DataObject, tr("Insert a token or variable", "插入標記或變數"),
                 { listAll = !listAll }, width = 30.dp, height = 32.dp, iconSize = 15.dp, selected = listAll)
         }
-        val problems = remember(tfv.text, ctx.params, ctx.vars) { FlowTokens.check(tfv.text, ctx.params, ctx.vars) }
+        val problems = remember(tfv.text, ctx.params, ctx.vars, search) {
+            FlowTokens.check(tfv.text, ctx.params, ctx.vars) + (if (search) SearchQuery.problems(tfv.text) else emptyList())
+        }
         problems.forEach { T("⚠ $it", Modifier.padding(top = 2.dp), size = 11.sp, color = p.danger, maxLines = 2) }
     }
 }
