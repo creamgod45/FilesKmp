@@ -406,6 +406,8 @@ object S {
     val flowHost = t("Server", "伺服器"); val flowPort = t("Port", "連接埠"); val flowSecurity = t("Security", "加密")
     val flowUser = t("User name", "使用者名稱"); val flowPassword = t("Password", "密碼"); val flowFrom = t("From", "寄件者")
     val flowPasswordKeep = t("(saved — leave empty to keep)", "（已儲存，留白則不變）")
+    val flowUnsaved = t("unsaved changes", "尚未儲存的修改"); val flowDiscard = t("Discard changes", "放棄修改")
+    val flowBackToEditor = t("Back to editor", "返回編輯")
     // 捷徑 → 權限 (FlowSafety.kt)
     val flowPermissions = t("Permissions", "權限"); val flowDeny = t("Deny", "拒絕")
     val flowNetTitle = t("Trusted hosts", "信任的網域")

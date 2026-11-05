@@ -823,6 +823,11 @@ class AppState(val scope: CoroutineScope) {
     var flowsOpen by mutableStateOf(false)
     /** The shortcut the 捷徑 dialog opens on (screenshots). */
     var flowsInitial: String? = null
+    /**
+     * Unsaved edits per shortcut id. Kept when the dialog closes (Run / Dry run from the editor close it),
+     * so reopening shows them again; dropped when saved or discarded.
+     */
+    val flowDrafts = androidx.compose.runtime.mutableStateMapOf<String, Flow>()
     var flowRun by mutableStateOf<FlowRunState?>(null)
     var flowPrompt by mutableStateOf<FlowPrompt?>(null)
 

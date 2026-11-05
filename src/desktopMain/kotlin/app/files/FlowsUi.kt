@@ -33,6 +33,8 @@ class FlowRunState(val flow: Flow, val dryRun: Boolean) {
     var result by mutableStateOf<List<String>>(emptyList())
     var outcome by mutableStateOf<String?>(null)
     var job: kotlinx.coroutines.Job? = null
+    /** Started from the editor: the run panel offers to go back to it. */
+    var editId: String? = null
 }
 
 fun flowIcon(name: String): ImageVector = when (name) {
@@ -72,11 +74,19 @@ fun FlowsDialog(s: AppState) {
     val all = FlowStore.all()
     var selectedId by remember { mutableStateOf(s.flowsInitial?.takeIf { id -> all.any { it.id == id } } ?: all.firstOrNull()?.id) }
     val selected = all.firstOrNull { it.id == selectedId }
-    var draft by remember(selectedId, FlowStore.mine) { mutableStateOf(selected) }
+    var draft by remember(selectedId, FlowStore.mine) { mutableStateOf(selectedId?.let { s.flowDrafts[it] } ?: selected) }
     var tab by remember { mutableStateOf(0) }
     var jsonText by remember(selectedId, tab) { mutableStateOf(draft?.toJson() ?: "") }
     var message by remember { mutableStateOf<String?>(null) }
-    val close = { s.flowsOpen = false }
+    /** An edit in the step editor: kept in AppState so closing the dialog (or running) loses nothing. */
+    fun edit(f: Flow) { draft = f; s.flowDrafts[f.id] = f }
+    /** The JSON tab's text, when it parses and differs from what's saved, becomes the draft. */
+    fun keepJson() {
+        val d = draft ?: return
+        if (tab != 1 || jsonText == d.toJson()) return
+        runCatching { Flow.fromJson(d.id, jsonText).copy(builtIn = d.builtIn) }.onSuccess { edit(it) }
+    }
+    val close = { keepJson(); s.flowsOpen = false }
     val shape = RoundedCornerShape(8.dp)
     Box(Modifier.fillMaxSize().background(Color(0x66000000)).pointerInput(Unit) { detectTapGestures2 { close() } }, contentAlignment = Alignment.Center) {
         Row(
@@ -117,20 +127,22 @@ fun FlowsDialog(s: AppState) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(flowIcon(d.icon), null, Modifier.size(24.dp), tint = p.accent)
                     Spacer(Modifier.width(10.dp))
-                    T(d.name, Modifier.weight(1f), size = 20.sp, weight = FontWeight.SemiBold)
+                    T(d.name, size = 20.sp, weight = FontWeight.SemiBold)
+                    if (d.id in s.flowDrafts) T("  · " + S.flowUnsaved, size = 12.sp, color = p.textSecondary)
+                    Spacer(Modifier.weight(1f))
                     IconBtn(Icons.Outlined.Close, S.close, close)
                 }
                 Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     listOf(S.flowEdit, "JSON", S.flowReference, S.flowAccounts, S.flowPermissions).forEachIndexed { i, label ->
                         Hover(Modifier.height(30.dp), onClick = {
-                            if (tab == 1 && i != 1) runCatching { Flow.fromJson(d.id, jsonText).copy(builtIn = d.builtIn) }.onSuccess { draft = it; message = null }.onFailure { message = it.message }
+                            if (tab == 1 && i != 1) runCatching { Flow.fromJson(d.id, jsonText).copy(builtIn = d.builtIn) }.onSuccess { if (jsonText != d.toJson()) edit(it); message = null }.onFailure { message = it.message }
                             tab = i
                         }, selected = tab == i) { T(label, Modifier.align(Alignment.Center).padding(horizontal = 12.dp), size = 13.sp) }
                     }
                 }
                 Box(Modifier.weight(1f)) {
                     when (tab) {
-                        0 -> FlowEditor(d) { draft = it }
+                        0 -> FlowEditor(d) { edit(it) }
                         1 -> MultiField(jsonText, { jsonText = it }, Modifier.fillMaxSize().verticalScroll(rememberScrollState()), mono = true)
                         2 -> ActionReference()
                         3 -> AccountsPanel()
@@ -140,10 +152,19 @@ fun FlowsDialog(s: AppState) {
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     fun current(): Flow? = if (tab == 1) runCatching { Flow.fromJson(d.id, jsonText).copy(builtIn = d.builtIn) }.onFailure { message = it.message }.getOrNull() else d
-                    DialogButton(S.flowRun, primary = true) { current()?.let { close(); s.runFlow(it, dryRun = false) } }
-                    DialogButton(S.flowDryRun, primary = false) { current()?.let { close(); s.runFlow(it, dryRun = true) } }
+                    // The dialog closes to show the run; the edits stay in s.flowDrafts and "Back to editor" reopens them.
+                    fun runFromEditor(dry: Boolean) = current()?.let { f ->
+                        close(); s.flowsInitial = f.id
+                        s.runFlow(f, dryRun = dry)
+                        s.flowRun?.takeIf { it.flow === f }?.editId = f.id
+                    }
+                    DialogButton(S.flowRun, primary = true) { runFromEditor(false) }
+                    DialogButton(S.flowDryRun, primary = false) { runFromEditor(true) }
                     DialogButton(if (d.builtIn) S.flowSaveCopy else S.flowSave, primary = false) {
-                        current()?.let { f -> val saved = FlowStore.save(f); selectedId = saved.id; message = S.saved }
+                        current()?.let { f -> val saved = FlowStore.save(f); s.flowDrafts.remove(d.id); s.flowDrafts.remove(saved.id); selectedId = saved.id; message = S.saved }
+                    }
+                    if (d.id in s.flowDrafts) DialogButton(S.flowDiscard, primary = false) {
+                        s.flowDrafts.remove(d.id); draft = selected; jsonText = selected?.toJson() ?: ""; message = null
                     }
                     DialogButton(S.flowExport, primary = false) {
                         current()?.let { f ->
@@ -151,7 +172,7 @@ fun FlowsDialog(s: AppState) {
                             dlg.file?.let { name -> File(dlg.directory, name).writeText(f.toJson(), Charsets.UTF_8); message = S.saved + " " + name }
                         }
                     }
-                    if (!d.builtIn) DialogButton(S.remove, primary = false) { FlowStore.delete(d); selectedId = FlowStore.all().firstOrNull()?.id }
+                    if (!d.builtIn) DialogButton(S.remove, primary = false) { FlowStore.delete(d); s.flowDrafts.remove(d.id); selectedId = FlowStore.all().firstOrNull()?.id }
                     T(message ?: "", Modifier.weight(1f), size = 12.sp, color = if (message == S.saved || message?.startsWith(S.saved) == true) p.textSecondary else p.danger, maxLines = 2)
                 }
             }
@@ -535,6 +556,7 @@ fun FlowRunPanel(s: AppState, r: FlowRunState) {
                 Icon(flowIcon(r.flow.icon), null, Modifier.size(18.dp), tint = p.accent)
                 Spacer(Modifier.width(8.dp))
                 T(r.flow.name + if (r.dryRun) "  (" + S.flowDryRun + ")" else "", Modifier.weight(1f), size = 14.sp, weight = FontWeight.SemiBold)
+                if (!r.running) r.editId?.let { id -> DialogButton(S.flowBackToEditor, primary = false) { s.flowsInitial = id; s.flowsOpen = true; s.flowRun = null }; Spacer(Modifier.width(6.dp)) }
                 if (r.running) DialogButton(S.flowStop, primary = false) { r.job?.cancel() }
                 else IconBtn(Icons.Outlined.Close, S.close, { s.flowRun = null }, width = 30.dp, height = 28.dp)
             }
