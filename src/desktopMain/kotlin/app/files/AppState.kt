@@ -828,6 +828,8 @@ class AppState(val scope: CoroutineScope) {
      * so reopening shows them again; dropped when saved or discarded.
      */
     val flowDrafts = androidx.compose.runtime.mutableStateMapOf<String, Flow>()
+    /** 捷徑 → AI 助手 (AiAgent.kt): kept for the session so closing the dialog keeps the conversation. */
+    val aiChat by lazy { AiChat(scope, this) }
     var flowRun by mutableStateOf<FlowRunState?>(null)
     var flowPrompt by mutableStateOf<FlowPrompt?>(null)
 

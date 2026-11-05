@@ -133,7 +133,7 @@ fun FlowsDialog(s: AppState) {
                     IconBtn(Icons.Outlined.Close, S.close, close)
                 }
                 Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf(S.flowEdit, "JSON", S.flowReference, S.flowAccounts, S.flowPermissions).forEachIndexed { i, label ->
+                    listOf(S.flowEdit, "JSON", S.flowReference, S.flowAccounts, S.flowPermissions, S.aiTab).forEachIndexed { i, label ->
                         Hover(Modifier.height(30.dp), onClick = {
                             if (tab == 1 && i != 1) runCatching { Flow.fromJson(d.id, jsonText).copy(builtIn = d.builtIn) }.onSuccess { if (jsonText != d.toJson()) edit(it); message = null }.onFailure { message = it.message }
                             tab = i
@@ -146,7 +146,8 @@ fun FlowsDialog(s: AppState) {
                         1 -> MultiField(jsonText, { jsonText = it }, Modifier.fillMaxSize().verticalScroll(rememberScrollState()), mono = true)
                         2 -> ActionReference()
                         3 -> AccountsPanel()
-                        else -> PermissionsPanel()
+                        4 -> PermissionsPanel()
+                        else -> AiPanel(s) { id -> selectedId = id; tab = 0; message = null }
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -490,6 +491,111 @@ private fun AccountsPanel() {
                 pass = ""; token = ""; saved = true
             }
             if (saved) T(S.saved, size = 12.sp, color = p.textSecondary)
+        }
+    }
+}
+
+/** AI 助手: the chat, its approvals, and the assistant's settings (AiAgent.kt). [onOpen] shows a shortcut in the editor. */
+@Composable
+private fun AiPanel(s: AppState, onOpen: (String) -> Unit) {
+    val p = LocalPalette.current
+    val chat = s.aiChat
+    var settings by remember { mutableStateOf(!AiConfig.hasKey && chat.items.isEmpty()) }
+    var input by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            T(S.aiModel, size = 12.sp, color = p.textSecondary)
+            ChoiceBox(AiConfig.model, AiConfig.models.map { it to it }, Modifier.width(170.dp)) { AiConfig.saveModel(it) }
+            T(S.aiEffort, size = 12.sp, color = p.textSecondary)
+            ChoiceBox(AiConfig.effort, AiConfig.efforts.map { it to it }, Modifier.width(90.dp)) { AiConfig.saveEffort(it) }
+            Spacer(Modifier.weight(1f))
+            DialogButton(S.aiSettings, primary = false) { settings = !settings }
+            DialogButton(S.aiNewChat, primary = false) { chat.reset() }
+        }
+        if (settings) AiSettings()
+        else {
+            val ls = rememberLazyListState()
+            LaunchedEffect(chat.items.size, chat.pending) { if (chat.items.isNotEmpty()) ls.animateScrollToItem(chat.items.size - 1) }
+            LazyColumn(Modifier.weight(1f).fillMaxWidth().background(if (p.dark) Color(0xFF1A1A1A) else Color(0xFFF6F6F6), RoundedCornerShape(6.dp)).padding(10.dp),
+                state = ls, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (chat.items.isEmpty()) item { T(S.aiIntro, size = 12.sp, color = p.textSecondary, maxLines = 6) }
+                items(chat.items.toList()) { it -> AiChatRow(chat, it, onOpen) }
+                if (chat.busy && chat.pending == null) item { T(S.aiThinking, size = 12.sp, color = p.textTertiary) }
+            }
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.weight(1f)) {
+                    MultiField(input, { input = it }, Modifier.fillMaxWidth().heightIn(min = 60.dp, max = 140.dp))
+                    if (input.isEmpty()) T(S.aiPlaceholder, Modifier.padding(9.dp), size = 13.sp, color = p.textTertiary, maxLines = 2)
+                }
+                if (chat.busy) DialogButton(S.aiStop, primary = false) { chat.stop() }
+                else DialogButton(S.aiSend, primary = true) { if (input.isNotBlank()) { chat.send(input); input = "" } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiChatRow(chat: AiChat, it: AiChatItem, onOpen: (String) -> Unit) {
+    val p = LocalPalette.current
+    when (it.role) {
+        AiChatItem.USER -> Row(Modifier.fillMaxWidth()) {
+            Spacer(Modifier.weight(0.15f))
+            T(it.text, Modifier.weight(0.85f, fill = false).background(p.accent.copy(alpha = 0.16f), RoundedCornerShape(8.dp)).padding(10.dp), size = 13.sp, maxLines = 40)
+        }
+        AiChatItem.ASSISTANT -> T(it.text, Modifier.fillMaxWidth(0.92f).background(p.solid, RoundedCornerShape(8.dp)).border(1.dp, p.controlStroke, RoundedCornerShape(8.dp)).padding(10.dp),
+            size = 13.sp, maxLines = 200)
+        AiChatItem.ERROR -> T(it.text, size = 12.sp, color = p.danger, maxLines = 6)
+        AiChatItem.APPROVAL -> {
+            val q = it.approval ?: return
+            Column(Modifier.fillMaxWidth().background(p.solid, RoundedCornerShape(8.dp)).border(1.dp, p.accent.copy(alpha = 0.6f), RoundedCornerShape(8.dp)).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                T("⚙ " + q.tool.label + " (" + q.tool.name + ")", size = 11.sp, color = p.textSecondary)
+                T(q.summary, size = 14.sp, weight = FontWeight.SemiBold, maxLines = 4)
+                if (q.detail.isNotBlank()) Column(Modifier.fillMaxWidth().heightIn(max = 260.dp).background(if (p.dark) Color(0xFF111111) else Color(0xFFEFEFEF), RoundedCornerShape(4.dp))
+                    .verticalScroll(rememberScrollState()).padding(8.dp)) { T(q.detail, size = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 400) }
+                when (q.decided) {
+                    // Decline is the primary button: nothing is granted by a stray Enter.
+                    null -> if (chat.pending === q) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DialogButton(S.flowDeny, primary = true) { chat.answer(false) }
+                        DialogButton(S.aiAllow, primary = false) { chat.answer(true) }
+                    }
+                    true -> T("✓ " + S.aiAllowed, size = 12.sp, color = p.textSecondary)
+                    false -> T("✕ " + S.aiDenied, size = 12.sp, color = p.textSecondary)
+                }
+            }
+        }
+        else -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            T(it.text, size = 11.sp, color = p.textTertiary, fontFamily = FontFamily.Monospace, maxLines = 3)
+            it.openId?.let { id -> DialogButton(S.aiOpen, primary = false) { onOpen(id) } }
+        }
+    }
+}
+
+/** The key, the model's settings and the per-tool policies. */
+@Composable
+private fun AiSettings() {
+    val p = LocalPalette.current
+    var key by remember { mutableStateOf("") }
+    val hasStored = remember(AiConfig.keyVersion) { AiConfig.storedKey() != null }
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        GroupTitle(S.aiKey)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PlainField(key, { key = it }, Modifier.weight(1f), placeholder = if (hasStored) S.flowPasswordKeep else "sk-ant-…", password = true)
+            DialogButton(S.flowSave, primary = true) { if (key.isNotBlank()) { AiConfig.saveKey(key); key = "" } }
+            if (hasStored) DialogButton(S.aiKeyRemove, primary = false) { AiConfig.saveKey("") }
+        }
+        T(S.aiKeyHint, size = 12.sp, color = p.textSecondary, maxLines = 5)
+        GroupTitle(S.aiTools)
+        T(S.aiToolsHint, size = 12.sp, color = p.textSecondary, maxLines = 8)
+        AiTools.all.forEach { t ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    T(t.label + "  ·  " + t.name, size = 13.sp, fontFamily = FontFamily.Monospace)
+                    T(t.description, size = 11.sp, color = p.textTertiary, maxLines = 4)
+                }
+                val labels = mapOf("auto" to S.aiPolicyAuto, "ask" to S.aiPolicyAsk, "off" to S.aiPolicyOff)
+                ChoiceBox(AiConfig.policy(t), t.allowed.map { it to labels.getValue(it) }, Modifier.width(100.dp)) { AiConfig.savePolicy(t, it) }
+            }
         }
     }
 }

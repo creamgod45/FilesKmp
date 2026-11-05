@@ -408,6 +408,33 @@ object S {
     val flowPasswordKeep = t("(saved — leave empty to keep)", "（已儲存，留白則不變）")
     val flowUnsaved = t("unsaved changes", "尚未儲存的修改"); val flowDiscard = t("Discard changes", "放棄修改")
     val flowBackToEditor = t("Back to editor", "返回編輯")
+    // 捷徑 → AI 助手 (AiAgent.kt)
+    val aiTab = t("AI assistant", "AI 助手"); val aiSettings = t("Settings", "設定"); val aiNewChat = t("New chat", "新對話")
+    val aiSend = t("Send", "傳送"); val aiStop = t("Stop", "停止"); val aiThinking = t("Thinking…", "思考中…")
+    val aiPlaceholder = t("Describe the shortcut you want, e.g. \"rename the selected photos by date taken\"", "描述你想要的捷徑，例如「把選取的相片依拍攝日期重新命名」")
+    val aiIntro = t(
+        "Describe what you want to automate. The assistant drafts a shortcut, checks it, and asks you before adding it. It can't run shortcuts, read your files or reach anything else: it only has the tools listed under Settings.",
+        "描述你想自動化的事，助手會設計捷徑、檢查後再請你同意加入。它不能執行捷徑、讀取檔案或做其他事，只能使用「設定」中列出的工具。")
+    val aiKey = t("Anthropic API key", "Anthropic API 金鑰"); val aiModel = t("Model", "模型"); val aiEffort = t("Effort", "思考深度")
+    val aiKeyHint = t(
+        "Encrypted with Windows DPAPI: only your Windows account on this PC can read it. Leave empty to use the ANTHROPIC_API_KEY environment variable. Conversations are sent to Anthropic's API.",
+        "以 Windows DPAPI 加密，只有這台電腦上你的 Windows 帳戶能解開。留白則使用環境變數 ANTHROPIC_API_KEY。對話內容會傳送到 Anthropic API。")
+    val aiKeyRemove = t("Remove key", "移除金鑰")
+    val aiTools = t("Tools the assistant may call", "助手可以呼叫的工具")
+    val aiToolsHint = t(
+        "These are the only tools; there is no way for the assistant to add others. Auto: runs without asking. Ask: you approve every call. Off: not offered. Proposing a shortcut always asks, and what you accept is an untrusted shortcut: it is never run for you, and its program / data-sending steps still ask when you run it.",
+        "助手只能使用這些工具，無法自行增加。自動：不經詢問。詢問：每次呼叫都需要你同意。關閉：不提供給助手。「提出捷徑」一定會詢問；你接受的捷徑不受信任，不會自動執行，執行程式或傳送資料的步驟在執行時仍會詢問。")
+    val aiPolicyAuto = t("Auto", "自動"); val aiPolicyAsk = t("Ask", "詢問"); val aiPolicyOff = t("Off", "關閉")
+    val aiAllow = t("Allow", "允許"); val aiAllowed = t("Allowed", "已允許"); val aiDenied = t("Declined", "已拒絕"); val aiOpen = t("Open", "開啟")
+    val aiNoKey = t("No API key: add one under Settings (or set ANTHROPIC_API_KEY).", "尚未設定 API 金鑰：請在「設定」中加入（或設定環境變數 ANTHROPIC_API_KEY）。")
+    val aiBadKey = t("The API key was rejected.", "API 金鑰無效。")
+    val aiRateLimited = t("Rate limited by the API; try again in a moment.", "API 請求太頻繁，請稍後再試。")
+    val aiNetwork = t("Can't reach the API: ", "無法連線到 API：")
+    val aiStopped = t("Stopped.", "已停止。")
+    val aiRefused = t("The model declined this request. ", "模型拒絕了這個要求。")
+    val aiFallback = t("(answered by a fallback model)", "（由備援模型回答）")
+    val aiTooLong = t("The reply was cut off (too long); nothing it asked for was run. Try a smaller request.", "回覆過長被截斷，其中的工具呼叫未執行。請把需求拆小一點。")
+    val aiTooManySteps = t("Stopped after too many steps in one turn.", "單次回合步驟過多，已停止。")
     // 捷徑 → 權限 (FlowSafety.kt)
     val flowPermissions = t("Permissions", "權限"); val flowDeny = t("Deny", "拒絕")
     val flowNetTitle = t("Trusted hosts", "信任的網域")

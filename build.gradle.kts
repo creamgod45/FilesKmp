@@ -44,6 +44,8 @@ kotlin {
                 implementation("org.jetbrains.compose.material3:material3:1.9.0")
                 implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
+                // AI shortcut assistant (AiAgent.kt): Claude Messages API with a fixed tool set.
+                implementation("com.anthropic:anthropic-java:3.2.0")
             }
         }
     }
