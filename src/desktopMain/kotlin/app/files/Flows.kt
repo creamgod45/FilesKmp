@@ -629,6 +629,8 @@ object FlowActions {
         "image.convert" to setOf("to"), "image.resize" to setOf("to"), "text.template" to setOf("template"),
         "json.make" to setOf("entries"), "json.set" to setOf("value"), "number.calc" to setOf("formula"),
         "base64.decode" to setOf("path"), "app.launch" to setOf("args"),
+        "video.convert" to setOf("name", "to"), "video.compress" to setOf("name", "to"), "video.scale" to setOf("name", "to"),
+        "ffmpeg.run" to setOf("args", "output", "to"),
     )
 
     class StepType(val incoming: VType, val outgoing: VType, val warning: String?)
@@ -720,6 +722,25 @@ object FlowActions {
         }
     }
 
+    /** Worked shortcuts for the spec and the assistant; the token test checks each one passes the validator. */
+    val recipes: List<Pair<String, String>> = listOf(
+        "Convert videos to a chosen resolution and format" to """{"schema":"fileskmp.shortcut/v1","name":"影片轉檔（選解析度與格式）","accepts":["files"],"steps":[
+  {"action":"files.selected"},
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;m2ts;avi;m4v;wmv;flv"},"saveAs":"videos"},
+  {"action":"text.set","input":"nothing","args":{"text":"1080p\n720p\n480p"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇解析度"},"saveAs":"res"},
+  {"action":"text.set","input":"nothing","args":{"text":"mp4\nmkv\nwebm\nmov"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇格式"},"saveAs":"fmt"},
+  {"action":"video.convert","input":"var:videos","args":{"format":"{var.fmt}","height":"{var.res}","quality":"medium","name":"{item.stem}_{var.res}","to":"{item.parent}"}}
+]}""",
+        "Shrink videos to send (under 25 MB)" to """{"schema":"fileskmp.shortcut/v1","name":"壓縮影片到 25 MB","accepts":["files"],"steps":[
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;avi;m4v"}},
+  {"action":"video.compress","args":{"method":"size","sizeMB":"25","codec":"h264","name":"{item.stem}_25MB"}}
+]}""",
+    )
+
     /** The format spec as Markdown, generated from this registry (設定 → 捷徑 → 匯出規格). */
     fun specMarkdown(): String = buildString {
         append("# FilesKmp 捷徑格式 — ${FlowStore.SCHEMA}\n\n")
@@ -784,6 +805,15 @@ object FlowActions {
         SearchQuery.hints.forEach { h -> append("- `${h.text}` — ${h.en}\n") }
         append("- `file:` and `folder:` take no value: `file: ext:pdf`, not `file:pdf`\n\n")
         append(SAFETY_SPEC)
+        append("## Recipes (proven designs; start from these)\n\n")
+        recipes.forEach { (title, json) -> append("### ").append(title).append("\n\n```json\n").append(json).append("\n```\n\n") }
+        append("Notes for video and audio:\n\n")
+        append("- One `video.convert` does format, codec, quality **and** resolution (`height`) in a single encode. Don't chain `video.scale` + `video.convert` (two lossy encodes), ")
+        append("and don't branch with `if` per resolution: pass the choice as `{var.res}` (\"720p\" and \"720\" both work).\n")
+        append("- To let the person pick from fixed options while running: `text.set` (`input: \"nothing\"`, one option per line) → `text.split` → `ui.choose` with `saveAs`. ")
+        append("Keep the files in a variable first (`saveAs: \"videos\"`) and give the video step `input: \"var:videos\"`.\n")
+        append("- `name` / `to` / `output` of the video actions are *per item*: `{item.stem}`, `{item.parent}` work there, mixed with `{var.x}`. Don't put `{item…}` in `if` or `text.set`.\n")
+        append("- ts → mp4 / mkv → mp4: `video.convert` with codec `auto` copies the streams (seconds, no loss). Sending limits: `video.compress` with `method: size`.\n\n")
         append("## Actions\n\n")
         all.groupBy { it.category }.forEach { (cat, acts) ->
             append("### ${cat.replace('|', '/')}\n\n")

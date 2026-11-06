@@ -135,7 +135,7 @@ Inside `each` the current value is `{var.item}` (and `{first}`, since the inner 
 
 ### `{item…}` tokens: only in *per item* arguments
 
-These are filled in for each value in turn, and **only** in the arguments marked *per item* in the action list: `file.copy` (`to`), `file.move` (`to`), `file.rename` (`name`), `file.unzip` (`to`), `image.convert` (`to`), `image.resize` (`to`), `text.template` (`template`), `json.make` (`entries`), `json.set` (`value`), `number.calc` (`formula`), `base64.decode` (`path`), `app.launch` (`args`). Anywhere else (`notify` text, `if` subject, `text.set` …) they stay as typed: use `{first}` or `{var.item}` inside `each` instead.
+These are filled in for each value in turn, and **only** in the arguments marked *per item* in the action list: `file.copy` (`to`), `file.move` (`to`), `file.rename` (`name`), `file.unzip` (`to`), `image.convert` (`to`), `image.resize` (`to`), `text.template` (`template`), `json.make` (`entries`), `json.set` (`value`), `number.calc` (`formula`), `base64.decode` (`path`), `app.launch` (`args`), `video.convert` (`name`/`to`), `video.compress` (`name`/`to`), `video.scale` (`name`/`to`), `ffmpeg.run` (`args`/`output`/`to`). Anywhere else (`notify` text, `if` subject, `text.set` …) they stay as typed: use `{first}` or `{var.item}` inside `each` instead.
 
 | Token | Value |
 |---|---|
@@ -207,6 +207,40 @@ redirects to http. Default list: `api.github.com`, `www.bing.com`.
 `open`, `open.with`, `email.send`, `sms.send`, `flow.run`, and `url.open` with a non-web address (`mailto:` excepted).
 Trust covers exactly those steps (with their arguments): changing one asks again, other edits don't. Imported shortcuts start
 untrusted; built-in samples are trusted as shipped; a dry run never asks.
+
+## Recipes (proven designs; start from these)
+
+### Convert videos to a chosen resolution and format
+
+```json
+{"schema":"fileskmp.shortcut/v1","name":"影片轉檔（選解析度與格式）","accepts":["files"],"steps":[
+  {"action":"files.selected"},
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;m2ts;avi;m4v;wmv;flv"},"saveAs":"videos"},
+  {"action":"text.set","input":"nothing","args":{"text":"1080p\n720p\n480p"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇解析度"},"saveAs":"res"},
+  {"action":"text.set","input":"nothing","args":{"text":"mp4\nmkv\nwebm\nmov"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇格式"},"saveAs":"fmt"},
+  {"action":"video.convert","input":"var:videos","args":{"format":"{var.fmt}","height":"{var.res}","quality":"medium","name":"{item.stem}_{var.res}","to":"{item.parent}"}}
+]}
+```
+
+### Shrink videos to send (under 25 MB)
+
+```json
+{"schema":"fileskmp.shortcut/v1","name":"壓縮影片到 25 MB","accepts":["files"],"steps":[
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;avi;m4v"}},
+  {"action":"video.compress","args":{"method":"size","sizeMB":"25","codec":"h264","name":"{item.stem}_25MB"}}
+]}
+```
+
+Notes for video and audio:
+
+- One `video.convert` does format, codec, quality **and** resolution (`height`) in a single encode. Don't chain `video.scale` + `video.convert` (two lossy encodes), and don't branch with `if` per resolution: pass the choice as `{var.res}` ("720p" and "720" both work).
+- To let the person pick from fixed options while running: `text.set` (`input: "nothing"`, one option per line) → `text.split` → `ui.choose` with `saveAs`. Keep the files in a variable first (`saveAs: "videos"`) and give the video step `input: "var:videos"`.
+- `name` / `to` / `output` of the video actions are *per item*: `{item.stem}`, `{item.parent}` work there, mixed with `{var.x}`. Don't put `{item…}` in `if` or `text.set`.
+- ts → mp4 / mkv → mp4: `video.convert` with codec `auto` copies the streams (seconds, no loss). Sending limits: `video.compress` with `method: size`.
 
 ## Actions
 
@@ -469,21 +503,22 @@ size={item.size}` — *per item*: `{item…}` tokens work here
 
 ### 影片與音訊/Video & audio
 
-- **`video.convert`** — Convert video / 影片轉檔 *(changes files or the system; skipped in a dry run)*. Converts video or sound to mp4, mkv, mov, webm, avi or gif, or saves just the sound as mp3, m4a, wav, flac or opus. With codec "auto", streams that fit the new format are copied (ts → mp4 in seconds, no quality loss); others are re-encoded (webm → mp4 becomes H.264 + AAC).  
+- **`video.convert`** — Convert video / 影片轉檔 *(changes files or the system; skipped in a dry run)*. Converts video or sound to mp4, mkv, mov, webm, avi or gif, or saves just the sound as mp3, m4a, wav, flac or opus. With codec "auto", streams that fit the new format are copied (ts → mp4 in seconds, no quality loss); others are re-encoded (webm → mp4 becomes H.264 + AAC). "Resolution" also scales the video down to that height in the same pass (1080/720/480…, or "720p" from a variable).  
   Input: *files* → Output: *files*
   - `format` (choice: mp4|mkv|mov|webm|avi|gif|mp3|m4a|wav|flac|opus) Format, default `mp4`
   - `codec` (choice: auto|copy|h264|h265|vp9|av1) Video codec, default `auto`
   - `quality` (choice: high|medium|small) Quality, default `medium`
-  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}`
-  - `to` (folder) Destination, default `{item.parent}`
+  - `height` (choice: keep|2160|1440|1080|720|480|360) Resolution (output height; only ever scaled down), default `keep`
+  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
 - **`video.compress`** — Compress video / 壓縮影片 *(changes files or the system; skipped in a dry run)*. Re-encodes a video into a smaller mp4: by quality (high / medium / small), or to a target size in MB (two-pass, to land close to it — e.g. under 25 MB for sending).  
   Input: *files* → Output: *files*
   - `method` (choice: quality|size) Method, default `quality`
   - `quality` (choice: high|medium|small) Quality, default `medium`
   - `sizeMB` (number) Target size (MB), default `25`
   - `codec` (choice: h264|h265) Video codec, default `h264`
-  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}_compressed`
-  - `to` (folder) Destination, default `{item.parent}`
+  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}_compressed` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
 - **`video.scale`** — Scale video / 縮放影片 *(changes files or the system; skipped in a dry run)*. Changes a video's resolution: by percent, to a width or a height (the other side keeps the proportions), or to fit inside a width × height box. Sound is copied when possible.  
   Input: *files* → Output: *files*
   - `mode` (choice: percent|width|height|fit) Mode, default `percent`
@@ -491,15 +526,15 @@ size={item.size}` — *per item*: `{item…}` tokens work here
   - `width` (number) Width (px), default `1280`
   - `height` (number) Height (px), default `720`
   - `quality` (choice: high|medium|small) Quality, default `high`
-  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}_scaled`
-  - `to` (folder) Destination, default `{item.parent}`
+  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}_scaled` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
 - **`video.info`** — Video info / 影片資訊. Length, resolution, frame rate and codecs of each video or sound file (tab separated: name, length, width×height, fps, video codec, audio codec).  
   Input: *files* → Output: *text*
 - **`ffmpeg.run`** — FFmpeg (custom) / FFmpeg 自訂轉換 *(changes files or the system; skipped in a dry run)*. Runs FFmpeg with your own arguments for each file: {in} is the source and {out} the output (from "Output name"; existing files are never overwritten); tokens like {item.stem} work too. Example: -i {in} -ss 00:00:10 -t 30 -c copy {out}  
   Input: *files* → Output: *files*
-  - `args` (multiline) FFmpeg arguments, default `-i {in} -c:v libx264 -crf 23 -preset medium -c:a aac -b:a 160k {out}`
-  - `output` (text) Output name (with extension), default `{item.stem}_out.mp4`
-  - `to` (folder) Destination, default `{item.parent}`
+  - `args` (multiline) FFmpeg arguments, default `-i {in} -c:v libx264 -crf 23 -preset medium -c:a aac -b:a 160k {out}` — *per item*: `{item…}` tokens work here
+  - `output` (text) Output name (with extension), default `{item.stem}_out.mp4` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
 
 ### 網路/Web
 

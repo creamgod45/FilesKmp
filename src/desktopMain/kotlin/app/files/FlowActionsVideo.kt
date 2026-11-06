@@ -236,32 +236,47 @@ private suspend fun FlowRun.ffmpeg(exe: File, args: List<String>, duration: Doub
 }
 
 private val nameArgHint = "（不含副檔名，可用標記）" to " (without extension; tokens allowed)"
+private val convertFormats = listOf("mp4", "mkv", "mov", "webm", "avi", "gif", "mp3", "m4a", "wav", "flac", "opus")
+private val heights = listOf("keep", "2160", "1440", "1080", "720", "480", "360")
 
 internal fun videoActions(): List<FlowAction> = listOf(
     FlowAction("video.convert", "影片轉檔", "Convert video", CAT_VIDEO,
-        "把影片或聲音轉成 mp4、mkv、mov、webm、avi、gif，或抽出聲音存成 mp3、m4a、wav、flac、opus。編碼「自動」時，串流合乎新格式就直接複製（ts → mp4 幾秒完成、畫質不變），否則重新編碼（webm → mp4 用 H.264 + AAC）。",
-        "Converts video or sound to mp4, mkv, mov, webm, avi or gif, or saves just the sound as mp3, m4a, wav, flac or opus. With codec \"auto\", streams that fit the new format are copied (ts → mp4 in seconds, no quality loss); others are re-encoded (webm → mp4 becomes H.264 + AAC).",
-        listOf(ArgSpec("format", "格式", "Format", "choice", "mp4", listOf("mp4", "mkv", "mov", "webm", "avi", "gif", "mp3", "m4a", "wav", "flac", "opus")),
+        "把影片或聲音轉成 mp4、mkv、mov、webm、avi、gif，或抽出聲音存成 mp3、m4a、wav、flac、opus。編碼「自動」時，串流合乎新格式就直接複製（ts → mp4 幾秒完成、畫質不變），否則重新編碼（webm → mp4 用 H.264 + AAC）。「解析度」可在同一次轉檔中縮小到指定高度（1080／720／480…，變數給的「720p」也可以）。",
+        "Converts video or sound to mp4, mkv, mov, webm, avi or gif, or saves just the sound as mp3, m4a, wav, flac or opus. With codec \"auto\", streams that fit the new format are copied (ts → mp4 in seconds, no quality loss); others are re-encoded (webm → mp4 becomes H.264 + AAC). \"Resolution\" also scales the video down to that height in the same pass (1080/720/480…, or \"720p\" from a variable).",
+        listOf(ArgSpec("format", "格式", "Format", "choice", "mp4", convertFormats),
             ArgSpec("codec", "影片編碼", "Video codec", "choice", "auto", listOf("auto", "copy", "h264", "h265", "vp9", "av1")),
             ArgSpec("quality", "畫質", "Quality", "choice", "medium", listOf("high", "medium", "small")),
+            ArgSpec("height", "解析度（輸出高度，只縮小不放大）", "Resolution (output height; only ever scaled down)", "choice", "keep", heights),
             ArgSpec("name", "檔名" + nameArgHint.first, "File name" + nameArgHint.second, "text", "{item.stem}"),
             ArgSpec("to", "目的資料夾", "Destination", "folder", "{item.parent}")),
         changes = true, input = VType.Files, output = VType.Files) { st ->
-        val fmt = arg(st, "format").lowercase(Locale.ROOT).trim('.')
-        val codec = arg(st, "codec").lowercase(Locale.ROOT)
-        val quality = arg(st, "quality").lowercase(Locale.ROOT)
+        val fmt = arg(st, "format").lowercase(Locale.ROOT).trim().trim('.')
+        val codec = arg(st, "codec").lowercase(Locale.ROOT).trim()
+        val quality = arg(st, "quality").lowercase(Locale.ROOT).trim()
+        // "720", "720p" or "keep"; a value from a variable may be any of these.
+        val heightText = arg(st, "height").trim().lowercase(Locale.ROOT)
+        val height = heightText.removeSuffix("p").takeIf { it.isNotEmpty() && it.all(Char::isDigit) }?.toIntOrNull()?.coerceIn(16, 16384)
+        if (height == null && heightText !in setOf("", "keep", "original"))
+            throw FlowStopped(tr("Resolution \"$heightText\" isn't a height like 720 or 720p.", "解析度「$heightText」不是像 720 或 720p 這樣的高度。"))
+        if (fmt !in convertFormats) throw FlowStopped(tr("Unknown format \"$fmt\"; use one of ${convertFormats.joinToString()}.", "不認得格式「$fmt」；可用 ${convertFormats.joinToString()}。"))
+        // Never upscale; -2 keeps the width even, as the encoders need.
+        val scale = height?.let { "scale=-2:'min($it,ih)'" }
         eachVideo(st, { fmt }) { exe, src, out ->
             val info = if (dryRun && !exe.isFile) Ffmpeg.Info(0.0, null, null, 0, 0, null, false) else Ffmpeg.probe(exe, src)
             val args = ArrayList<String>(listOf("-i", src.path))
             when {
                 fmt in Enc.audioFormats -> { if (info.audio == null && info.duration > 0) throw FlowStopped(tr("No sound in this file.", "這個檔案沒有聲音。"))
                     args += listOf("-vn", "-map", "0:a:0") + Enc.audioFormats.getValue(fmt) }
-                fmt == "gif" -> args += listOf("-an", "-vf", "fps=12,scale='min(640,iw)':-2:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse", "-loop", "0")
+                fmt == "gif" -> args += listOf("-an", "-vf", "fps=12," + (if (height != null) "scale=-2:'min($height,ih)'" else "scale='min(640,iw)':-2") +
+                    ":flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse", "-loop", "0")
                 else -> {
                     args += Enc.maps(fmt, info)
-                    val copyAll = codec == "copy" || (codec == "auto" && Enc.videoFits(fmt, info.video) && Enc.audioFits(fmt, info.audio) && fmt != "avi")
+                    // Scaling needs a re-encode, so it overrides copying.
+                    if (scale != null && codec == "copy") log("   " + tr("Changing the resolution needs re-encoding; codec \"copy\" is ignored.", "改變解析度必須重新編碼，忽略「直接複製」。"))
+                    val copyAll = scale == null && (codec == "copy" || (codec == "auto" && Enc.videoFits(fmt, info.video) && Enc.audioFits(fmt, info.audio) && fmt != "avi"))
                     if (copyAll) args += listOf("-c:v", "copy", "-c:a", "copy")
                     else {
+                        if (scale != null) args += listOf("-vf", scale)
                         args += Enc.video(Enc.pick(if (codec == "auto" || codec == "copy") Enc.defaultCodec(fmt) else codec, Ffmpeg.encoders(exe), ::log), quality, fmt)
                         args += Enc.audio(fmt, info.audio)
                     }

@@ -252,6 +252,18 @@ fun tokensTest() {
     c.check("validator: inside each, {var.item} is known", aiCheck("""{"action":"each","args":{"steps":[{"action":"notify","args":{"text":"{var.item} {var.index}"}}]}}""").none { "Step 1.steps" in it })
     val sampleProblems = FlowStore.samples().flatMap { f -> AiTools.check(f.toJson()).filter { !it.startsWith("Note") }.map { "${f.name}: $it" } }
     c.check("built-in samples pass the validator", sampleProblems.isEmpty(), sampleProblems.joinToString("\n"))
+    FlowActions.recipes.forEach { (title, json) ->
+        val p = AiTools.check(json).filter { !it.startsWith("Note") }
+        c.check("recipe passes the validator: $title", p.isEmpty(), p.joinToString("\n"))
+    }
+    // An action's own defaults must never be flagged (the video actions' {item.stem} once was, and the AI gave up).
+    val defaultProblems = FlowActions.all.flatMap { a ->
+        val args = a.args.filter { it.type != "steps" && it.default is String && (it.default as String).isNotEmpty() }.associate { it.id to it.default }
+        aiCheck(Json.write(mapOf("action" to a.id, "args" to args))).filter { "per-item" in it || "not one of" in it }.map { "${a.id}: $it" }
+    }
+    c.check("every action's defaults pass the validator", defaultProblems.isEmpty(), defaultProblems.joinToString("\n"))
+    c.check("validator: video name/to take {item…} with a variable", aiCheck("""{"action":"text.set","args":{"text":"720p"},"saveAs":"res"},{"action":"video.convert","input":"shortcut","args":{"height":"{var.res}","name":"{item.stem}_{var.res}","to":"{item.parent}\\out"}}""").none { "per-item" in it || "not one of" in it })
+    c.check("chat shows the problems, not just the heading", AiChat.errorPreview("Not proposed; fix these first:\nStep 3: a\nStep 4: b\nFix every line above and call propose_shortcut again").let { "Step 3: a" in it && "Step 4: b" in it && "Fix every" !in it })
     val spec = FlowActions.specMarkdown()
     c.check("spec documents the search syntax, per-item args and conditions", listOf("## Search syntax", "`file:`", "*per item*", "## Conditions", "stays exactly as typed").all { it in spec })
     println("\nTOKENS TEST: ${c.pass} passed, ${c.fail} failed")
@@ -484,10 +496,10 @@ fun videoTest(dir: File) {
     val webmCodec = if ("libvpx-vp9" in have) "vp9" else "av1"
     val ts = make("clip.ts", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac")
     val s = AppState(CoroutineScope(SupervisorJob()))
-    fun run(input: File, dry: Boolean = false, vararg steps: FlowStep): Pair<List<String>, List<String>> {
+    fun runWith(input: File, dry: Boolean, ask: suspend (FlowPrompt) -> String?, steps: List<FlowStep>): Pair<List<String>, List<String>> {
         val log = java.util.Collections.synchronizedList(ArrayList<String>())
-        val flow = Flow("t", "t", steps = steps.toList())
-        val r = FlowRun(s, flow, listOf(input.path), emptyMap(), dry, { null }, { log += it })
+        val flow = Flow("t", "t", steps = steps)
+        val r = FlowRun(s, flow, listOf(input.path), emptyMap(), dry, ask, { log += it })
         val t0 = System.nanoTime()
         val res = runCatching { kotlinx.coroutines.runBlocking { r.runSteps(flow.steps) } }
         log += "   (${(System.nanoTime() - t0) / 1_000_000} ms)"
@@ -495,6 +507,7 @@ fun videoTest(dir: File) {
         res.exceptionOrNull()?.let { println("      ERROR: ${it.message}") }
         return r.items to log
     }
+    fun run(input: File, dry: Boolean = false, vararg steps: FlowStep) = runWith(input, dry, { null }, steps.toList())
     fun probe(p: String?) = p?.let { kotlinx.coroutines.runBlocking { Ffmpeg.probe(exe, File(it)) } }
     val to = mapOf("to" to out.path)
 
@@ -523,6 +536,19 @@ fun videoTest(dir: File) {
         val i = probe(p); val len = p?.let { File(it).length() } ?: 0
         c.check("compress (size, H.265): hevc within 0.2 MB +15%", i?.video == "hevc" && len in 1..(0.2 * 1048576 * 1.15).toLong(), "${i?.video} $len")
         c.check("compress (size, H.265): stats files removed", AppDirs.cache.listFiles { f -> f.name.startsWith("ffmpeg2pass") }.isNullOrEmpty())
+    }
+    println("\n-- convert with a resolution (one encode)")
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "mkv", "height" to "240p", "name" to "{item.stem}_240"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("convert + height 240p: 426x240 h264 mkv", i?.width == 426 && i.height == 240 && i.video == "h264" && p!!.endsWith("clip_240.mkv"), "${i?.width}x${i?.height} ${i?.video} $p")
+    }
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "mp4", "height" to "1080", "name" to "{item.stem}_noup"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("convert + height 1080 on a 360p clip: not upscaled", i?.height == 360, "${i?.width}x${i?.height}")
+    }
+    // The recipe the assistant is given, run for real (minus files.selected: the test passes the file in), answering its two questions.
+    println("\n-- recipe: chosen resolution and format")
+    val recipe = Flow.fromJson("r", FlowActions.recipes.first().second).steps.filter { it.action != "files.selected" }
+    runWith(webm, false, { q -> if ("480p" in q.options) "480p" else if ("mov" in q.options) "mov" else null }, recipe).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("recipe: 480p choice keeps a 360p clip, mov, named _480p", i?.height == 360 && p!!.endsWith("clip one_480p.mov"), "${i?.width}x${i?.height} $p")
     }
     println("\n-- scale 50% / fit 200x200")
     run(ts, false, FlowStep("video.scale", to + mapOf("percent" to 50))).first.singleOrNull().let { p ->

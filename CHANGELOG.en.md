@@ -9,10 +9,10 @@ Released entries are based on local Git tags and commit history. Dates are the c
 ### Added
 
 - Expanded shortcut actions for text, dates, images, HTTP, apps, Windows, speech, email, and SMS, plus flow control and an action reference.
-- AI-assisted workflow editing, provider configuration, tool permissions, and workflow checks.
+- AI-assisted workflow editing, provider configuration, tool permissions, and workflow checks. When a check fails, the chat lists the actual problems and the assistant fixes them and retries; the spec includes worked designs (such as a video conversion with a chosen resolution and format).
 - Custom keyboard bindings, conflict inspection, and settings/key migration reports with backups.
 - Chinese and English READMEs, user guides, and changelogs, with existing UI screenshots and a bilingual release template.
-- "Video & audio" shortcut actions (FFmpeg): convert video (webm → mp4, ts → mp4 and more; streams that fit the new format are copied, not re-encoded), compress (by quality or to a target size), scale, video info, and custom FFmpeg arguments. The installer and the portable build include FFmpeg (BtbN's static GPL build).
+- "Video & audio" shortcut actions (FFmpeg): convert video (webm → mp4, ts → mp4 and more; streams that fit the new format are copied, not re-encoded; optionally scaled down to 1080p, 720p, 480p and so on in the same pass), compress (by quality or to a target size), scale, video info, and custom FFmpeg arguments. The installer and the portable build include FFmpeg (BtbN's static GPL build).
 - Quick Look shows the text, tables and slides of Word (.docx, .doc), OpenDocument (.odt, .ods, .odp) and PowerPoint (.pptx) files itself; Excel files use the installed Office preview first and the built-in table otherwise.
 
 ### Changed
