@@ -61,12 +61,12 @@ Use Windows and a full JDK. Packaging looks for `jpackage.exe` from JDK 21 or la
 # Build the application with its runtime: build/FilesKmp/FilesKmp.exe
 .\gradlew.bat windowsApp
 # Build an MSI in build/installers/
-.\gradlew.bat windowsMsi -PappVersion=1.2.0
+.\gradlew.bat windowsMsi -PappVersion=1.3.0
 # Explicit packaging tool paths (replace with your actual locations)
 .\gradlew.bat windowsMsi "-PjdkHome=C:\Java\jdk-25" "-PwixHome=C:\Tools\wix314"
 ```
 
-`appVersion` in `build.gradle.kts` controls the application version and defaults to `1.2.0`. `package.json` exists for build integration; its version is not the application version source.
+`appVersion` in `build.gradle.kts` controls the application version and defaults to `1.3.0`. `package.json` exists for build integration; its version is not the application version source.
 
 ## Settings and issue reports
 
