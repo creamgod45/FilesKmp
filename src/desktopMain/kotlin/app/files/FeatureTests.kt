@@ -451,3 +451,113 @@ fun docsTest(files: List<File>) {
     }
     println("\nDOCS TEST: ${c.pass} passed, ${c.fail} failed")
 }
+
+/**
+ * --test-video <dir>: makes short clips with FFmpeg (a VP9/Opus webm, an H.264/AAC ts) and runs the
+ * video actions on them for real: convert (re-encode and stream copy), compress (quality and size),
+ * scale, info, sound only, gif, custom arguments, and a dry run that must leave no file.
+ * Run with APPDATA pointing inside <dir> (settings stay out of the real profile).
+ */
+fun videoTest(dir: File) {
+    val c = Checks()
+    if (!Prefs.dir.canonicalPath.startsWith(dir.canonicalPath)) { println("REFUSED: set APPDATA inside $dir"); return }
+    Prefs.readOnly = true
+    val exe = Ffmpeg.locate()
+    c.check("ffmpeg found", exe != null, exe)
+    if (exe == null) { println("\nVIDEO TEST: ${c.pass} passed, ${c.fail} failed"); return }
+    println("   ffmpeg: $exe")
+    val src = File(dir, "src").apply { deleteRecursively(); mkdirs() }
+    val out = File(dir, "out").apply { deleteRecursively(); mkdirs() }
+    fun make(name: String, vararg enc: String): File {
+        val f = File(src, name)
+        val p = ProcessBuilder(listOf(exe.path, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=4") + enc + f.path).redirectErrorStream(true).start()
+        val log = p.inputStream.bufferedReader().readText(); p.waitFor()
+        c.check("make $name", f.isFile && f.length() > 0, log.take(300))
+        return f
+    }
+    val have = kotlinx.coroutines.runBlocking { Ffmpeg.encoders(exe) }
+    println("   VP9 encoder: ${"libvpx-vp9" in have}, AV1 encoder: ${"libsvtav1" in have}")
+    // The ARM64 build has no libvpx: its webm gets AV1, which webm takes as well.
+    val webm = if ("libvpx-vp9" in have) make("clip one.webm", "-c:v", "libvpx-vp9", "-b:v", "1M", "-deadline", "realtime", "-cpu-used", "8", "-c:a", "libopus")
+        else make("clip one.webm", "-c:v", "libsvtav1", "-preset", "12", "-c:a", "libopus")
+    val webmCodec = if ("libvpx-vp9" in have) "vp9" else "av1"
+    val ts = make("clip.ts", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac")
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    fun run(input: File, dry: Boolean = false, vararg steps: FlowStep): Pair<List<String>, List<String>> {
+        val log = java.util.Collections.synchronizedList(ArrayList<String>())
+        val flow = Flow("t", "t", steps = steps.toList())
+        val r = FlowRun(s, flow, listOf(input.path), emptyMap(), dry, { null }, { log += it })
+        val t0 = System.nanoTime()
+        val res = runCatching { kotlinx.coroutines.runBlocking { r.runSteps(flow.steps) } }
+        log += "   (${(System.nanoTime() - t0) / 1_000_000} ms)"
+        log.forEach { println("      $it") }
+        res.exceptionOrNull()?.let { println("      ERROR: ${it.message}") }
+        return r.items to log
+    }
+    fun probe(p: String?) = p?.let { kotlinx.coroutines.runBlocking { Ffmpeg.probe(exe, File(it)) } }
+    val to = mapOf("to" to out.path)
+
+    println("\n-- webm → mp4 (re-encode)")
+    run(webm, false, FlowStep("video.convert", to + mapOf("format" to "mp4"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("webm → mp4: H.264 + AAC, 640x360", i?.video == "h264" && i.audio == "aac" && i.width == 640 && i.height == 360, "${i?.video} ${i?.audio} ${i?.width}x${i?.height}")
+        c.check("webm → mp4: name kept", p?.let { File(it).name } == "clip one.mp4", p)
+    }
+    println("\n-- ts → mp4 (stream copy)")
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "mp4"))).let { (items, log) ->
+        val i = probe(items.singleOrNull())
+        c.check("ts → mp4: streams copied (h264/aac)", i?.video == "h264" && i.audio == "aac", "${i?.video} ${i?.audio}")
+        c.check("ts → mp4: duration kept (~4 s)", i != null && kotlin.math.abs(i.duration - 4.0) < 0.3, i?.duration)
+    }
+    println("\n-- compress by quality (small)")
+    run(ts, false, FlowStep("video.compress", to + mapOf("quality" to "small"))).first.singleOrNull().let { p ->
+        c.check("compress (small): smaller than the source", p != null && File(p).length() < ts.length(), "${p?.let { File(it).length() }} vs ${ts.length()}")
+    }
+    println("\n-- compress to 0.15 MB (two-pass)")
+    run(ts, false, FlowStep("video.compress", to + mapOf("method" to "size", "sizeMB" to 0.15))).first.singleOrNull().let { p ->
+        val len = p?.let { File(it).length() } ?: 0
+        c.check("compress (size): within 0.15 MB +15%", len in 1..(0.15 * 1048576 * 1.15).toLong(), len)
+        c.check("compress (size): pass logs removed", AppDirs.cache.listFiles { f -> f.name.startsWith("ffmpeg2pass") }.isNullOrEmpty())
+    }
+    run(ts, false, FlowStep("video.compress", to + mapOf("method" to "size", "sizeMB" to 0.2, "codec" to "h265", "name" to "{item.stem}_hevc"))).first.singleOrNull().let { p ->
+        val i = probe(p); val len = p?.let { File(it).length() } ?: 0
+        c.check("compress (size, H.265): hevc within 0.2 MB +15%", i?.video == "hevc" && len in 1..(0.2 * 1048576 * 1.15).toLong(), "${i?.video} $len")
+        c.check("compress (size, H.265): stats files removed", AppDirs.cache.listFiles { f -> f.name.startsWith("ffmpeg2pass") }.isNullOrEmpty())
+    }
+    println("\n-- scale 50% / fit 200x200")
+    run(ts, false, FlowStep("video.scale", to + mapOf("percent" to 50))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("scale 50%: 320x180, same container (ts → mp4)", i?.width == 320 && i.height == 180 && p!!.endsWith(".mp4"), "${i?.width}x${i?.height} $p")
+    }
+    run(webm, false, FlowStep("video.scale", to + mapOf("mode" to "fit", "width" to 200, "height" to 200))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("fit 200x200: 200x112, webm stays $webmCodec", i?.width == 200 && i.height == 112 && i.video == webmCodec, "${i?.width}x${i?.height} ${i?.video}")
+    }
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "webm"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("ts → webm: $webmCodec + opus (whatever this FFmpeg can encode)", i?.video == webmCodec && i.audio == "opus", "${i?.video} ${i?.audio}")
+    }
+    println("\n-- info, mp3, gif, custom")
+    run(ts, false, FlowStep("video.info")).first.singleOrNull().let { line ->
+        c.check("info: name, length, 640x360, 30 fps, h264, aac", line == "clip.ts\t0:00:04\t640x360\t30\th264\taac", line)
+    }
+    run(webm, false, FlowStep("video.convert", to + mapOf("format" to "mp3"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("convert to mp3: sound only", i?.audio == "mp3" && i.video == null, "${i?.video} ${i?.audio}")
+    }
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "gif"))).first.singleOrNull().let { p ->
+        c.check("convert to gif", p != null && File(p).readBytes().take(3).toByteArray().decodeToString() == "GIF", p)
+    }
+    run(webm, false, FlowStep("ffmpeg.run", to + mapOf("args" to "-i {in} -t 1.5 -c:v libx264 -an {out}", "output" to "{item.stem} cut.mp4"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("custom args: 1.5 s, no sound, path with spaces", i != null && kotlin.math.abs(i.duration - 1.5) < 0.2 && i.audio == null, "${i?.duration} ${i?.audio} $p")
+    }
+    println("\n-- dry run")
+    val before = out.list()!!.toSet()
+    run(webm, true, FlowStep("video.compress", to + mapOf("method" to "size", "sizeMB" to 1))).second.let { log ->
+        c.check("dry run: logs the ffmpeg commands", log.count { "ffmpeg " in it } >= 2)
+        c.check("dry run: writes nothing", out.list()!!.toSet() == before)
+    }
+    println("\n-- errors")
+    val bogus = File(src, "not video.mp4").apply { writeText("hello") }
+    run(bogus, false, FlowStep("video.convert", to + mapOf("format" to "webm"))).let { (_, log) ->
+        c.check("not a video: stops with FFmpeg's message, no file left", out.list()!!.none { it.startsWith("not video") })
+    }
+    c.check("spec lists the video actions", FlowActions.specMarkdown().let { sp -> listOf("video.convert", "video.compress", "video.scale", "video.info", "ffmpeg.run").all { "`$it`" in sp } })
+    println("\nVIDEO TEST: ${c.pass} passed, ${c.fail} failed")
+}

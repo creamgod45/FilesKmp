@@ -302,6 +302,7 @@ object FlowActions {
     const val CAT_DATA = "數字、日期與編碼|Numbers, dates & encoding"
     const val CAT_FILES = "檔案|Files"
     const val CAT_IMAGE = "影像|Images"
+    const val CAT_VIDEO = "影片與音訊|Video & audio"
     const val CAT_WEB = "網路|Web"
     const val CAT_APPS = "應用程式|Apps"
     const val CAT_MEDIA = "聲音與語音|Sound & speech"
@@ -335,11 +336,11 @@ object FlowActions {
     )
 
     /** Display order of the categories. */
-    private val order = listOf(CAT_INPUT, CAT_TEXT, CAT_LIST, CAT_DATA, CAT_FILES, CAT_IMAGE, CAT_WEB, CAT_APPS, CAT_MEDIA, CAT_SYSTEM, CAT_SHARE, CAT_CONTROL, CAT_DEBUG)
+    private val order = listOf(CAT_INPUT, CAT_TEXT, CAT_LIST, CAT_DATA, CAT_FILES, CAT_IMAGE, CAT_VIDEO, CAT_WEB, CAT_APPS, CAT_MEDIA, CAT_SYSTEM, CAT_SHARE, CAT_CONTROL, CAT_DEBUG)
 
     val all: List<FlowAction> by lazy {
         val core = coreActions().map { a -> coreIo[a.id]?.let { a.retyped(it.input, it.output, it.category ?: a.category) } ?: a }
-        val list = core + moreActions() + systemActions()
+        val list = core + moreActions() + systemActions() + videoActions()
         // The registry: actions grouped by category in display order, the original order kept within each.
         list.sortedBy { order.indexOf(it.category).let { i -> if (i < 0) order.size else i } }
     }

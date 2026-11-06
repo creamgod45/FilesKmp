@@ -1,6 +1,7 @@
 import java.net.URI
 import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.util.zip.ZipFile
 
 plugins {
     kotlin("multiplatform") version "2.4.21"
@@ -120,6 +121,48 @@ fun runJpackage(args: List<String>, what: String) {
 }
 
 // ---------------------------------------------------------------------------
+// FFmpeg for the shortcut video actions (FlowActionsVideo.kt), shipped as ffmpeg\ffmpeg.exe next to
+// FilesKmp.exe: BtbN's static GPL build for this architecture, downloaded once into
+// %LOCALAPPDATA%\fileskmp-build\ffmpeg. -PffmpegExe=<ffmpeg.exe> uses a copy of your own,
+// -PnoFfmpeg leaves it out (the app then looks for an installed FFmpeg), -PffmpegRelease picks the branch.
+// ---------------------------------------------------------------------------
+val ffmpegRelease = providers.gradleProperty("ffmpegRelease").getOrElse("n8.1")
+
+/** The folder holding ffmpeg.exe and its licence for the app image, or null when left out. */
+fun ffmpegBundle(): File? {
+    if (providers.gradleProperty("noFfmpeg").isPresent) return null
+    providers.gradleProperty("ffmpegExe").orNull?.let { exe ->
+        val f = File(exe); if (!f.isFile) throw GradleException("-PffmpegExe: no such file: $exe")
+        return File(System.getenv("TEMP") ?: "C:\\Temp", "fileskmp-ffmpeg-own").apply { deleteRecursively(); mkdirs(); f.copyTo(File(this, "ffmpeg.exe")) }
+    }
+    val dir = File(System.getenv("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir"), "fileskmp-build/ffmpeg/$ffmpegRelease-$windowsArch")
+    if (File(dir, "ffmpeg.exe").isFile) return dir
+    val v = ffmpegRelease.removePrefix("n")
+    val name = "ffmpeg-$ffmpegRelease-latest-win${if (windowsArch == "arm64") "arm64" else "64"}-gpl-$v"
+    val url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$name.zip"
+    println("Downloading FFmpeg: $url")
+    val zip = File.createTempFile("ffmpeg-", ".zip")
+    try {
+        URI(url).toURL().openStream().use { inp -> zip.outputStream().use { inp.copyTo(it) } }
+        val tmp = File(dir.parentFile, dir.name + ".part").apply { deleteRecursively(); mkdirs() }
+        ZipFile(zip).use { z ->
+            fun take(entry: String, to: String) {
+                val e = z.getEntry("$name/$entry") ?: throw GradleException("$url has no $entry")
+                z.getInputStream(e).use { inp -> File(tmp, to).outputStream().use { inp.copyTo(it) } }
+            }
+            take("bin/ffmpeg.exe", "ffmpeg.exe")
+            take("LICENSE.txt", "LICENSE.txt")
+        }
+        File(tmp, "README.txt").writeText(
+            "ffmpeg.exe is FFmpeg ($ffmpegRelease, static GPL build for Windows $windowsArch by BtbN),\r\n" +
+            "used by FilesKmp's shortcut video actions. It is a separate program under the GNU GPL\r\n" +
+            "(LICENSE.txt). Build and source: https://github.com/BtbN/FFmpeg-Builds - https://ffmpeg.org\r\n")
+        dir.deleteRecursively(); tmp.renameTo(dir)
+    } finally { zip.delete() }
+    return dir
+}
+
+// ---------------------------------------------------------------------------
 // windowsApp: a stand-alone Windows program in app/build/FilesKmp (FilesKmp.exe
 // plus its own trimmed Java runtime). jpackage/jlink read their argument files
 // in the system code page, which breaks on this project's non-ASCII folder
@@ -158,6 +201,10 @@ val windowsApp by tasks.registering {
         dest.deleteRecursively()
         File(out, "FilesKmp").copyRecursively(dest, overwrite = true)
         work.deleteRecursively()
+        ffmpegBundle()?.let { ff ->
+            ff.copyRecursively(File(dest, "ffmpeg"), overwrite = true)
+            println("FFmpeg bundled: ${File(dest, "ffmpeg\\ffmpeg.exe")}")
+        } ?: println("FFmpeg not bundled (-PnoFfmpeg)")
         println("Windows app: ${File(dest, "FilesKmp.exe")}")
     }
 }

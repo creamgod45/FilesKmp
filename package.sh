@@ -3,11 +3,13 @@
 # 在 Windows 的 Git Bash / MSYS2 中執行（本專案只支援 Windows x64 / ARM64）。
 # 步驟與 .github/workflows/release-packages.yml 相同；產物架構取決於執行 Gradle 的 JDK。
 #
-# 用法：./package.sh [-v 版本] [--jdk JDK資料夾] [--wix WiX資料夾] [--skip-msi] [--smoke-test] [--clean] [-o 輸出資料夾]
+# Gradle 會下載 FFmpeg 放進 build/FilesKmp/ffmpeg，給捷徑的影片動作使用（--no-ffmpeg 不內附）。
+#
+# 用法：./package.sh [-v 版本] [--jdk JDK資料夾] [--wix WiX資料夾] [--skip-msi] [--smoke-test] [--clean] [--no-ffmpeg | --ffmpeg ffmpeg.exe] [-o 輸出資料夾]
 set -euo pipefail
 
 usage() {
-  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 選項：
@@ -17,12 +19,14 @@ usage() {
       --skip-msi        只打包免安裝版 ZIP（不需要 WiX）
       --smoke-test      打包後以 --screenshot 啟動一次程式
       --clean           先執行 gradlew clean
+      --no-ffmpeg       不內附 FFmpeg（影片動作改用電腦上安裝的 FFmpeg）
+      --ffmpeg FILE     內附這個 ffmpeg.exe，而不是下載 BtbN 的版本
   -o, --out DIR         產物資料夾（預設 dist）
   -h, --help            顯示說明
 EOF
 }
 
-VERSION="" JDK="" WIX="" SKIP_MSI=0 SMOKE=0 CLEAN=0 OUT_DIR="dist"
+VERSION="" JDK="" WIX="" SKIP_MSI=0 SMOKE=0 CLEAN=0 OUT_DIR="dist" NO_FFMPEG=0 FFMPEG_EXE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v|--version) VERSION="${2:?}"; shift 2 ;;
@@ -31,6 +35,8 @@ while [[ $# -gt 0 ]]; do
     --skip-msi)   SKIP_MSI=1; shift ;;
     --smoke-test) SMOKE=1; shift ;;
     --clean)      CLEAN=1; shift ;;
+    --no-ffmpeg)  NO_FFMPEG=1; shift ;;
+    --ffmpeg)     FFMPEG_EXE="${2:?}"; shift 2 ;;
     -o|--out)     OUT_DIR="${2:?}"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) echo "未知的參數：$1" >&2; usage >&2; exit 2 ;;
@@ -121,6 +127,11 @@ case "$OS_ARCH" in
 esac
 
 GRADLE_ARGS=("-PappVersion=$VERSION" "-PjdkHome=$JAVA_HOME" --console=plain)
+if (( NO_FFMPEG )); then GRADLE_ARGS+=(-PnoFfmpeg)
+elif [[ -n "$FFMPEG_EXE" ]]; then
+  [[ -f "$FFMPEG_EXE" ]] || die "找不到 $FFMPEG_EXE"
+  GRADLE_ARGS+=("-PffmpegExe=$(win "$(cd "$(dirname "$FFMPEG_EXE")" && pwd)/$(basename "$FFMPEG_EXE")")")
+fi
 if (( ! SKIP_MSI )); then
   WIX_DIR="$(find_wix)"
   [[ -n "$WIX_DIR" ]] || WIX_DIR="$(install_wix)"
@@ -146,7 +157,10 @@ pe_machine() {   # PE 標頭的 Machine 欄位（小端序十六進位）
   off=$(( $(od -An -tu4 -j60 -N4 "$1" | tr -d ' ') ))
   od -An -tx2 -j$(( off + 4 )) -N2 "$1" | tr -d ' '
 }
-for f in build/FilesKmp/FilesKmp.exe build/FilesKmp/runtime/bin/server/jvm.dll; do
+CHECKED=(build/FilesKmp/FilesKmp.exe build/FilesKmp/runtime/bin/server/jvm.dll)
+# 只檢查下載的 FFmpeg；自行指定的 ffmpeg.exe 可以是 x64（ARM64 Windows 能模擬執行）。
+(( NO_FFMPEG )) || [[ -n "$FFMPEG_EXE" ]] || CHECKED+=(build/FilesKmp/ffmpeg/ffmpeg.exe)
+for f in "${CHECKED[@]}"; do
   [[ -f "$f" ]] || die "找不到 $f"
   m="$(pe_machine "$f")"
   [[ "$m" == "$EXPECTED" ]] || die "架構不符：$f（0x$m，預期 0x$EXPECTED）"

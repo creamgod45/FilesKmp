@@ -6,7 +6,7 @@
     與 .github/workflows/release-packages.yml 相同的步驟，在本機執行：
       1. 找一個含 jpackage 的 JDK（-JdkHome、JAVA_HOME、~/.jdks、常見安裝位置）
       2. 找 WiX 3.14（-WixHome、WIX、%LOCALAPPDATA%\wix314、已安裝的 WiX），沒有就下載到 %LOCALAPPDATA%\wix314
-      3. gradlew windowsMsi（或只做 windowsApp）
+      3. gradlew windowsMsi（或只做 windowsApp）；Gradle 會下載 FFmpeg 放進 build\FilesKmp\ffmpeg（-NoFfmpeg 不內附）
       4. 檢查 FilesKmp.exe 與 jvm.dll 的架構，可選擇做啟動測試
       5. 產生 dist\FilesKmp-<版本>-windows-<架構>{.msi,-portable.zip,-SHA256SUMS.txt}
 
@@ -31,6 +31,10 @@ param(
     [switch]$SmokeTest,
     # 先執行 gradlew clean。
     [switch]$Clean,
+    # 不內附 FFmpeg（捷徑的影片動作改用電腦上安裝的 FFmpeg）。
+    [switch]$NoFfmpeg,
+    # 內附這個 ffmpeg.exe，而不是下載 BtbN 的版本。
+    [string]$FfmpegExe,
     # 產物資料夾。
     [string]$OutDir = 'dist'
 )
@@ -111,6 +115,8 @@ $arch = switch ($osArch) {
 }
 
 $gradleArgs = @("-PappVersion=$Version", "-PjdkHome=$jdk", '--console=plain')
+if ($NoFfmpeg) { $gradleArgs += "-PnoFfmpeg" }
+elseif ($FfmpegExe) { $gradleArgs += "-PffmpegExe=$((Resolve-Path -LiteralPath $FfmpegExe).Path)" }
 if (-not $SkipMsi) {
     $wix = Find-Wix
     if (-not $wix) { $wix = Install-Wix }
@@ -133,7 +139,10 @@ if ($LASTEXITCODE -ne 0) { throw "Gradle 建置失敗（exit $LASTEXITCODE）" }
 # --- 驗證架構 ---------------------------------------------------------------
 Step '檢查 launcher 與 runtime 架構'
 $expected = if ($arch -eq 'arm64') { 0xAA64 } else { 0x8664 }
-foreach ($file in 'build\FilesKmp\FilesKmp.exe', 'build\FilesKmp\runtime\bin\server\jvm.dll') {
+$checked = @('build\FilesKmp\FilesKmp.exe', 'build\FilesKmp\runtime\bin\server\jvm.dll')
+# 只檢查下載的 FFmpeg；自行指定的 ffmpeg.exe 可以是 x64（ARM64 Windows 能模擬執行）。
+if (-not $NoFfmpeg -and -not $FfmpegExe) { $checked += 'build\FilesKmp\ffmpeg\ffmpeg.exe' }
+foreach ($file in $checked) {
     $bytes = [IO.File]::ReadAllBytes((Resolve-Path $file))
     $pe = [BitConverter]::ToInt32($bytes, 0x3C)
     $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
