@@ -275,8 +275,13 @@ fun StatusCenterButton(s: AppState) {
     Box {
         IconBtn(Icons.Outlined.SwapVert, "File operations", { s.statusCenterOpen = !s.statusCenterOpen }, selected = s.statusCenterOpen)
         if (running > 0) {
-            Box(Modifier.align(Alignment.TopEnd).padding(2.dp).size(14.dp).background(p.accent, CircleShape)) {
-                T("$running", Modifier.align(Alignment.Center), size = 9.sp, color = Color.White, weight = FontWeight.SemiBold)
+            // A pill that grows for 2+ digits. The text's line height is its font size, trimmed and centred:
+            // the theme's 24 sp body line height pushed a 9 sp digit down and out of the 14 dp circle.
+            Box(Modifier.align(Alignment.TopEnd).padding(2.dp).height(14.dp).widthIn(min = 14.dp).background(p.accent, RoundedCornerShape(7.dp)).padding(horizontal = 3.dp),
+                contentAlignment = Alignment.Center) {
+                androidx.compose.material3.Text(if (running > 99) "99+" else "$running", color = Color.White, maxLines = 1, softWrap = false,
+                    style = androidx.compose.ui.text.TextStyle(fontSize = 9.sp, lineHeight = 9.sp, fontWeight = FontWeight.SemiBold,
+                        lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center, androidx.compose.ui.text.style.LineHeightStyle.Trim.Both)))
             }
         }
     }

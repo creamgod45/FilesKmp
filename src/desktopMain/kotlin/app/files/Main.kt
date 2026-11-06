@@ -116,6 +116,11 @@ fun main(args: Array<String>) {
             if ("--theme-dark" in args) s.theme = ThemeMode.Dark
             if ("--analyze-profile" in args) s.analyzeProfile()
             if ("--demo-custom-toolbar" in args) demoCustomToolbar(s)
+            // A minimized shortcut run: the task center's badge and card (--demo-flow-card also opens the task center).
+            if ("--demo-flow-badge" in args || "--demo-flow-card" in args) {
+                s.flowRun = FlowRunState(FlowStore.samples().first(), false).apply { minimized = true; log += "   clip.mp4: 40%" }
+                if ("--demo-flow-card" in args) s.statusCenterOpen = true
+            }
             // Preview only (read-only): opens the 預覽並清理 dialog for one clean-up target.
             args.indexOf("--plan-cleanup").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
                 Cleanup.targets().firstOrNull { it.id == args[i + 1] }?.let { s.planCleanup(it) }
