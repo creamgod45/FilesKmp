@@ -776,11 +776,31 @@ class AppState(val scope: CoroutineScope) {
 
     /** "開啟檔案位置": go to the item's folder and select it (useful in search and tag views). */
     fun openFileLocation() {
-        val p = tab.selection.firstOrNull() ?: return
-        val parent = Fs.parent(p) ?: return
+        openFileLocation(tab.selection.firstOrNull() ?: return)
+    }
+
+    /** Goes to [path]'s folder and selects it; [rename] then starts renaming it there. */
+    fun openFileLocation(path: String, rename: Boolean = false) {
+        val parent = Fs.parent(path) ?: return
         val t = tab
         navigate(parent, t)
-        scope.launch { delay(300.milliseconds); t.selection = setOf(p); t.anchor = p }
+        scope.launch {
+            // Wait for the folder to list, then select (and rename) the item.
+            for (i in 0 until 40) { if (t.location.equals(parent, true) && t.raw.any { it.path.equals(path, true) }) break; delay(50.milliseconds) }
+            val real = t.raw.firstOrNull { it.path.equals(path, true) }?.path ?: path
+            t.selection = setOf(real); t.anchor = real
+            if (rename) startRename()
+        }
+    }
+
+    /** After a delete: the Home list shows a deleted file as "no longer here". */
+    private fun refreshRecentIfShown(paths: List<String>) {
+        if (recent.any { r -> paths.any { p -> r.target?.let { t -> t.equals(p, true) || t.startsWith(p.trimEnd('\\') + "\\", true) } == true } }) reloadRecent()
+    }
+
+    /** Re-reads Windows' Recent list (after something in it was deleted, renamed or removed). */
+    fun reloadRecent() {
+        scope.launch(Dispatchers.IO) { val r = Fs.recentFiles(); withContext(Dispatchers.Main) { recent = r; recentLoaded = true } }
     }
 
     /** "解壓縮至此": unpack straight into the current folder. */
@@ -1280,6 +1300,7 @@ class AppState(val scope: CoroutineScope) {
         scope.launch {
             val failed = withContext(Dispatchers.IO) { paths.filter { p -> !Fs.recycle(listOf(p)) && File(p).exists() } }
             tagStore.clear(paths.filter { !File(it).exists() })
+            refreshRecentIfShown(paths)
             load(t)
             if (allPanes().any { it.isRecycleBin }) reloadRecyclePanes() else refreshRecycleInfo()
             // The bin refused some (typically a folder on a managed PC): offer the inside-out way.
@@ -1303,6 +1324,7 @@ class AppState(val scope: CoroutineScope) {
             }
             deleteBusy = null
             tagStore.clear(paths.filter { !File(it).exists() })
+            refreshRecentIfShown(paths)
             allPanes().filter { p -> !p.isVirtual && (p === t || paths.any { Fs.parent(it).equals(p.location, true) }) }.forEach { load(it, keepSelection = true) }
             if (allPanes().any { it.isRecycleBin }) reloadRecyclePanes() else refreshRecycleInfo()
             if (r.failures.isNotEmpty()) deleteReport = DeleteReport(1, paths, r.failures)

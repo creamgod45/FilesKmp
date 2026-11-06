@@ -88,12 +88,18 @@ fun HomePage(s: AppState) {
                     }
                     else -> Column {
                         s.recent.forEach { r ->
-                            Hover(Modifier.fillMaxWidth().height(36.dp), onClick = { Fs.open(r.path) }) {
-                                Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(iconForExt(r.name.substringAfterLast('.', "").lowercase()), null, Modifier.size(16.dp), tint = p.textSecondary)
-                                    Spacer(Modifier.width(12.dp))
-                                    T(r.name, Modifier.weight(1f))
-                                    T(Fs.dateText(r.modified), size = 12.sp, color = p.textSecondary)
+                            // A folder opens here in the app; a file with its program (through the shortcut, like Explorer).
+                            val open = { if (r.isDir && r.target != null) s.navigate(r.target) else Fs.open(r.path) }
+                            Box(Modifier.contextMenu { recentMenu(s, r) }) {
+                                Hover(Modifier.fillMaxWidth().height(36.dp), onClick = open) {
+                                    Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(if (r.isDir) Icons.Filled.Folder else iconForExt(r.name.substringAfterLast('.', "").lowercase()), null, Modifier.size(16.dp),
+                                            tint = if (r.isDir) p.folder else p.textSecondary)
+                                        Spacer(Modifier.width(12.dp))
+                                        T(r.name, Modifier.weight(1f), color = if (r.exists) p.text else p.textTertiary)
+                                        if (!r.exists) { T(S.recentMissing, size = 12.sp, color = p.textTertiary); Spacer(Modifier.width(12.dp)) }
+                                        T(Fs.dateText(r.modified), size = 12.sp, color = p.textSecondary)
+                                    }
                                 }
                             }
                         }
@@ -330,6 +336,40 @@ private fun networkPlaceMenu(s: AppState, item: FileItem): List<MenuEntry> = lis
         NetworkFs.forget(NetworkFs.hostOf(item.path)); s.refresh()
     } else null,
 )
+
+/**
+ * 首頁 › 最近使用的檔案: right-click works on the file the shortcut points to — open, open its location, cut /
+ * copy, copy path, rename (in its folder), edit properties, delete (always asks), Windows' own menu — plus
+ * removing the entry from the list (only the shortcut in Recent goes; the file stays).
+ */
+fun recentMenu(s: AppState, r: RecentFile): List<MenuEntry> {
+    val t = r.target
+    val ok = t != null && r.exists
+    val remove = MenuEntry(S.recentRemove, Icons.Outlined.HistoryToggleOff, separatorBefore = true) {
+        runCatching { java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get(r.path)) }
+        s.reloadRecent()
+    }
+    if (!ok) return listOf(
+        MenuEntry(if (t == null) r.name else S.recentMissing + " — " + t, Icons.Outlined.Info, enabled = false),
+        // A missing file's folder may still be there.
+        MenuEntry(S.openFileLocation, Icons.Outlined.FolderOpen, enabled = t != null && Fs.parent(t)?.let { java.io.File(it).isDirectory } == true) { Fs.parent(t!!)?.let { s.navigate(it) } },
+        remove,
+    )
+    t!!
+    return listOfNotNull(
+        MenuEntry(S.open, Icons.AutoMirrored.Outlined.OpenInNew) { if (r.isDir) s.navigate(t) else Fs.open(t) },
+        if (r.isDir) MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(t) } else null,
+        MenuEntry(S.openFileLocation, Icons.Outlined.FolderOpen) { s.openFileLocation(t) },
+        MenuEntry(S.cut, Icons.Outlined.ContentCut, separatorBefore = true) { s.clipboard = Clipboard(listOf(t), true); s.toast = S.cut + "：" + java.io.File(t).name },
+        MenuEntry(S.copy, Icons.Outlined.ContentCopy) { s.clipboard = Clipboard(listOf(t), false); s.toast = S.copy + "：" + java.io.File(t).name },
+        MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(t) },
+        MenuEntry(S.rename, Icons.Outlined.DriveFileRenameOutline, separatorBefore = true) { s.openFileLocation(t, rename = true) },
+        MenuEntry(S.editProperties, Icons.Outlined.EditNote) { s.metadataFor = listOf(t) },
+        MenuEntry(S.delete, Icons.Outlined.Delete) { s.confirmDelete = listOf(t) },
+        remove,
+        systemMenuEntry(s, listOf(t)),
+    )
+}
 
 fun itemMenu(s: AppState, item: FileItem): List<MenuEntry> {
     if (s.tab.isRecycleBin) return listOf(

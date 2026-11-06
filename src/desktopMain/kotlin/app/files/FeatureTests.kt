@@ -512,6 +512,27 @@ fun metaFlowTest(dir: File) {
     println("\nMETA FLOW TEST: ${c.pass} passed, ${c.fail} failed")
 }
 
+/** --test-lnk: LnkFile against Windows' own reading (WScript.Shell) for the shortcuts in Recent. Reads only. */
+fun lnkTest() {
+    val c = Checks()
+    val dir = File(System.getenv("APPDATA"), "Microsoft\\Windows\\Recent")
+    val links = dir.listFiles { f -> f.name.endsWith(".lnk", true) }.orEmpty().sortedByDescending { it.lastModified() }.take(25)
+    c.check("Recent has shortcuts to compare", links.isNotEmpty(), links.size)
+    val script = links.joinToString(";") { "\$s.CreateShortcut('${it.path.replace("'", "''")}').TargetPath" }
+    val windows = Fs.powershell("\$s = New-Object -ComObject WScript.Shell; $script", 60_000)?.lines()?.map { it.trim() } ?: emptyList()
+    var same = 0; var mine = 0
+    links.forEachIndexed { i, l ->
+        val ours = LnkFile.target(l); val theirs = windows.getOrNull(i).orEmpty()
+        if (ours != null) mine++
+        if (ours.equals(theirs, true) || (ours == null && theirs.isEmpty())) same++ else println("   differs: ${l.name}\n      ours:    $ours\n      Windows: $theirs")
+    }
+    println("   $same of ${links.size} the same; $mine read by LnkFile")
+    c.check("LnkFile reads what Windows reads", same == links.size, "$same/${links.size}")
+    val r = Fs.recentFiles()
+    c.check("recent list carries targets", r.count { it.target != null } == mine.coerceAtMost(r.size) || r.any { it.target != null })
+    println("\nLNK TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
 /** --test-menu: where the right-click menu goes in a short window (down, up, shifted, scrolling). */
 fun menuTest() {
     val c = Checks()
