@@ -389,6 +389,13 @@ object Fs {
             }
     }
 
+    /**
+     * Windows environment variables in a typed path, the way cmd and Explorer read them: `%NAME%` (any case)
+     * becomes its value; an unknown name, a lone `%` and `%%` stay as typed. [env] is for tests.
+     */
+    fun expandEnv(text: String, env: (String) -> String? = { System.getenv(it) }): String =
+        Regex("%([^%\\\\/:*?\"<>|\\r\\n]+)%").replace(text) { m -> env(m.groupValues[1]) ?: m.value }
+
     fun open(path: String) {
         try {
             ProcessBuilder("cmd.exe", "/c", "start", "\"\"", path).start()

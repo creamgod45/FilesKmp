@@ -276,7 +276,7 @@ class FlowRun(
 
     /** Folder from a template for one item, created unless dry run. */
     fun targetDir(template: String, item: String, index: Int): File {
-        val d = File(expand(template, item, index))
+        val d = File(Fs.expandEnv(expand(template, item, index)))
         if (!dryRun) d.mkdirs()
         return d
     }
@@ -355,7 +355,7 @@ object FlowActions {
                 ArgSpec("recursive", "包含子資料夾", "Include subfolders", "bool", false))) { st ->
             val q = arg(st, "query").takeIf { it.isNotBlank() }?.let { SearchQuery.parse(it) }
             val out = ArrayList<String>()
-            val queue = ArrayDeque<String>().apply { add(arg(st, "folder")) }
+            val queue = ArrayDeque<String>().apply { add(Fs.expandEnv(arg(st, "folder"))) }
             val rec = bool(st, "recursive")
             while (queue.isNotEmpty() && out.size < 100_000) {
                 val d = queue.removeFirst()
@@ -778,7 +778,9 @@ object FlowActions {
         append("- An unknown token stays exactly as typed, with no error. A `{param.x}` or `{var.x}` that doesn't exist becomes empty text.\n")
         append("- `{var.x}` and `{input}` holding several values become one text with a line break between the values.\n")
         append("- Date formats are Java DateTimeFormatter patterns (`yyyy` `MM` `dd` `HH` `mm` `ss`); the default is `yyyy-MM-dd`.\n")
-        append("- Tokens are filled in once, when the step runs; their results are not searched for tokens again.\n\n")
+        append("- Tokens are filled in once, when the step runs; their results are not searched for tokens again.\n")
+        append("- Destination folders (`to`) and `files.list`'s `folder` also take Windows environment variables, as typed in Explorer: ")
+        append("`%USERPROFILE%\\Videos`, `%APPDATA%`, `%TEMP%` (any case; an unknown `%NAME%` stays as typed).\n\n")
         append("| Token | Value |\n|---|---|\n")
         append("| `{param.ID}` | A parameter's answer (`params`) |\n| `{var.NAME}` | A variable set by an earlier step (`saveAs` / `var.set`) |\n")
         FlowTokens.tokens.filter { it.group != TokenInfo.Group.Item }.forEach { append("| `${it.text}` | ${it.en} |\n") }

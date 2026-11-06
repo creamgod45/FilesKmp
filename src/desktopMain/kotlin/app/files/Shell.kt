@@ -252,7 +252,9 @@ fun PathEditor(s: AppState) {
         selectStem = false,
         onCommit = { text ->
             s.editingPath = false
-            val v = text.trim().trim('"')
+            val typed = text.trim().trim('"')
+            // %APPDATA%, %USERPROFILE%\Desktop, %TEMP% … as in Explorer's address bar; a real path with % in it wins.
+            val v = if (File(typed).exists()) typed else Fs.expandEnv(typed)
             when {
                 v.equals("Home", true) || v == S.home || v.isEmpty() -> if (!s.tab.isHome) s.navigate(HOME)
                 v == start -> {}
@@ -260,7 +262,7 @@ fun PathEditor(s: AppState) {
                 // \\server, \\server\share, smb://..., nfs://...: opened here even when unreachable (the pane says why).
                 NetworkFs.isUnc(v) || v.startsWith("//") || Regex("^(?i)(smb|cifs|nfs)://").containsMatchIn(v) -> s.navigate(v)
                 File(v).exists() -> s.navigate(File(v).absolutePath)
-                else -> s.toast = "Can't find \"$v\". Check the spelling and try again."
+                else -> s.toast = if (S.zh) "找不到「$v」。請檢查拼字後再試一次。" else "Can't find \"$v\". Check the spelling and try again."
             }
         },
         onCancel = { s.editingPath = false },

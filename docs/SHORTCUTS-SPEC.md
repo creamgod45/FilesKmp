@@ -107,6 +107,7 @@ Every text argument may contain `{name}` or `{name:format}`. Rules of the parser
 - `{var.x}` and `{input}` holding several values become one text with a line break between the values.
 - Date formats are Java DateTimeFormatter patterns (`yyyy` `MM` `dd` `HH` `mm` `ss`); the default is `yyyy-MM-dd`.
 - Tokens are filled in once, when the step runs; their results are not searched for tokens again.
+- Destination folders (`to`) and `files.list`'s `folder` also take Windows environment variables, as typed in Explorer: `%USERPROFILE%\Videos`, `%APPDATA%`, `%TEMP%` (any case; an unknown `%NAME%` stays as typed).
 
 | Token | Value |
 |---|---|

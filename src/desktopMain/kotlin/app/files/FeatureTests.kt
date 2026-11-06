@@ -227,6 +227,15 @@ fun tokensTest() {
     c.check("catalog: variables first, then parameters", cat[0].text == "{var.FILES}" && cat[2].text == "{param.SHA}")
     c.check("catalog has the built-ins", listOf("{first}", "{clipboard}", "{item.name}", "{newline}").all { t -> cat.any { it.text == t } })
 
+    // %VAR% in typed paths (address bar, destination folders), as cmd and Explorer read them.
+    val env = mapOf("APPDATA" to "C:\\Users\\u\\AppData\\Roaming", "USERPROFILE" to "C:\\Users\\u", "DOLLAR" to "C:\\a\$1\\b")
+    fun ex(t: String) = Fs.expandEnv(t) { n -> env.entries.firstOrNull { it.key.equals(n, true) }?.value }
+    c.check("%APPDATA% expands", ex("%APPDATA%\\FilesKmp") == "C:\\Users\\u\\AppData\\Roaming\\FilesKmp", ex("%APPDATA%\\FilesKmp"))
+    c.check("%userprofile% (any case) and two variables", ex("%userprofile%\\Desktop;%AppData%") == "C:\\Users\\u\\Desktop;C:\\Users\\u\\AppData\\Roaming")
+    c.check("unknown %NAME%, a lone % and %% stay", ex("%NOPE%\\50% off\\%%") == "%NOPE%\\50% off\\%%", ex("%NOPE%\\50% off\\%%"))
+    c.check("values with \$ and \\ are taken literally", ex("%DOLLAR%") == "C:\\a\$1\\b", ex("%DOLLAR%"))
+    c.check("real environment: %SystemRoot%", Fs.expandEnv("%SystemRoot%").equals(System.getenv("SystemRoot"), true))
+
     // Search syntax in query fields: suggestions while typing, and mistakes that would make a filter match nothing.
     c.check("typing a search term", SearchQuery.typingTerm("a.txt fi", 8) == "fi" && SearchQuery.typingTerm("!ext", 4) == "ext" && SearchQuery.typingTerm("x ", 2) == null)
     c.check("fi offers file: and field:", FlowTokens.searchMatches("fi").map { it.text } == listOf("file:", "field:狀態=待審"), FlowTokens.searchMatches("fi").map { it.text })
