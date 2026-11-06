@@ -723,6 +723,7 @@ fun main(args: Array<String>) {
     if ("--test-tokens" in args) { tokensTest(); exitProcess(0) }
     args.indexOf("--test-media").takeIf { it >= 0 && it + 1 < args.size }?.let { mediaTest(File(args[it + 1]), args.getOrNull(it + 2)?.takeIf { a -> !a.startsWith("--") }?.let { a -> File(a) }); exitProcess(0) }
     args.indexOf("--test-xls").takeIf { it >= 0 }?.let { i -> xlsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
+    if ("--test-maximize" in args) { maximizeTest(); exitProcess(0) }
     args.indexOf("--test-docs").takeIf { it >= 0 }?.let { i -> docsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
     args.indexOf("--test-video").takeIf { it >= 0 && it + 1 < args.size }?.let { videoTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-archives").takeIf { it >= 0 }?.let { i -> archivesTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
@@ -775,6 +776,8 @@ fun main(args: Array<String>) {
             LaunchedEffect(Unit) {
                 window.minimumSize = Dimension(M.WINDOW_MIN_W, M.WINDOW_MIN_H)
                 WindowCorners.round(window)
+                // Maximized stops at the taskbar, as with a normal window frame.
+                WindowWorkArea.install(window)
                 if (translucent) {
                     state.applyWindowBlur = { WindowBlur.set(window, state.blurBehind) }
                     state.applyWindowBlur?.invoke()

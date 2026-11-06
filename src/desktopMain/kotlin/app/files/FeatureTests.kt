@@ -443,7 +443,36 @@ fun shellPreviewTest(dir: File, extra: List<File>) {
     println("\nSHELL PREVIEW TEST: ${c.pass} passed, ${c.fail} failed")
 }
 
-/** --test-docs <file>...: reads Word / OpenDocument / PowerPoint files the way 快速預覽 does without a preview handler. */
+/**
+ * --test-maximize: an undecorated window (opaque and see-through, like the app's) maximized with
+ * WindowWorkArea must fill the monitor's work area and leave the taskbar visible.
+ */
+fun maximizeTest() {
+    val c = Checks()
+    for (seeThrough in listOf(false, true)) {
+        val f = javax.swing.JFrame("max").apply {
+            isUndecorated = true
+            if (seeThrough) background = java.awt.Color(0, 0, 0, 0)
+            setBounds(200, 200, 600, 400); isVisible = true
+        }
+        javax.swing.SwingUtilities.invokeAndWait { WindowWorkArea.install(f) }
+        javax.swing.SwingUtilities.invokeAndWait { f.extendedState = java.awt.Frame.MAXIMIZED_BOTH }
+        Thread.sleep(1200)
+        val gc = f.graphicsConfiguration
+        val screen = gc.bounds; val ins = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(gc)
+        val want = java.awt.Rectangle(screen.x + ins.left, screen.y + ins.top, screen.width - ins.left - ins.right, screen.height - ins.top - ins.bottom)
+        val got = f.bounds
+        val label = if (seeThrough) "see-through" else "opaque"
+        println("   $label: screen $screen insets $ins scale ${gc.defaultTransform.scaleX} → window $got, work area $want")
+        c.check("$label: maximized", f.extendedState and java.awt.Frame.MAXIMIZED_BOTH == java.awt.Frame.MAXIMIZED_BOTH)
+        c.check("$label: fills the work area, taskbar visible", kotlin.math.abs(got.x - want.x) <= 1 && kotlin.math.abs(got.y - want.y) <= 1 &&
+            kotlin.math.abs(got.width - want.width) <= 2 && got.height <= want.height && want.height - got.height <= 2, "$got vs $want")
+        f.dispose()
+    }
+    println("\nMAXIMIZE TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-docs <file>...:reads Word / OpenDocument / PowerPoint files the way 快速預覽 does without a preview handler. */
 fun docsTest(files: List<File>) {
     val c = Checks()
     files.forEach { f ->
