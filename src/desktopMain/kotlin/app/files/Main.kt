@@ -940,7 +940,7 @@ fun Root(s: AppState, systemDark: Boolean, accent: androidx.compose.ui.graphics.
                 s.metadataFor?.let { MetadataDialog(s, it) }
                 s.deleteReport?.let { DeleteProblemDialog(s, it) }
                 if (s.flowsOpen) FlowsDialog(s)
-                s.flowRun?.let { FlowRunPanel(s, it) }
+                s.flowRun?.takeIf { !it.minimized }?.let { FlowRunPanel(s, it) }
                 s.flowPrompt?.let { FlowPromptDialog(s, it) }
                 if (s.shortcutsOpen) ShortcutsDialog(s)
                 s.toast?.let { msg ->

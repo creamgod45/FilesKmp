@@ -858,6 +858,8 @@ class AppState(val scope: CoroutineScope) {
             } catch (e: kotlinx.coroutines.CancellationException) { state.outcome = S.flowStopped
             } catch (e: Throwable) { state.outcome = (if (S.zh) "錯誤：" else "Error: ") + (e.message ?: e.javaClass.simpleName) }
             state.running = false
+            // Minimized: say it finished (the card in the task center keeps the details).
+            if (state.minimized) toast = S.flowFinished(flow.name, state.outcome ?: "")
             flowPrompt?.answer?.complete(null); flowPrompt = null
             // Things may have changed on disk.
             allPanes().filter { !it.isVirtual }.forEach { load(it, keepSelection = true) }

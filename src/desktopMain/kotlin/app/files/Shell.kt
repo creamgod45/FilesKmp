@@ -271,7 +271,7 @@ fun PathEditor(s: AppState) {
 @Composable
 fun StatusCenterButton(s: AppState) {
     val p = LocalPalette.current
-    val running = CopyEngine.jobs.count { it.state == JobState.Running || it.state == JobState.Queued }
+    val running = CopyEngine.jobs.count { it.state == JobState.Running || it.state == JobState.Queued } + (if (s.flowRun?.running == true) 1 else 0)
     Box {
         IconBtn(Icons.Outlined.SwapVert, "File operations", { s.statusCenterOpen = !s.statusCenterOpen }, selected = s.statusCenterOpen)
         if (running > 0) {
@@ -656,7 +656,9 @@ fun StatusCenter(s: AppState) {
             }
         }
         T("One task per disk at a time; tasks on different disks run together.", Modifier.padding(top = 2.dp, bottom = 8.dp), size = 12.sp, color = p.textSecondary, maxLines = 2)
-        if (CopyEngine.jobs.isEmpty()) {
+        // A running (or finished, not yet closed) shortcut, above the file operations.
+        s.flowRun?.let { r -> FlowRunCard(s, r); Spacer(Modifier.height(8.dp)) }
+        if (CopyEngine.jobs.isEmpty() && s.flowRun == null) {
             T("No file operations yet", Modifier.padding(vertical = 16.dp), color = p.textSecondary)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -391,7 +391,10 @@ object S {
     val flowRefHint = t(
         "A shortcut is a .fkflow.json file (schema fileskmp.shortcut/v1). Steps pass a list of values (file paths or text) along; each action takes the list and leaves a new one. Text may use tokens such as {item.taken:yyyy} or {param.dest}. Actions marked • change files or the system and are only logged in a dry run.",
         "捷徑是 .fkflow.json 檔（schema 為 fileskmp.shortcut/v1）。步驟之間傳遞一串值（檔案路徑或文字）；每個動作接收這串值並產生新的一串。文字可使用標記，例如 {item.taken:yyyy}、{param.dest}。標示 • 的動作會變更檔案或系統，試執行時只會記錄不會真的執行。")
-    val flowStop = t("Stop", "停止"); val flowRunning = t("Running…", "執行中…"); val flowDone = t("Done", "完成"); val flowStopped = t("Stopped", "已停止")
+    val flowMinimize = t("Minimize to the task center", "縮小到任務中心"); val flowShowPanel = t("Show", "顯示")
+    val flowMinimizedHint = t("Still running: see the task center (operations button on the toolbar)", "仍在執行：可在任務中心查看（工具列的檔案作業按鈕）")
+    fun flowFinished(name: String, outcome: String) = if (zh) "捷徑「$name」：$outcome" else "Shortcut \"$name\": $outcome"
+    val flowStop = t("Stop", "停止");val flowRunning = t("Running…", "執行中…"); val flowDone = t("Done", "完成"); val flowStopped = t("Stopped", "已停止")
     val flowCopyResult = t("Copy result", "複製結果"); val flowContinue = t("Continue", "繼續")
     val flowBusy = t("A shortcut is already running", "已有捷徑正在執行")
     val flowIn = t("Input", "輸入"); val flowOut = t("Output", "輸出")
