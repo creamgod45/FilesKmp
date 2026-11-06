@@ -56,7 +56,7 @@ object ShellPreview {
     private const val IID_IShellItem = "43826D1E-E718-42EE-BC55-A1E261C37BFE"
 
     /** Types this app previews itself (better, or without a separate process): never handed to Windows. */
-    private val ownTypes = setOf("txt", "md", "csv", "tsv", "json", "xml", "log", "ini", "xlsx", "xlsm", "xls")
+    private val ownTypes = setOf("txt", "md", "csv", "tsv", "json", "xml", "log", "ini")
 
     private fun guid(a: Arena, s: String): MemorySegment {
         val h = s.trim('{', '}').replace("-", "")
@@ -169,6 +169,17 @@ object ShellPreview {
     }
 }
 
+/**
+ * The component's size in physical pixels. AWT sizes are in logical (DPI-scaled) units, but the
+ * preview handler's SetWindow / SetRect take the native window's real pixels: at 200% scaling,
+ * passing [java.awt.Component.getWidth] would draw the preview at half size in the corner.
+ */
+private fun java.awt.Component.devicePixels(): Pair<Int, Int> {
+    val t = graphicsConfiguration?.defaultTransform
+    val sx = t?.scaleX ?: 1.0; val sy = t?.scaleY ?: 1.0
+    return Math.round(width * sx).toInt() to Math.round(height * sy).toInt()
+}
+
 /** 快速預覽 through Windows' own preview handler (PDF, Office documents…), with a way out to the default app. */
 @Composable
 fun ShellPreviewView(path: String, clsid: String, translucent: Boolean, openExternally: () -> Unit) {
@@ -183,11 +194,14 @@ fun ShellPreviewView(path: String, clsid: String, translucent: Boolean, openExte
         val h = hwnd ?: 0L
         if (h == 0L) { error = tr("No surface to draw the preview on.", "沒有可以顯示預覽的區域。"); return@LaunchedEffect }
         handle = withContext(Dispatchers.IO) {
-            runCatching { ShellPreview.open(path, clsid, h, c.width, c.height) }.onFailure { e ->
+            runCatching { val (w, ht) = c.devicePixels(); ShellPreview.open(path, clsid, h, w, ht) }.onFailure { e ->
                 ErrorLog.record(e, "preview handler $clsid")
                 error = e.message ?: tr("Can't preview this file.", "無法預覽這個檔案。")
             }.getOrNull()
         }
+        // Some handlers take the keyboard when they start: give it back so Space / Esc / ← → keep working.
+        WindowFocus.reclaim()
+        delay(400.milliseconds); WindowFocus.reclaim()
     }
     DisposableEffect(path) { onDispose { val x = handle; handle = null; if (x != null) Thread { x.close() }.start() } }
     Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
@@ -212,7 +226,7 @@ fun ShellPreviewView(path: String, clsid: String, translucent: Boolean, openExte
             SwingPanel(factory = {
                 canvas.apply {
                     addComponentListener(object : java.awt.event.ComponentAdapter() {
-                        override fun componentResized(ev: java.awt.event.ComponentEvent?) { handle?.let { x -> Thread { x.resize(width, height) }.start() } }
+                        override fun componentResized(ev: java.awt.event.ComponentEvent?) { handle?.let { x -> val (w, h) = devicePixels(); Thread { x.resize(w, h) }.start() } }
                     })
                 }
             }, modifier = Modifier.weight(1f).fillMaxWidth())

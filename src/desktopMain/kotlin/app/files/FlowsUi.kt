@@ -35,6 +35,8 @@ class FlowRunState(val flow: Flow, val dryRun: Boolean) {
     var job: kotlinx.coroutines.Job? = null
     /** Started from the editor: the run panel offers to go back to it. */
     var editId: String? = null
+    /** Tucked away into the task center (StatusCenter) so the panel doesn't cover the files. */
+    var minimized by mutableStateOf(false)
 }
 
 fun flowIcon(name: String): ImageVector = when (name) {
@@ -705,7 +707,9 @@ fun FlowRunPanel(s: AppState, r: FlowRunState) {
                 T(r.flow.name + if (r.dryRun) "  (" + S.flowDryRun + ")" else "", Modifier.weight(1f), size = 14.sp, weight = FontWeight.SemiBold)
                 if (!r.running) r.editId?.let { id -> DialogButton(S.flowBackToEditor, primary = false) { s.flowsInitial = id; s.flowsOpen = true; s.flowRun = null }; Spacer(Modifier.width(6.dp)) }
                 if (r.running) DialogButton(S.flowStop, primary = false) { r.job?.cancel() }
-                else IconBtn(Icons.Outlined.Close, S.close, { s.flowRun = null }, width = 30.dp, height = 28.dp)
+                // Minimize: the run carries on, shown in the task center (the toolbar's operations button).
+                IconBtn(Icons.Outlined.Remove, S.flowMinimize, { r.minimized = true; s.toast = S.flowMinimizedHint }, width = 30.dp, height = 28.dp)
+                if (!r.running) IconBtn(Icons.Outlined.Close, S.close, { s.flowRun = null }, width = 30.dp, height = 28.dp)
             }
             T(if (r.running) S.flowRunning else r.outcome ?: "", Modifier.padding(vertical = 4.dp), size = 12.sp,
                 color = if (!r.running && r.outcome != S.flowDone) p.danger else p.textSecondary, maxLines = 3)
@@ -719,6 +723,29 @@ fun FlowRunPanel(s: AppState, r: FlowRunState) {
                 DialogButton(S.flowCopyResult, primary = false) { copyText(r.result.joinToString("\n")) }
             }
         }
+    }
+}
+
+/** The shortcut run as a card in the task center: name, what it is doing, show / stop / close. */
+@Composable
+fun FlowRunCard(s: AppState, r: FlowRunState) {
+    val p = LocalPalette.current
+    Column(Modifier.fillMaxWidth().background(p.control, RoundedCornerShape(6.dp)).border(1.dp, p.controlStroke, RoundedCornerShape(6.dp)).padding(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(flowIcon(r.flow.icon), null, Modifier.size(16.dp), tint = p.accent)
+            Spacer(Modifier.width(8.dp))
+            T(r.flow.name + if (r.dryRun) "  (" + S.flowDryRun + ")" else "", Modifier.weight(1f), size = 13.sp, weight = FontWeight.SemiBold)
+            IconBtn(Icons.Outlined.OpenInNew, S.flowShowPanel, { r.minimized = false; s.statusCenterOpen = false }, width = 28.dp, height = 24.dp, iconSize = 12.dp)
+            if (r.running) IconBtn(Icons.Outlined.Stop, S.flowStop, { r.job?.cancel() }, width = 28.dp, height = 24.dp, iconSize = 12.dp)
+            else IconBtn(Icons.Outlined.Close, S.close, { s.flowRun = null }, width = 28.dp, height = 24.dp, iconSize = 12.dp)
+        }
+        Spacer(Modifier.height(6.dp))
+        if (r.running) BusyBar(Modifier.fillMaxWidth())
+        else ProgressBar(1f, Modifier.fillMaxWidth(), color = if (r.outcome == S.flowDone) p.accent else p.danger)
+        Spacer(Modifier.height(6.dp))
+        T(if (r.running) S.flowRunning else r.outcome ?: "", size = 12.sp, color = if (!r.running && r.outcome != S.flowDone) p.danger else p.textSecondary, maxLines = 2)
+        // The latest log line: e.g. FFmpeg's "clip.mp4: 40%".
+        r.log.lastOrNull()?.let { T(it.trim(), size = 12.sp, color = p.textTertiary, maxLines = 1) }
     }
 }
 

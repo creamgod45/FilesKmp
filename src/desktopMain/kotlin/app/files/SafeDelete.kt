@@ -37,7 +37,16 @@ object SafeDelete {
      * Deletes [paths] (files or folders). [toRecycleBin]: each file goes to the Recycle Bin on its
      * own (restoring puts it back in its folder), the emptied folders are removed.
      */
+    /**
+     * How many failures per delete get the Restart Manager's "in use by …". Each lookup opens a Restart Manager
+     * session; ransomware uses that API to find what holds files, so behaviour monitors watch for many sessions
+     * next to many deletions. The first few failures name the program; the rest get the plain reason.
+     */
+    private const val MAX_IN_USE_LOOKUPS = 10
+    private val lookups = ThreadLocal.withInitial { 0 }
+
     fun deleteTree(paths: List<String>, toRecycleBin: Boolean, cancelled: () -> Boolean = { false }, progress: (Int) -> Unit = {}): Result {
+        lookups.set(0)
         var removed = 0
         val failures = ArrayList<Failure>()
         fun file(p: String) {
@@ -137,7 +146,9 @@ object SafeDelete {
 
     /** A readable reason, naming the programs that have the item open when Windows can tell. */
     private fun explain(p: String, e: Exception?): String {
-        val users = whoHasOpen(listOf(p))
+        // Only a missing permission can't be "in use": skip the lookup there, and stop after a few.
+        val n = lookups.get()
+        val users = if (e is AccessDeniedException || n >= MAX_IN_USE_LOOKUPS) emptyList() else { lookups.set(n + 1); whoHasOpen(listOf(p)) }
         if (users.isNotEmpty()) return (if (S.zh) "使用中：" else "In use by ") + users.joinToString(", ")
         return when (e) {
             is AccessDeniedException -> if (S.zh) "權限不足：您沒有此項目的刪除權限（請聯絡系統管理員）" else "Access denied: you don't have delete permission on this item"

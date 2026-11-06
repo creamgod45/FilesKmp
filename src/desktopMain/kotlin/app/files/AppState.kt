@@ -527,6 +527,24 @@ class AppState(val scope: CoroutineScope) {
         if (currentTab.right == null) splitPane(defaultArrangement) else closeActivePane()
     }
 
+    /**
+     * "在分割窗格開啟" (sidebar menu): shows [path] beside the current folder. No split yet: a second pane opens
+     * there. Already split: the other pane goes to [path] and becomes the active one.
+     */
+    fun openInSplit(path: String, arrangement: PaneArrangement) {
+        val ct = currentTab
+        ct.arrangement = arrangement
+        val r = ct.right
+        if (r == null) {
+            val n = TabState(path)
+            ct.right = n; ct.rightActive = true; ct.split = 0.5f; load(n)
+        } else {
+            val other = if (ct.rightActive) ct.left else r
+            ct.rightActive = other === r
+            navigate(path, other)
+        }
+    }
+
     /** "Split pane vertically / horizontally": opens the second pane at the current folder (SplitPane*Action). */
     fun splitPane(arrangement: PaneArrangement) {
         val ct = currentTab
@@ -776,11 +794,31 @@ class AppState(val scope: CoroutineScope) {
 
     /** "開啟檔案位置": go to the item's folder and select it (useful in search and tag views). */
     fun openFileLocation() {
-        val p = tab.selection.firstOrNull() ?: return
-        val parent = Fs.parent(p) ?: return
+        openFileLocation(tab.selection.firstOrNull() ?: return)
+    }
+
+    /** Goes to [path]'s folder and selects it; [rename] then starts renaming it there. */
+    fun openFileLocation(path: String, rename: Boolean = false) {
+        val parent = Fs.parent(path) ?: return
         val t = tab
         navigate(parent, t)
-        scope.launch { delay(300.milliseconds); t.selection = setOf(p); t.anchor = p }
+        scope.launch {
+            // Wait for the folder to list, then select (and rename) the item.
+            for (i in 0 until 40) { if (t.location.equals(parent, true) && t.raw.any { it.path.equals(path, true) }) break; delay(50.milliseconds) }
+            val real = t.raw.firstOrNull { it.path.equals(path, true) }?.path ?: path
+            t.selection = setOf(real); t.anchor = real
+            if (rename) startRename()
+        }
+    }
+
+    /** After a delete: the Home list shows a deleted file as "no longer here". */
+    private fun refreshRecentIfShown(paths: List<String>) {
+        if (recent.any { r -> paths.any { p -> r.target?.let { t -> t.equals(p, true) || t.startsWith(p.trimEnd('\\') + "\\", true) } == true } }) reloadRecent()
+    }
+
+    /** Re-reads Windows' Recent list (after something in it was deleted, renamed or removed). */
+    fun reloadRecent() {
+        scope.launch(Dispatchers.IO) { val r = Fs.recentFiles(); withContext(Dispatchers.Main) { recent = r; recentLoaded = true } }
     }
 
     /** "解壓縮至此": unpack straight into the current folder. */
@@ -858,6 +896,8 @@ class AppState(val scope: CoroutineScope) {
             } catch (e: kotlinx.coroutines.CancellationException) { state.outcome = S.flowStopped
             } catch (e: Throwable) { state.outcome = (if (S.zh) "錯誤：" else "Error: ") + (e.message ?: e.javaClass.simpleName) }
             state.running = false
+            // Minimized: say it finished (the card in the task center keeps the details).
+            if (state.minimized) toast = S.flowFinished(flow.name, state.outcome ?: "")
             flowPrompt?.answer?.complete(null); flowPrompt = null
             // Things may have changed on disk.
             allPanes().filter { !it.isVirtual }.forEach { load(it, keepSelection = true) }
@@ -1278,6 +1318,7 @@ class AppState(val scope: CoroutineScope) {
         scope.launch {
             val failed = withContext(Dispatchers.IO) { paths.filter { p -> !Fs.recycle(listOf(p)) && File(p).exists() } }
             tagStore.clear(paths.filter { !File(it).exists() })
+            refreshRecentIfShown(paths)
             load(t)
             if (allPanes().any { it.isRecycleBin }) reloadRecyclePanes() else refreshRecycleInfo()
             // The bin refused some (typically a folder on a managed PC): offer the inside-out way.
@@ -1301,6 +1342,7 @@ class AppState(val scope: CoroutineScope) {
             }
             deleteBusy = null
             tagStore.clear(paths.filter { !File(it).exists() })
+            refreshRecentIfShown(paths)
             allPanes().filter { p -> !p.isVirtual && (p === t || paths.any { Fs.parent(it).equals(p.location, true) }) }.forEach { load(it, keepSelection = true) }
             if (allPanes().any { it.isRecycleBin }) reloadRecyclePanes() else refreshRecycleInfo()
             if (r.failures.isNotEmpty()) deleteReport = DeleteReport(1, paths, r.failures)

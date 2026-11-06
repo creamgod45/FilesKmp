@@ -227,10 +227,19 @@ fun tokensTest() {
     c.check("catalog: variables first, then parameters", cat[0].text == "{var.FILES}" && cat[2].text == "{param.SHA}")
     c.check("catalog has the built-ins", listOf("{first}", "{clipboard}", "{item.name}", "{newline}").all { t -> cat.any { it.text == t } })
 
+    // %VAR% in typed paths (address bar, destination folders), as cmd and Explorer read them.
+    val env = mapOf("APPDATA" to "C:\\Users\\u\\AppData\\Roaming", "USERPROFILE" to "C:\\Users\\u", "DOLLAR" to "C:\\a\$1\\b")
+    fun ex(t: String) = Fs.expandEnv(t) { n -> env.entries.firstOrNull { it.key.equals(n, true) }?.value }
+    c.check("%APPDATA% expands", ex("%APPDATA%\\FilesKmp") == "C:\\Users\\u\\AppData\\Roaming\\FilesKmp", ex("%APPDATA%\\FilesKmp"))
+    c.check("%userprofile% (any case) and two variables", ex("%userprofile%\\Desktop;%AppData%") == "C:\\Users\\u\\Desktop;C:\\Users\\u\\AppData\\Roaming")
+    c.check("unknown %NAME%, a lone % and %% stay", ex("%NOPE%\\50% off\\%%") == "%NOPE%\\50% off\\%%", ex("%NOPE%\\50% off\\%%"))
+    c.check("values with \$ and \\ are taken literally", ex("%DOLLAR%") == "C:\\a\$1\\b", ex("%DOLLAR%"))
+    c.check("real environment: %SystemRoot%", Fs.expandEnv("%SystemRoot%").equals(System.getenv("SystemRoot"), true))
+
     // Search syntax in query fields: suggestions while typing, and mistakes that would make a filter match nothing.
     c.check("typing a search term", SearchQuery.typingTerm("a.txt fi", 8) == "fi" && SearchQuery.typingTerm("!ext", 4) == "ext" && SearchQuery.typingTerm("x ", 2) == null)
-    c.check("fi offers file: and folder:", FlowTokens.searchMatches("fi").map { it.text } == listOf("file:"))
-    c.check("f offers file: and folder:", FlowTokens.searchMatches("f").map { it.text } == listOf("file:", "folder:"))
+    c.check("fi offers file: and field:", FlowTokens.searchMatches("fi").map { it.text } == listOf("file:", "field:狀態=待審"), FlowTokens.searchMatches("fi").map { it.text })
+    c.check("f offers file:, folder: and field:", FlowTokens.searchMatches("f").map { it.text } == listOf("file:", "folder:", "field:狀態=待審"), FlowTokens.searchMatches("f").map { it.text })
     c.check("dm: offers its examples", FlowTokens.searchMatches("dm:").size >= 3 && FlowTokens.searchMatches("file:").isEmpty())
     c.check("valid queries have no problems", listOf("file:", "folder: !ext:tmp", "ext:jpg;png size:>10mb dm:<30d", "file: dm:{param.D}", "regex:^a|b$", "C:\\x *.log", "\"a b\" | c").all { SearchQuery.problems(it).isEmpty() })
     c.check("kind:file is flagged", SearchQuery.problems("kind:file").single().contains("kind:"))
@@ -252,6 +261,18 @@ fun tokensTest() {
     c.check("validator: inside each, {var.item} is known", aiCheck("""{"action":"each","args":{"steps":[{"action":"notify","args":{"text":"{var.item} {var.index}"}}]}}""").none { "Step 1.steps" in it })
     val sampleProblems = FlowStore.samples().flatMap { f -> AiTools.check(f.toJson()).filter { !it.startsWith("Note") }.map { "${f.name}: $it" } }
     c.check("built-in samples pass the validator", sampleProblems.isEmpty(), sampleProblems.joinToString("\n"))
+    FlowActions.recipes.forEach { (title, json) ->
+        val p = AiTools.check(json).filter { !it.startsWith("Note") }
+        c.check("recipe passes the validator: $title", p.isEmpty(), p.joinToString("\n"))
+    }
+    // An action's own defaults must never be flagged (the video actions' {item.stem} once was, and the AI gave up).
+    val defaultProblems = FlowActions.all.flatMap { a ->
+        val args = a.args.filter { it.type != "steps" && it.default is String && (it.default as String).isNotEmpty() }.associate { it.id to it.default }
+        aiCheck(Json.write(mapOf("action" to a.id, "args" to args))).filter { "per-item" in it || "not one of" in it }.map { "${a.id}: $it" }
+    }
+    c.check("every action's defaults pass the validator", defaultProblems.isEmpty(), defaultProblems.joinToString("\n"))
+    c.check("validator: video name/to take {item…} with a variable", aiCheck("""{"action":"text.set","args":{"text":"720p"},"saveAs":"res"},{"action":"video.convert","input":"shortcut","args":{"height":"{var.res}","name":"{item.stem}_{var.res}","to":"{item.parent}\\out"}}""").none { "per-item" in it || "not one of" in it })
+    c.check("chat shows the problems, not just the heading", AiChat.errorPreview("Not proposed; fix these first:\nStep 3: a\nStep 4: b\nFix every line above and call propose_shortcut again").let { "Step 3: a" in it && "Step 4: b" in it && "Fix every" !in it })
     val spec = FlowActions.specMarkdown()
     c.check("spec documents the search syntax, per-item args and conditions", listOf("## Search syntax", "`file:`", "*per item*", "## Conditions", "stays exactly as typed").all { it in spec })
     println("\nTOKENS TEST: ${c.pass} passed, ${c.fail} failed")
@@ -407,7 +428,7 @@ fun shellPreviewTest(dir: File, extra: List<File>) {
     val findChild = java.lang.foreign.Linker.nativeLinker().downcallHandle(
         java.lang.foreign.SymbolLookup.libraryLookup("user32", java.lang.foreign.Arena.global()).find("FindWindowExW").orElseThrow(),
         java.lang.foreign.FunctionDescriptor.of(java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS))
-    listOf("txt", "csv", "xlsx").forEach { e -> c.check("own previewer kept for .$e", ShellPreview.handlerFor(e) == null) }
+    listOf("txt", "csv").forEach { e -> c.check("own previewer kept for .$e", ShellPreview.handlerFor(e) == null) }
     (listOf(pdf, docx) + extra).forEach { f ->
         val ext = f.name.substringAfterLast('.').lowercase()
         val clsid = ShellPreview.handlerFor(ext)
@@ -429,4 +450,306 @@ fun shellPreviewTest(dir: File, extra: List<File>) {
         host.dispose()
     }
     println("\nSHELL PREVIEW TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/**
+ * --test-meta-flow <empty dir>: the custom-field, date and attribute actions and the field: filter, run for
+ * real on files made here. Settings are read-only, so the real metadata.tsv is never written.
+ */
+fun metaFlowTest(dir: File) {
+    Prefs.readOnly = true
+    val c = Checks()
+    dir.mkdirs()
+    val a = File(dir, "a.jpg").apply { writeText("a") }; val b = File(dir, "b.jpg").apply { writeText("b") }; val t = File(dir, "c.txt").apply { writeText("c") }
+    val all = listOf(a, b, t).map { it.path }
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    fun run(input: List<String>, dry: Boolean = false, vararg steps: FlowStep): List<String> {
+        val flow = Flow("t", "t", steps = steps.toList())
+        val r = FlowRun(s, flow, input, emptyMap(), dry, { null }, { println("      $it") })
+        val e = runCatching { kotlinx.coroutines.runBlocking { r.runSteps(flow.steps) } }.exceptionOrNull()
+        e?.let { println("      ERROR: ${it.message}") }
+        return r.items
+    }
+    fun names(l: List<String>) = l.map { File(it).name }.sorted()
+
+    run(listOf(a.path, b.path), false, FlowStep("meta.set", mapOf("field" to "狀態", "value" to "待審")))
+    run(all, false, FlowStep("meta.set", mapOf("field" to "類型", "value" to "{item.ext}")))
+    c.check("meta.set: fixed value on two files", MetaStore.get(a.path, "狀態") == "待審" && MetaStore.get(b.path, "狀態") == "待審" && MetaStore.get(t.path, "狀態") == "")
+    c.check("meta.set: per-item value from a token", MetaStore.get(t.path, "類型") == "txt" && MetaStore.get(a.path, "類型") == "jpg")
+    c.check("meta.set: creates the field", "狀態" in MetaStore.fields && "類型" in MetaStore.fields)
+    fun filter(q: String) = names(run(all, false, FlowStep("files.filter", mapOf("query" to q))))
+    c.check("field:狀態=待審", filter("field:狀態=待審") == listOf("a.jpg", "b.jpg"), filter("field:狀態=待審"))
+    c.check("!field:狀態 (no value)", filter("!field:狀態") == listOf("c.txt"), filter("!field:狀態"))
+    c.check("field:狀態=待* (wildcard), field:類型=TXT (ignores case)", filter("field:狀態=待*") == listOf("a.jpg", "b.jpg") && filter("field:類型=TXT") == listOf("c.txt"))
+    c.check("field: combined with ext:", filter("ext:jpg !field:狀態") == emptyList<String>())
+    val detail = run(all, false, FlowStep("file.detail", mapOf("detail" to "field", "field" to "狀態")))
+    c.check("file.detail field", detail == listOf("待審", "待審", ""), detail)
+
+    run(listOf(a.path), false, FlowStep("file.setDates", mapOf("modified" to "2020-01-02 03:04:05", "created" to "2019-12-31 23:59")))
+    val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+    fun at(ms: Long) = java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(ms), java.time.ZoneId.systemDefault()).format(fmt)
+    val attrsA = java.nio.file.Files.readAttributes(a.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java)
+    c.check("file.setDates: modified and created written", at(attrsA.lastModifiedTime().toMillis()) == "2020-01-02 03:04:05" && at(attrsA.creationTime().toMillis()) == "2019-12-31 23:59:00",
+        "${at(attrsA.lastModifiedTime().toMillis())} / ${at(attrsA.creationTime().toMillis())}")
+    // A date token: item tokens turn ':' into '_' (12_30), which the date parser takes back.
+    run(listOf(b.path), false, FlowStep("file.setDates", mapOf("modified" to "{item.created:yyyy-MM-dd HH:mm:ss}")))
+    val attrsB = java.nio.file.Files.readAttributes(b.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java)
+    c.check("file.setDates: modified := created via a token", at(attrsB.lastModifiedTime().toMillis()) == at(attrsB.creationTime().toMillis()), "${at(attrsB.lastModifiedTime().toMillis())} vs ${at(attrsB.creationTime().toMillis())}")
+    val before = t.lastModified()
+    run(listOf(t.path), true, FlowStep("file.setDates", mapOf("modified" to "2001-01-01 00:00")))
+    c.check("file.setDates: dry run changes nothing", t.lastModified() == before)
+    run(listOf(t.path), false, FlowStep("file.setDates", mapOf("modified" to "not a date")))
+    c.check("file.setDates: a bad date stops, file unchanged", t.lastModified() == before)
+
+    fun dos(f: File) = java.nio.file.Files.readAttributes(f.toPath(), java.nio.file.attribute.DosFileAttributes::class.java)
+    run(listOf(t.path), true, FlowStep("file.setAttributes", mapOf("hidden" to "on")))
+    c.check("file.setAttributes: dry run changes nothing", !dos(t).isHidden)
+    run(listOf(t.path), false, FlowStep("file.setAttributes", mapOf("hidden" to "on", "readOnly" to "on", "system" to "on")))
+    c.check("file.setAttributes: hidden, read-only, system on", dos(t).let { it.isHidden && it.isReadOnly && it.isSystem })
+    val flags = run(listOf(t.path), false, FlowStep("file.detail", mapOf("detail" to "system")))
+    c.check("file.detail system", flags == listOf("true"), flags)
+    run(listOf(t.path), false, FlowStep("file.setAttributes", mapOf("hidden" to "off", "readOnly" to "off", "system" to "off", "archive" to "off")))
+    c.check("file.setAttributes: all off again", dos(t).let { !it.isHidden && !it.isReadOnly && !it.isSystem && !it.isArchive })
+    run(listOf(a.path), false, FlowStep("meta.set", mapOf("field" to "狀態", "value" to "")))
+    c.check("meta.set: empty value clears", MetaStore.get(a.path, "狀態") == "" && MetaStore.get(b.path, "狀態") == "待審")
+
+    fun aiCheck(steps: String) = AiTools.check("""{"schema":"fileskmp.shortcut/v1","name":"t","accepts":["files"],"steps":[$steps]}""").filter { !it.startsWith("Note") }
+    val ok = aiCheck("""{"action":"files.filter","args":{"query":"field:狀態=待審"}},{"action":"meta.set","args":{"field":"狀態","value":"{item.folder}"}},{"action":"file.setDates","args":{"modified":"{item.taken:yyyy-MM-dd HH:mm:ss}"}},{"action":"file.setAttributes","args":{"hidden":"on"}}""")
+    c.check("validator: the new actions and field: pass", ok.isEmpty(), ok.joinToString("\n"))
+    c.check("validator: an unknown field is pointed out", aiCheck("""{"action":"files.filter","args":{"query":"field:不存在=1"}}""").any { "不存在" in it })
+    c.check("spec documents field: and the new actions", FlowActions.specMarkdown().let { sp -> listOf("field:", "`meta.set`", "`file.setDates`", "`file.setAttributes`").all { it in sp } })
+    println("\nMETA FLOW TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-lnk: LnkFile against Windows' own reading (WScript.Shell) for the shortcuts in Recent. Reads only. */
+fun lnkTest() {
+    val c = Checks()
+    val dir = File(System.getenv("APPDATA"), "Microsoft\\Windows\\Recent")
+    val links = dir.listFiles { f -> f.name.endsWith(".lnk", true) }.orEmpty().sortedByDescending { it.lastModified() }.take(25)
+    c.check("Recent has shortcuts to compare", links.isNotEmpty(), links.size)
+    val script = links.joinToString(";") { "\$s.CreateShortcut('${it.path.replace("'", "''")}').TargetPath" }
+    val windows = Fs.powershell("\$s = New-Object -ComObject WScript.Shell; $script", 60_000)?.lines()?.map { it.trim() } ?: emptyList()
+    var same = 0; var mine = 0
+    links.forEachIndexed { i, l ->
+        val ours = LnkFile.target(l); val theirs = windows.getOrNull(i).orEmpty()
+        if (ours != null) mine++
+        if (ours.equals(theirs, true) || (ours == null && theirs.isEmpty())) same++ else println("   differs: ${l.name}\n      ours:    $ours\n      Windows: $theirs")
+    }
+    println("   $same of ${links.size} the same; $mine read by LnkFile")
+    c.check("LnkFile reads what Windows reads", same == links.size, "$same/${links.size}")
+    val r = Fs.recentFiles()
+    c.check("recent list carries targets", r.count { it.target != null } == mine.coerceAtMost(r.size) || r.any { it.target != null })
+    println("\nLNK TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-menu: where the right-click menu goes in a short window (down, up, shifted, scrolling). */
+fun menuTest() {
+    val c = Checks()
+    val win = androidx.compose.ui.unit.IntSize(800, 600); val m = 8
+    fun at(x: Int, y: Int, w: Int, h: Int) = menuPlacement(androidx.compose.ui.unit.IntOffset(x, y), androidx.compose.ui.unit.IntSize(w, h), win, m)
+    c.check("fits below: opens down at the pointer", at(100, 100, 200, 300) == androidx.compose.ui.unit.IntOffset(100, 100), at(100, 100, 200, 300))
+    c.check("near the bottom: opens up, bottom edge at the pointer", at(100, 500, 200, 300).y == 200, at(100, 500, 200, 300))
+    c.check("fits neither way: as close to the pointer as fits", at(100, 300, 200, 500).y == 92, at(100, 300, 200, 500))
+    val cap = menuMaxHeight(600, m)
+    c.check("taller than the window: capped to the window minus margins (scrolls)", cap == 584, cap)
+    c.check("capped menu sits inside the margins", at(100, 300, 200, cap).y == 8, at(100, 300, 200, cap))
+    c.check("near the right edge: opens to the left", at(700, 100, 200, 300).x == 500, at(700, 100, 200, 300))
+    c.check("wider than the room on both sides: kept inside", at(400, 100, 700, 300).x.let { it >= 8 && it + 700 <= 792 }, at(400, 100, 700, 300))
+    val tiny = menuPlacement(androidx.compose.ui.unit.IntOffset(10, 10), androidx.compose.ui.unit.IntSize(200, menuMaxHeight(40, m)), androidx.compose.ui.unit.IntSize(300, 40), m)
+    c.check("tiny window: never negative", tiny.x >= 0 && tiny.y >= 0, tiny)
+    // 在分割窗格開啟 from the sidebar: opens a second pane, then reuses the other pane.
+    Prefs.readOnly = true
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    val home = System.getProperty("user.home"); val winDir = System.getenv("SystemRoot") ?: "C:\\Windows"; val tmp = System.getProperty("java.io.tmpdir").trimEnd('\\')
+    kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.Main) {
+        s.navigate(home)
+        s.openInSplit(winDir, PaneArrangement.Vertical)
+        val ct = s.currentTab
+        c.check("open in split: second pane at the folder, side by side, active", ct.right?.location.equals(winDir, true) && ct.arrangement == PaneArrangement.Vertical && ct.rightActive && ct.left.location.equals(home, true),
+            "${ct.left.location} | ${ct.right?.location} ${ct.arrangement} rightActive=${ct.rightActive}")
+        s.openInSplit(tmp, PaneArrangement.Horizontal)
+        c.check("open in split again: the other (left) pane goes there, top and bottom", ct.left.location.equals(tmp, true) && ct.right?.location.equals(winDir, true) && !ct.rightActive && ct.arrangement == PaneArrangement.Horizontal,
+            "${ct.left.location} | ${ct.right?.location} ${ct.arrangement} rightActive=${ct.rightActive}")
+        val entries = sidebarFolderMenu(s, winDir, tree = true).map { it.label }
+        c.check("sidebar folder menu has new tab and both splits", listOf(S.openInNewTab, S.openInSplitVertical, S.openInSplitHorizontal, S.expandTree).all { it in entries }, entries)
+        val homeEntries = homeMenu(s).map { it.label }
+        c.check("首頁 menu has new tab and both splits", listOf(S.openInNewTab, S.openInSplitVertical, S.openInSplitHorizontal).all { it in homeEntries }, homeEntries)
+        s.openInSplit(HOME, PaneArrangement.Vertical)
+        c.check("首頁 opens in a split pane", ct.right?.location == HOME || ct.left.location == HOME, "${ct.left.location} | ${ct.right?.location}")
+    }
+    println("\nMENU TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/**
+ * --test-maximize: an undecorated window (opaque and see-through, like the app's) maximized with
+ * WindowWorkArea must fill the monitor's work area and leave the taskbar visible.
+ */
+fun maximizeTest() {
+    val c = Checks()
+    for (seeThrough in listOf(false, true)) {
+        val f = javax.swing.JFrame("max").apply {
+            isUndecorated = true
+            if (seeThrough) background = java.awt.Color(0, 0, 0, 0)
+            setBounds(200, 200, 600, 400); isVisible = true
+        }
+        javax.swing.SwingUtilities.invokeAndWait { WindowWorkArea.install(f) }
+        javax.swing.SwingUtilities.invokeAndWait { f.extendedState = java.awt.Frame.MAXIMIZED_BOTH }
+        Thread.sleep(1200)
+        val gc = f.graphicsConfiguration
+        val screen = gc.bounds; val ins = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(gc)
+        val want = java.awt.Rectangle(screen.x + ins.left, screen.y + ins.top, screen.width - ins.left - ins.right, screen.height - ins.top - ins.bottom)
+        val got = f.bounds
+        val label = if (seeThrough) "see-through" else "opaque"
+        println("   $label: screen $screen insets $ins scale ${gc.defaultTransform.scaleX} → window $got, work area $want")
+        c.check("$label: maximized", f.extendedState and java.awt.Frame.MAXIMIZED_BOTH == java.awt.Frame.MAXIMIZED_BOTH)
+        c.check("$label: fills the work area, taskbar visible", kotlin.math.abs(got.x - want.x) <= 1 && kotlin.math.abs(got.y - want.y) <= 1 &&
+            kotlin.math.abs(got.width - want.width) <= 2 && got.height <= want.height && want.height - got.height <= 2, "$got vs $want")
+        f.dispose()
+    }
+    println("\nMAXIMIZE TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-docs <file>...:reads Word / OpenDocument / PowerPoint files the way 快速預覽 does without a preview handler. */
+fun docsTest(files: List<File>) {
+    val c = Checks()
+    files.forEach { f ->
+        val ext = f.name.substringAfterLast('.').lowercase()
+        val r = runCatching { OfficeDocs.read(f, ext, 2000, 12) }
+        c.check("${f.name}: read", r.isSuccess, r.exceptionOrNull())
+        when (val q = r.getOrNull()) {
+            is QlContent.Document -> q.blocks.take(12).forEach { b -> println("   " + when (b) {
+                is MdBlock.Heading -> "H${b.level} ${b.text}"; is MdBlock.Paragraph -> "P  ${b.text}"
+                is MdBlock.ListItem -> "LI${b.depth} ${b.text}"; is MdBlock.Table -> "T  ${b.header.joinToString(" | ")} (+${b.rows.size} rows)"
+                else -> b.toString() }.take(160)) }
+            is QlContent.Table -> q.sheets.forEach { sh -> println("   [${sh.name}] ${sh.total} rows"); sh.rows.take(4).forEach { println("      " + it.joinToString(" | ").take(160)) } }
+            is QlContent.Message -> println("   message: ${q.text}")
+            else -> {}
+        }
+        c.check("${f.name}: shows content", r.getOrNull() is QlContent.Document || r.getOrNull() is QlContent.Table)
+    }
+    println("\nDOCS TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/**
+ * --test-video <dir>: makes short clips with FFmpeg (a VP9/Opus webm, an H.264/AAC ts) and runs the
+ * video actions on them for real: convert (re-encode and stream copy), compress (quality and size),
+ * scale, info, sound only, gif, custom arguments, and a dry run that must leave no file.
+ * Run with APPDATA pointing inside <dir> (settings stay out of the real profile).
+ */
+fun videoTest(dir: File) {
+    val c = Checks()
+    if (!Prefs.dir.canonicalPath.startsWith(dir.canonicalPath)) { println("REFUSED: set APPDATA inside $dir"); return }
+    Prefs.readOnly = true
+    val exe = Ffmpeg.locate()
+    c.check("ffmpeg found", exe != null, exe)
+    if (exe == null) { println("\nVIDEO TEST: ${c.pass} passed, ${c.fail} failed"); return }
+    println("   ffmpeg: $exe")
+    val src = File(dir, "src").apply { deleteRecursively(); mkdirs() }
+    val out = File(dir, "out").apply { deleteRecursively(); mkdirs() }
+    fun make(name: String, vararg enc: String): File {
+        val f = File(src, name)
+        val p = ProcessBuilder(listOf(exe.path, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=4") + enc + f.path).redirectErrorStream(true).start()
+        val log = p.inputStream.bufferedReader().readText(); p.waitFor()
+        c.check("make $name", f.isFile && f.length() > 0, log.take(300))
+        return f
+    }
+    val have = kotlinx.coroutines.runBlocking { Ffmpeg.encoders(exe) }
+    println("   VP9 encoder: ${"libvpx-vp9" in have}, AV1 encoder: ${"libsvtav1" in have}")
+    // The ARM64 build has no libvpx: its webm gets AV1, which webm takes as well.
+    val webm = if ("libvpx-vp9" in have) make("clip one.webm", "-c:v", "libvpx-vp9", "-b:v", "1M", "-deadline", "realtime", "-cpu-used", "8", "-c:a", "libopus")
+        else make("clip one.webm", "-c:v", "libsvtav1", "-preset", "12", "-c:a", "libopus")
+    val webmCodec = if ("libvpx-vp9" in have) "vp9" else "av1"
+    val ts = make("clip.ts", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac")
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    fun runWith(input: File, dry: Boolean, ask: suspend (FlowPrompt) -> String?, steps: List<FlowStep>): Pair<List<String>, List<String>> {
+        val log = java.util.Collections.synchronizedList(ArrayList<String>())
+        val flow = Flow("t", "t", steps = steps)
+        val r = FlowRun(s, flow, listOf(input.path), emptyMap(), dry, ask, { log += it })
+        val t0 = System.nanoTime()
+        val res = runCatching { kotlinx.coroutines.runBlocking { r.runSteps(flow.steps) } }
+        log += "   (${(System.nanoTime() - t0) / 1_000_000} ms)"
+        log.forEach { println("      $it") }
+        res.exceptionOrNull()?.let { println("      ERROR: ${it.message}") }
+        return r.items to log
+    }
+    fun run(input: File, dry: Boolean = false, vararg steps: FlowStep) = runWith(input, dry, { null }, steps.toList())
+    fun probe(p: String?) = p?.let { kotlinx.coroutines.runBlocking { Ffmpeg.probe(exe, File(it)) } }
+    val to = mapOf("to" to out.path)
+
+    println("\n-- webm → mp4 (re-encode)")
+    run(webm, false, FlowStep("video.convert", to + mapOf("format" to "mp4"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("webm → mp4: H.264 + AAC, 640x360", i?.video == "h264" && i.audio == "aac" && i.width == 640 && i.height == 360, "${i?.video} ${i?.audio} ${i?.width}x${i?.height}")
+        c.check("webm → mp4: name kept", p?.let { File(it).name } == "clip one.mp4", p)
+    }
+    println("\n-- ts → mp4 (stream copy)")
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "mp4"))).let { (items, log) ->
+        val i = probe(items.singleOrNull())
+        c.check("ts → mp4: streams copied (h264/aac)", i?.video == "h264" && i.audio == "aac", "${i?.video} ${i?.audio}")
+        c.check("ts → mp4: duration kept (~4 s)", i != null && kotlin.math.abs(i.duration - 4.0) < 0.3, i?.duration)
+    }
+    println("\n-- compress by quality (small)")
+    run(ts, false, FlowStep("video.compress", to + mapOf("quality" to "small"))).first.singleOrNull().let { p ->
+        c.check("compress (small): smaller than the source", p != null && File(p).length() < ts.length(), "${p?.let { File(it).length() }} vs ${ts.length()}")
+    }
+    println("\n-- compress to 0.15 MB (two-pass)")
+    run(ts, false, FlowStep("video.compress", to + mapOf("method" to "size", "sizeMB" to 0.15))).first.singleOrNull().let { p ->
+        val len = p?.let { File(it).length() } ?: 0
+        c.check("compress (size): within 0.15 MB +15%", len in 1..(0.15 * 1048576 * 1.15).toLong(), len)
+        c.check("compress (size): pass logs removed", AppDirs.cache.listFiles { f -> f.name.startsWith("ffmpeg2pass") }.isNullOrEmpty())
+    }
+    run(ts, false, FlowStep("video.compress", to + mapOf("method" to "size", "sizeMB" to 0.2, "codec" to "h265", "name" to "{item.stem}_hevc"))).first.singleOrNull().let { p ->
+        val i = probe(p); val len = p?.let { File(it).length() } ?: 0
+        c.check("compress (size, H.265): hevc within 0.2 MB +15%", i?.video == "hevc" && len in 1..(0.2 * 1048576 * 1.15).toLong(), "${i?.video} $len")
+        c.check("compress (size, H.265): stats files removed", AppDirs.cache.listFiles { f -> f.name.startsWith("ffmpeg2pass") }.isNullOrEmpty())
+    }
+    println("\n-- convert with a resolution (one encode)")
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "mkv", "height" to "240p", "name" to "{item.stem}_240"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("convert + height 240p: 426x240 h264 mkv", i?.width == 426 && i.height == 240 && i.video == "h264" && p!!.endsWith("clip_240.mkv"), "${i?.width}x${i?.height} ${i?.video} $p")
+    }
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "mp4", "height" to "1080", "name" to "{item.stem}_noup"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("convert + height 1080 on a 360p clip: not upscaled", i?.height == 360, "${i?.width}x${i?.height}")
+    }
+    // The recipe the assistant is given, run for real (minus files.selected: the test passes the file in), answering its two questions.
+    println("\n-- recipe: chosen resolution and format")
+    val recipe = Flow.fromJson("r", FlowActions.recipes.first().second).steps.filter { it.action != "files.selected" }
+    runWith(webm, false, { q -> if ("480p" in q.options) "480p" else if ("mov" in q.options) "mov" else null }, recipe).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("recipe: 480p choice keeps a 360p clip, mov, named _480p", i?.height == 360 && p!!.endsWith("clip one_480p.mov"), "${i?.width}x${i?.height} $p")
+    }
+    println("\n-- scale 50% / fit 200x200")
+    run(ts, false, FlowStep("video.scale", to + mapOf("percent" to 50))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("scale 50%: 320x180, same container (ts → mp4)", i?.width == 320 && i.height == 180 && p!!.endsWith(".mp4"), "${i?.width}x${i?.height} $p")
+    }
+    run(webm, false, FlowStep("video.scale", to + mapOf("mode" to "fit", "width" to 200, "height" to 200))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("fit 200x200: 200x112, webm stays $webmCodec", i?.width == 200 && i.height == 112 && i.video == webmCodec, "${i?.width}x${i?.height} ${i?.video}")
+    }
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "webm"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("ts → webm: $webmCodec + opus (whatever this FFmpeg can encode)", i?.video == webmCodec && i.audio == "opus", "${i?.video} ${i?.audio}")
+    }
+    println("\n-- info, mp3, gif, custom")
+    run(ts, false, FlowStep("video.info")).first.singleOrNull().let { line ->
+        c.check("info: name, length, 640x360, 30 fps, h264, aac", line == "clip.ts\t0:00:04\t640x360\t30\th264\taac", line)
+    }
+    run(webm, false, FlowStep("video.convert", to + mapOf("format" to "mp3"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("convert to mp3: sound only", i?.audio == "mp3" && i.video == null, "${i?.video} ${i?.audio}")
+    }
+    run(ts, false, FlowStep("video.convert", to + mapOf("format" to "gif"))).first.singleOrNull().let { p ->
+        c.check("convert to gif", p != null && File(p).readBytes().take(3).toByteArray().decodeToString() == "GIF", p)
+    }
+    run(webm, false, FlowStep("ffmpeg.run", to + mapOf("args" to "-i {in} -t 1.5 -c:v libx264 -an {out}", "output" to "{item.stem} cut.mp4"))).first.singleOrNull().let { p ->
+        val i = probe(p); c.check("custom args: 1.5 s, no sound, path with spaces", i != null && kotlin.math.abs(i.duration - 1.5) < 0.2 && i.audio == null, "${i?.duration} ${i?.audio} $p")
+    }
+    println("\n-- dry run")
+    val before = out.list()!!.toSet()
+    run(webm, true, FlowStep("video.compress", to + mapOf("method" to "size", "sizeMB" to 1))).second.let { log ->
+        c.check("dry run: logs the ffmpeg commands", log.count { "ffmpeg " in it } >= 2)
+        c.check("dry run: writes nothing", out.list()!!.toSet() == before)
+    }
+    println("\n-- errors")
+    val bogus = File(src, "not video.mp4").apply { writeText("hello") }
+    run(bogus, false, FlowStep("video.convert", to + mapOf("format" to "webm"))).let { (_, log) ->
+        c.check("not a video: stops with FFmpeg's message, no file left", out.list()!!.none { it.startsWith("not video") })
+    }
+    c.check("spec lists the video actions", FlowActions.specMarkdown().let { sp -> listOf("video.convert", "video.compress", "video.scale", "video.info", "ffmpeg.run").all { "`$it`" in sp } })
+    println("\nVIDEO TEST: ${c.pass} passed, ${c.fail} failed")
 }

@@ -276,7 +276,7 @@ class FlowRun(
 
     /** Folder from a template for one item, created unless dry run. */
     fun targetDir(template: String, item: String, index: Int): File {
-        val d = File(expand(template, item, index))
+        val d = File(Fs.expandEnv(expand(template, item, index)))
         if (!dryRun) d.mkdirs()
         return d
     }
@@ -302,6 +302,7 @@ object FlowActions {
     const val CAT_DATA = "數字、日期與編碼|Numbers, dates & encoding"
     const val CAT_FILES = "檔案|Files"
     const val CAT_IMAGE = "影像|Images"
+    const val CAT_VIDEO = "影片與音訊|Video & audio"
     const val CAT_WEB = "網路|Web"
     const val CAT_APPS = "應用程式|Apps"
     const val CAT_MEDIA = "聲音與語音|Sound & speech"
@@ -335,11 +336,11 @@ object FlowActions {
     )
 
     /** Display order of the categories. */
-    private val order = listOf(CAT_INPUT, CAT_TEXT, CAT_LIST, CAT_DATA, CAT_FILES, CAT_IMAGE, CAT_WEB, CAT_APPS, CAT_MEDIA, CAT_SYSTEM, CAT_SHARE, CAT_CONTROL, CAT_DEBUG)
+    private val order = listOf(CAT_INPUT, CAT_TEXT, CAT_LIST, CAT_DATA, CAT_FILES, CAT_IMAGE, CAT_VIDEO, CAT_WEB, CAT_APPS, CAT_MEDIA, CAT_SYSTEM, CAT_SHARE, CAT_CONTROL, CAT_DEBUG)
 
     val all: List<FlowAction> by lazy {
         val core = coreActions().map { a -> coreIo[a.id]?.let { a.retyped(it.input, it.output, it.category ?: a.category) } ?: a }
-        val list = core + moreActions() + systemActions()
+        val list = core + moreActions() + systemActions() + videoActions()
         // The registry: actions grouped by category in display order, the original order kept within each.
         list.sortedBy { order.indexOf(it.category).let { i -> if (i < 0) order.size else i } }
     }
@@ -354,7 +355,7 @@ object FlowActions {
                 ArgSpec("recursive", "包含子資料夾", "Include subfolders", "bool", false))) { st ->
             val q = arg(st, "query").takeIf { it.isNotBlank() }?.let { SearchQuery.parse(it) }
             val out = ArrayList<String>()
-            val queue = ArrayDeque<String>().apply { add(arg(st, "folder")) }
+            val queue = ArrayDeque<String>().apply { add(Fs.expandEnv(arg(st, "folder"))) }
             val rec = bool(st, "recursive")
             while (queue.isNotEmpty() && out.size < 100_000) {
                 val d = queue.removeFirst()
@@ -628,6 +629,9 @@ object FlowActions {
         "image.convert" to setOf("to"), "image.resize" to setOf("to"), "text.template" to setOf("template"),
         "json.make" to setOf("entries"), "json.set" to setOf("value"), "number.calc" to setOf("formula"),
         "base64.decode" to setOf("path"), "app.launch" to setOf("args"),
+        "video.convert" to setOf("name", "to"), "video.compress" to setOf("name", "to"), "video.scale" to setOf("name", "to"),
+        "ffmpeg.run" to setOf("args", "output", "to"),
+        "meta.set" to setOf("value"), "file.setDates" to setOf("created", "modified", "accessed"),
     )
 
     class StepType(val incoming: VType, val outgoing: VType, val warning: String?)
@@ -719,6 +723,25 @@ object FlowActions {
         }
     }
 
+    /** Worked shortcuts for the spec and the assistant; the token test checks each one passes the validator. */
+    val recipes: List<Pair<String, String>> = listOf(
+        "Convert videos to a chosen resolution and format" to """{"schema":"fileskmp.shortcut/v1","name":"影片轉檔（選解析度與格式）","accepts":["files"],"steps":[
+  {"action":"files.selected"},
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;m2ts;avi;m4v;wmv;flv"},"saveAs":"videos"},
+  {"action":"text.set","input":"nothing","args":{"text":"1080p\n720p\n480p"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇解析度"},"saveAs":"res"},
+  {"action":"text.set","input":"nothing","args":{"text":"mp4\nmkv\nwebm\nmov"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇格式"},"saveAs":"fmt"},
+  {"action":"video.convert","input":"var:videos","args":{"format":"{var.fmt}","height":"{var.res}","quality":"medium","name":"{item.stem}_{var.res}","to":"{item.parent}"}}
+]}""",
+        "Shrink videos to send (under 25 MB)" to """{"schema":"fileskmp.shortcut/v1","name":"壓縮影片到 25 MB","accepts":["files"],"steps":[
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;avi;m4v"}},
+  {"action":"video.compress","args":{"method":"size","sizeMB":"25","codec":"h264","name":"{item.stem}_25MB"}}
+]}""",
+    )
+
     /** The format spec as Markdown, generated from this registry (設定 → 捷徑 → 匯出規格). */
     fun specMarkdown(): String = buildString {
         append("# FilesKmp 捷徑格式 — ${FlowStore.SCHEMA}\n\n")
@@ -755,7 +778,9 @@ object FlowActions {
         append("- An unknown token stays exactly as typed, with no error. A `{param.x}` or `{var.x}` that doesn't exist becomes empty text.\n")
         append("- `{var.x}` and `{input}` holding several values become one text with a line break between the values.\n")
         append("- Date formats are Java DateTimeFormatter patterns (`yyyy` `MM` `dd` `HH` `mm` `ss`); the default is `yyyy-MM-dd`.\n")
-        append("- Tokens are filled in once, when the step runs; their results are not searched for tokens again.\n\n")
+        append("- Tokens are filled in once, when the step runs; their results are not searched for tokens again.\n")
+        append("- Destination folders (`to`) and `files.list`'s `folder` also take Windows environment variables, as typed in Explorer: ")
+        append("`%USERPROFILE%\\Videos`, `%APPDATA%`, `%TEMP%` (any case; an unknown `%NAME%` stays as typed).\n\n")
         append("| Token | Value |\n|---|---|\n")
         append("| `{param.ID}` | A parameter's answer (`params`) |\n| `{var.NAME}` | A variable set by an earlier step (`saveAs` / `var.set`) |\n")
         FlowTokens.tokens.filter { it.group != TokenInfo.Group.Item }.forEach { append("| `${it.text}` | ${it.en} |\n") }
@@ -783,6 +808,15 @@ object FlowActions {
         SearchQuery.hints.forEach { h -> append("- `${h.text}` — ${h.en}\n") }
         append("- `file:` and `folder:` take no value: `file: ext:pdf`, not `file:pdf`\n\n")
         append(SAFETY_SPEC)
+        append("## Recipes (proven designs; start from these)\n\n")
+        recipes.forEach { (title, json) -> append("### ").append(title).append("\n\n```json\n").append(json).append("\n```\n\n") }
+        append("Notes for video and audio:\n\n")
+        append("- One `video.convert` does format, codec, quality **and** resolution (`height`) in a single encode. Don't chain `video.scale` + `video.convert` (two lossy encodes), ")
+        append("and don't branch with `if` per resolution: pass the choice as `{var.res}` (\"720p\" and \"720\" both work).\n")
+        append("- To let the person pick from fixed options while running: `text.set` (`input: \"nothing\"`, one option per line) → `text.split` → `ui.choose` with `saveAs`. ")
+        append("Keep the files in a variable first (`saveAs: \"videos\"`) and give the video step `input: \"var:videos\"`.\n")
+        append("- `name` / `to` / `output` of the video actions are *per item*: `{item.stem}`, `{item.parent}` work there, mixed with `{var.x}`. Don't put `{item…}` in `if` or `text.set`.\n")
+        append("- ts → mp4 / mkv → mp4: `video.convert` with codec `auto` copies the streams (seconds, no loss). Sending limits: `video.compress` with `method: size`.\n\n")
         append("## Actions\n\n")
         all.groupBy { it.category }.forEach { (cat, acts) ->
             append("### ${cat.replace('|', '/')}\n\n")

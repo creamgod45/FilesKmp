@@ -54,6 +54,17 @@ class SearchQuery private constructor(private val clauses: List<List<Term>>, val
         }
     }
 
+    /**
+     * A custom field (MetaStore): `field:狀態` = has a value, `field:狀態=待審` = equals (ignoring case and spaces
+     * around it; `*` / `?` wildcards allowed), `!field:狀態` = no value.
+     */
+    private class Field(val name: String, val value: Pattern?, neg: Boolean) : Term(neg) {
+        override fun test(c: Candidate): Boolean {
+            val v = MetaStore.get(c.path(), name).trim()
+            return if (value == null) v.isNotEmpty() else value.matcher(v).matches()
+        }
+    }
+
     private class Kind(val dirs: Boolean, neg: Boolean) : Term(neg) {
         override fun test(c: Candidate) = c.isDir == dirs
     }
@@ -84,9 +95,15 @@ class SearchQuery private constructor(private val clauses: List<List<Term>>, val
             Hint("dc:thisweek", "建立日期（寫法同 dm:）", "Date created (same forms as dm:)"),
             Hint("path:", "比對完整路徑而不是檔名，例如 path:\\Photos\\", "Matches the full path instead of the name, e.g. path:\\Photos\\"),
             Hint("regex:", "正規表示式比對檔名，例如 regex:^IMG_\\d+", "Regular expression on the name, e.g. regex:^IMG_\\d+"),
+            Hint("field:狀態=待審", "自訂欄位等於某值（不分大小寫，可用 * ?）；field:狀態 為有填值，!field:狀態 為沒填；名稱有空格時加引號 field:\"專案 名稱=A\"",
+                "A custom field equals a value (ignoring case; * ? allowed); field:Status = has a value, !field:Status = has none; quote names with spaces: field:\"Project name=A\""),
         )
 
-        private val keyNames = setOf("regex", "ext", "size", "dm", "datemodified", "dc", "datecreated", "file", "folder", "path")
+        private val keyNames = setOf("regex", "ext", "size", "dm", "datemodified", "dc", "datecreated", "file", "folder", "path", "field")
+
+        /** "狀態=待審" → ("狀態", "待審"); "狀態" → ("狀態", null). */
+        private fun fieldParts(value: String): Pair<String, String?> =
+            if ('=' in value) value.substringBefore('=').trim() to value.substringAfter('=').trim() else value.trim() to null
 
         /** The term being typed just left of [caret] when it starts with a letter ("a.txt fi" → "fi"), or null. */
         fun typingTerm(text: String, caret: Int): String? =
@@ -98,7 +115,7 @@ class SearchQuery private constructor(private val clauses: List<List<Term>>, val
          */
         fun problems(text: String): List<String> {
             val out = ArrayList<String>()
-            val all = "file: folder: ext: size: dm: dc: path: regex:"
+            val all = "file: folder: ext: size: dm: dc: path: regex: field:"
             for (tok in tokens(text.trim())) {
                 val t = tok.removePrefix("!")
                 val key = t.substringBefore(':', "")
@@ -113,6 +130,10 @@ class SearchQuery private constructor(private val clauses: List<List<Term>>, val
                     (k == "file" || k == "folder") && value.isNotEmpty() ->
                         out += tr("“$k:” takes no value: put a space after it (“$k: $value”).", "「$k:」後面不接值，請在後面加空格（「$k: $value」）。")
                     k == "ext" && value.isEmpty() -> out += tr("“ext:” needs extensions, e.g. ext:jpg;png.", "「ext:」後面要寫副檔名，例如 ext:jpg;png。")
+                    k == "field" && fieldParts(value).first.isEmpty() -> out += tr("“field:” needs a field name, e.g. field:Status=Done.", "「field:」後面要寫欄位名稱，例如 field:狀態=完成。")
+                    k == "field" && '{' !in value && fieldParts(value).first !in MetaStore.fields ->
+                        out += tr("There is no custom field “${fieldParts(value).first}” yet (fields: ${MetaStore.fields.joinToString().ifEmpty { "none" }}); nothing has a value for it until meta.set sets one.",
+                            "還沒有自訂欄位「${fieldParts(value).first}」（現有：${MetaStore.fields.joinToString("、").ifEmpty { "無" }}）；要先用 meta.set 設定值才會有符合的項目。")
                     templated -> {}
                     k == "size" && sizeRange(value) == null ->
                         out += tr("Can't read the size “$value” (e.g. >10mb, 1kb..5mb, empty): this filter is ignored.", "看不懂大小「$value」（例如 >10mb、1kb..5mb、empty），這個條件會被忽略。")
@@ -139,7 +160,7 @@ class SearchQuery private constructor(private val clauses: List<List<Term>>, val
             for (tok in tokens(q)) {
                 if (tok == "|") { orNext = true; continue }
                 val term = term(tok, flags, caseSensitive) ?: continue
-                if (term is Text && term.onPath || term is Rx && term.onPath) needsPath = true
+                if (term is Text && term.onPath || term is Rx && term.onPath || term is Field) needsPath = true
                 if (orNext && clauses.isNotEmpty()) clauses.last().add(term) else clauses.add(mutableListOf(term))
                 orNext = false
             }
@@ -182,6 +203,11 @@ class SearchQuery private constructor(private val clauses: List<List<Term>>, val
                 "file" -> if (value.isEmpty()) return Kind(false, neg)
                 "folder" -> if (value.isEmpty()) return Kind(true, neg)
                 "path" -> return Text(if (cs) value else value.lowercase(), true, cs, neg)
+                "field" -> {
+                    val (name, v) = fieldParts(value)
+                    if (name.isEmpty()) return null
+                    return Field(name, v?.let { Pattern.compile(globToRegex(it), Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE) }, neg)
+                }
             }
             if (t.contains('*') || t.contains('?')) {
                 val onPath = t.contains('\\')

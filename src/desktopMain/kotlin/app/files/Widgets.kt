@@ -1,5 +1,6 @@
 package app.files
 
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -144,6 +145,18 @@ fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, color: Color = L
     val p = LocalPalette.current
     Box(modifier.height(4.dp).clip(RoundedCornerShape(2.dp)).background(p.progressTrack)) {
         Box(Modifier.fillMaxHeight().fillMaxWidth(fraction.coerceIn(0f, 1f)).clip(RoundedCornerShape(2.dp)).background(color))
+    }
+}
+
+/** A progress bar for work of unknown length: a short segment sliding across the track. */
+@Composable
+fun BusyBar(modifier: Modifier = Modifier, color: Color = LocalPalette.current.accent) {
+    val p = LocalPalette.current
+    val t by androidx.compose.animation.core.rememberInfiniteTransition("busy").animateFloat(
+        0f, 1f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1400, easing = androidx.compose.animation.core.LinearEasing)), "busy")
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier.height(4.dp).clip(RoundedCornerShape(2.dp)).background(p.progressTrack)) {
+        val seg = maxWidth * 0.3f
+        Box(Modifier.offset(x = (maxWidth + seg) * t - seg).width(seg).fillMaxHeight().clip(RoundedCornerShape(2.dp)).background(color))
     }
 }
 

@@ -90,13 +90,111 @@ Steps pass a **list of values** along. Every value is text; each action declares
 | `nothing` | The action ignores its input / leaves no values |
 | `same as input` | The values are handed on unchanged (for actions done for their effect) |
 
-## Tokens
+## Running
 
-`{param.x}` `{var.x}` `{count}` `{input}` `{first}` `{last}` `{date:yyyy-MM-dd}` `{folder}` `{home}` `{desktop}` `{documents}` `{downloads}` `{pictures}` `{music}` `{videos}` `{temp}` `{clipboard}` `{env.NAME}` `{newline}` `{tab}`
+- The shortcut starts with the selected files and folders (full paths). With nothing selected it starts with nothing, unless `accepts` includes `folder`: then it starts with the open folder. A `files.selected` step gives the selection, or the open folder when nothing is selected.
+- Each step replaces the values with its result; `input` picks other values for one step. `saveAs` names (and `var.set` names) must be ASCII letters, digits or `_` (e.g. `fileHash`), or `{var.NAME}` won't be recognised.
+- File actions only use values that are full paths of existing files or folders; any other value is skipped silently.
+- `stop.if` looks at how many values there are, not at their text: one empty text is still a value. To test text, use `if` with `isEmpty`.
+- A step that fails, or `stop.if` / a declined `ui.confirm`, ends the whole run and shows its message.
 
-Inside `each` / `repeat`: `{var.index}` (1, 2, …) and `{var.item}` (the current value).
+## Tokens (how text arguments are filled in)
 
-Per item: `{item}` `{item.name}` `{item.stem}` `{item.ext}` `{item.parent}` `{item.folder}` `{item.index:000}` `{item.modified:fmt}` `{item.created:fmt}` `{item.taken:fmt}` `{item.size}` `{item.width}` `{item.height}` `{item.camera}` `{item.artist}` `{item.album}` `{item.title}` `{item.track:00}` `{item.field:Name}`
+Every text argument may contain `{name}` or `{name:format}`. Rules of the parser:
+
+- A name is ASCII letters, digits, `_` and `.`, starting with a letter. Anything else (`{var.檔案}`, `{var.my-hash}`) is not a token.
+- An unknown token stays exactly as typed, with no error. A `{param.x}` or `{var.x}` that doesn't exist becomes empty text.
+- `{var.x}` and `{input}` holding several values become one text with a line break between the values.
+- Date formats are Java DateTimeFormatter patterns (`yyyy` `MM` `dd` `HH` `mm` `ss`); the default is `yyyy-MM-dd`.
+- Tokens are filled in once, when the step runs; their results are not searched for tokens again.
+- Destination folders (`to`) and `files.list`'s `folder` also take Windows environment variables, as typed in Explorer: `%USERPROFILE%\Videos`, `%APPDATA%`, `%TEMP%` (any case; an unknown `%NAME%` stays as typed).
+
+| Token | Value |
+|---|---|
+| `{param.ID}` | A parameter's answer (`params`) |
+| `{var.NAME}` | A variable set by an earlier step (`saveAs` / `var.set`) |
+| `{input}` | All current values, one per line |
+| `{first}` | The first value |
+| `{last}` | The last value |
+| `{count}` | How many values |
+| `{folder}` | The open folder |
+| `{home}` | Your user folder |
+| `{desktop}` | Desktop |
+| `{documents}` | Documents |
+| `{downloads}` | Downloads |
+| `{pictures}` | Pictures |
+| `{music}` | Music |
+| `{videos}` | Videos |
+| `{temp}` | Temporary folder |
+| `{date:yyyy-MM-dd}` | Today's date (any format, e.g. yyyyMMdd-HHmmss) |
+| `{clipboard}` | The text on the clipboard |
+| `{newline}` | A line break |
+| `{tab}` | A tab character |
+| `{env.USERNAME}` | An environment variable (replace USERNAME) |
+
+Inside `each` the current value is `{var.item}` (and `{first}`, since the inner steps get just that value); `{var.index}` is 1, 2, … Inside `repeat`: `{var.index}`.
+
+### `{item…}` tokens: only in *per item* arguments
+
+These are filled in for each value in turn, and **only** in the arguments marked *per item* in the action list: `file.copy` (`to`), `file.move` (`to`), `file.rename` (`name`), `file.unzip` (`to`), `image.convert` (`to`), `image.resize` (`to`), `text.template` (`template`), `json.make` (`entries`), `json.set` (`value`), `number.calc` (`formula`), `base64.decode` (`path`), `app.launch` (`args`), `video.convert` (`name`/`to`), `video.compress` (`name`/`to`), `video.scale` (`name`/`to`), `ffmpeg.run` (`args`/`output`/`to`), `meta.set` (`value`), `file.setDates` (`created`/`modified`/`accessed`). Anywhere else (`notify` text, `if` subject, `text.set` …) they stay as typed: use `{first}` or `{var.item}` inside `each` instead.
+
+| Token | Value |
+|---|---|
+| `{item}` | This file's full path |
+| `{item.name}` | File name (with extension) |
+| `{item.stem}` | Name without extension |
+| `{item.ext}` | Extension |
+| `{item.parent}` | Its folder's path |
+| `{item.folder}` | Its folder's name |
+| `{item.index:000}` | Its number (zero-padded to 3) |
+| `{item.size}` | Size as readable text, e.g. 1.2MB (not bytes) |
+| `{item.modified:yyyy-MM-dd}` | Date modified (any format) |
+| `{item.created:yyyy-MM-dd}` | Date created (any format) |
+| `{item.taken:yyyy-MM-dd}` | Date taken (photos; the date modified when missing) |
+| `{item.width}` | Width (pictures / videos) |
+| `{item.height}` | Height (pictures / videos) |
+| `{item.camera}` | Camera model |
+| `{item.artist}` | Artist (music) |
+| `{item.album}` | Album (music) |
+| `{item.title}` | Title (from the file's metadata) |
+| `{item.track:00}` | Track number (zero-padded) |
+| `{item.duration}` | Length (audio / video; : becomes .) |
+| `{item.tags}` | Tags (space separated) |
+| `{item.field:Name}` | A custom field's value (replace Name) |
+
+`{item.index}` counts from 1. Metadata tokens are empty when the file has none. In metadata and date tokens, characters a file name can't hold (`<>:"/\|?*`) become `_`, so `{item.modified:HH:mm}` gives `12_30`.
+
+## Conditions (`if`, `text.test`)
+
+`if` compares `subject` with `value` (both may use tokens) using `op`: `contains` `notContains` `equals` `notEquals` `startsWith` `endsWith` `matches` `isEmpty` `notEmpty` `>` `>=` `<` `<=`.
+
+- When both sides are numbers they compare as numbers (`10 > 9`); otherwise as text, ignoring case unless `ignoreCase` is false.
+- `equals` / `notEquals` ignore spaces and line breaks around both sides. `contains`, `startsWith`, `endsWith` don't trim.
+- `matches` is a regular expression found anywhere in the subject (anchor with `^…$`). `isEmpty` / `notEmpty` ignore `value` and treat blank text as empty.
+- The subject is one text: `{first}` for the first value, `{input}` for all of them joined by line breaks.
+
+## Search syntax (`query` arguments)
+
+Arguments of type `query` (`files.filter`, `files.list`) use the file search syntax. Only these filters exist; any other `word:` (e.g. `kind:file`, `type:folder`, `name:x`) is searched as plain text in the name and matches nothing.
+
+- Words separated by spaces must all match (AND); `a | b` matches either; `!word` (or `!ext:tmp`) excludes; `"quoted text"` keeps spaces
+- Plain text matches part of the name, ignoring case; `*` and `?` wildcards match the whole name (`*.log`, `IMG_????.jpg`); text with a `\` matches the full path
+- `file:` — Files only (no folders)
+- `folder:` — Folders only
+- `ext:` — Extensions, ; between several, e.g. ext:jpg;png
+- `size:>10mb` — Bigger than 10 MB (also <, >=, <=; units b kb mb gb tb)
+- `size:1kb..5mb` — Size between the two
+- `size:empty` — Empty files (0 bytes)
+- `dm:today` — Modified today (also yesterday, thisweek, thismonth, thisyear)
+- `dm:>7d` — Modified in the last 7 days
+- `dm:<30d` — Not modified for over 30 days
+- `dm:>2025-01-01` — Modified on or after that day
+- `dm:2025-01-01..2025-02-01` — Modified between the two days
+- `dc:thisweek` — Date created (same forms as dm:)
+- `path:` — Matches the full path instead of the name, e.g. path:\Photos\
+- `regex:` — Regular expression on the name, e.g. regex:^IMG_\d+
+- `field:狀態=待審` — A custom field equals a value (ignoring case; * ? allowed); field:Status = has a value, !field:Status = has none; quote names with spaces: field:"Project name=A"
+- `file:` and `folder:` take no value: `file: ext:pdf`, not `file:pdf`
 
 ## Permissions
 
@@ -112,6 +210,40 @@ redirects to http. Default list: `api.github.com`, `www.bing.com`.
 Trust covers exactly those steps (with their arguments): changing one asks again, other edits don't. Imported shortcuts start
 untrusted; built-in samples are trusted as shipped; a dry run never asks.
 
+## Recipes (proven designs; start from these)
+
+### Convert videos to a chosen resolution and format
+
+```json
+{"schema":"fileskmp.shortcut/v1","name":"影片轉檔（選解析度與格式）","accepts":["files"],"steps":[
+  {"action":"files.selected"},
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;m2ts;avi;m4v;wmv;flv"},"saveAs":"videos"},
+  {"action":"text.set","input":"nothing","args":{"text":"1080p\n720p\n480p"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇解析度"},"saveAs":"res"},
+  {"action":"text.set","input":"nothing","args":{"text":"mp4\nmkv\nwebm\nmov"}},
+  {"action":"text.split"},
+  {"action":"ui.choose","args":{"title":"選擇格式"},"saveAs":"fmt"},
+  {"action":"video.convert","input":"var:videos","args":{"format":"{var.fmt}","height":"{var.res}","quality":"medium","name":"{item.stem}_{var.res}","to":"{item.parent}"}}
+]}
+```
+
+### Shrink videos to send (under 25 MB)
+
+```json
+{"schema":"fileskmp.shortcut/v1","name":"壓縮影片到 25 MB","accepts":["files"],"steps":[
+  {"action":"files.filter","args":{"query":"ext:mp4;mkv;mov;webm;ts;avi;m4v"}},
+  {"action":"video.compress","args":{"method":"size","sizeMB":"25","codec":"h264","name":"{item.stem}_25MB"}}
+]}
+```
+
+Notes for video and audio:
+
+- One `video.convert` does format, codec, quality **and** resolution (`height`) in a single encode. Don't chain `video.scale` + `video.convert` (two lossy encodes), and don't branch with `if` per resolution: pass the choice as `{var.res}` ("720p" and "720" both work).
+- To let the person pick from fixed options while running: `text.set` (`input: "nothing"`, one option per line) → `text.split` → `ui.choose` with `saveAs`. Keep the files in a variable first (`saveAs: "videos"`) and give the video step `input: "var:videos"`.
+- `name` / `to` / `output` of the video actions are *per item*: `{item.stem}`, `{item.parent}` work there, mixed with `{var.x}`. Don't put `{item…}` in `if` or `text.set`.
+- ts → mp4 / mkv → mp4: `video.convert` with codec `auto` copies the streams (seconds, no loss). Sending limits: `video.compress` with `method: size`.
+
 ## Actions
 
 ### 取得輸入/Get input
@@ -121,7 +253,7 @@ untrusted; built-in samples are trusted as shipped; a dry run never asks.
 - **`files.list`** — List folder / 列出資料夾內容. Items in a folder, optionally filtered and including subfolders.  
   Input: *nothing* → Output: *files*
   - `folder` (folder) Folder, default `{folder}`
-  - `query` (text) Filter (search syntax)
+  - `query` (query) Filter (search syntax)
   - `recursive` (bool) Include subfolders, default `false`
 - **`clipboard.get`** — Get clipboard / 取得剪貼簿. The text on the clipboard.  
   Input: *nothing* → Output: *text*
@@ -196,7 +328,7 @@ untrusted; built-in samples are trusted as shipped; a dry run never asks.
   - `count` (choice: characters|lines|words|bytes) Count, default `characters`
 - **`text.template`** — Combine text / 組合文字. Applies a template to each value: {item} is the value, {item.index} its number.  
   Input: *anything* → Output: *text*
-  - `template` (multiline) Template, default `{item.index}. {item}`
+  - `template` (multiline) Template, default `{item.index}. {item}` — *per item*: `{item…}` tokens work here
 
 ### 清單與字典/Lists & dictionaries
 
@@ -236,7 +368,7 @@ untrusted; built-in samples are trusted as shipped; a dry run never asks.
 - **`json.make`** — Dictionary / 字典. Makes a dictionary (JSON object) from key=value lines; numbers, true/false and JSON keep their type.  
   Input: *anything* → Output: *dictionary/JSON*
   - `entries` (multiline) Entries (key=value), default `name={item.name}
-size={item.size}`
+size={item.size}` — *per item*: `{item…}` tokens work here
   - `perItem` (bool) One per value, default `false`
   - `asText` (bool) Everything as text, default `false`
 - **`json.get`** — Get dictionary value / 取得字典值. Gets values by path: name, items[0].title, items[*].id; arrays become several values.  
@@ -245,7 +377,7 @@ size={item.size}`
 - **`json.set`** — Set dictionary value / 設定字典值. Sets a value at a path (created when missing).  
   Input: *dictionary/JSON* → Output: *dictionary/JSON*
   - `path` (text) Path, default `name`
-  - `value` (text) Value
+  - `value` (text) Value — *per item*: `{item…}` tokens work here
   - `asText` (bool) As text, default `false`
 - **`json.keys`** — Dictionary keys / 字典的鍵. Every key of each dictionary.  
   Input: *dictionary/JSON* → Output: *text*
@@ -263,7 +395,7 @@ size={item.size}`
 
 - **`number.calc`** — Calculate / 計算. Evaluates a formula: + - * / % ^, parentheses, round(x,2) floor ceil abs sqrt min max; {first}, {count}, or {item} per value.  
   Input: *anything* → Output: *number*
-  - `formula` (text) Formula, default `{first} * 2`
+  - `formula` (text) Formula, default `{first} * 2` — *per item*: `{item…}` tokens work here
   - `perItem` (bool) Once per value, default `false`
 - **`number.stats`** — Statistics / 統計. Sum, average, minimum, maximum or median of the numbers.  
   Input: *number* → Output: *number*
@@ -300,26 +432,26 @@ size={item.size}`
 - **`base64.decode`** — Base64 decode / Base64 解碼. Decodes Base64 to text, or saves it as files ({item.index} tokens allowed).  
   Input: *text* → Output: *depends on the arguments*
   - `to` (choice: text|file) Result, default `text`
-  - `path` (path) File path, default `{desktop}\decoded-{item.index:00}.bin`
+  - `path` (path) File path, default `{desktop}\decoded-{item.index:00}.bin` — *per item*: `{item…}` tokens work here
 
 ### 檔案/Files
 
-- **`files.filter`** — Filter / 篩選. Keeps the items matching the search syntax (ext:, size:, dm:, wildcards, regex: …).  
+- **`files.filter`** — Filter / 篩選. Keeps the items matching the search syntax (file:, folder:, ext:, size:, dm:, wildcards, regex: …).  
   Input: *files* → Output: *files*
-  - `query` (text) Condition, default `ext:jpg;png`
+  - `query` (query) Condition, default `ext:jpg;png`
 - **`files.sort`** — Sort / 排序. Sorts by name, size or date.  
   Input: *files* → Output: *files*
   - `by` (choice: name|size|modified|created) By, default `name`
   - `descending` (bool) Descending, default `false`
 - **`file.copy`** — Copy to / 複製到 *(changes files or the system; skipped in a dry run)*. Copies each item into a folder (tokens like {item.taken:yyyy} make subfolders).  
   Input: *files* → Output: *files*
-  - `to` (folder) Destination folder, default `{desktop}\Copied`
+  - `to` (folder) Destination folder, default `{desktop}\Copied` — *per item*: `{item…}` tokens work here
 - **`file.move`** — Move to / 移動到 *(changes files or the system; skipped in a dry run)*. Moves each item into a folder (tokens allowed).  
   Input: *files* → Output: *files*
-  - `to` (folder) Destination folder, default `{folder}\Moved`
+  - `to` (folder) Destination folder, default `{folder}\Moved` — *per item*: `{item…}` tokens work here
 - **`file.rename`** — Rename / 重新命名 *(changes files or the system; skipped in a dry run)*. Renames each item from a template, e.g. {item.taken:yyyy-MM-dd}_{item.index:000}.{item.ext}.  
   Input: *files* → Output: *files*
-  - `name` (text) New name, default `{item.stem}_{item.index:000}.{item.ext}`
+  - `name` (text) New name, default `{item.stem}_{item.index:000}.{item.ext}` — *per item*: `{item…}` tokens work here
 - **`file.delete`** — Delete / 刪除 *(changes files or the system; skipped in a dry run)*. Deletes each item (to the Recycle Bin by default).  
   Input: *files* → Output: *nothing*
   - `recycle` (bool) To the Recycle Bin, default `true`
@@ -331,7 +463,7 @@ size={item.size}`
   - `to` (path) Zip file, default `{desktop}\archive-{date:yyyyMMdd-HHmm}.zip`
 - **`file.unzip`** — Extract zip / 解壓縮 *(changes files or the system; skipped in a dry run)*. Extracts each zip file.  
   Input: *files* → Output: *files*
-  - `to` (folder) Destination, default `{item.parent}\{item.stem}`
+  - `to` (folder) Destination, default `{item.parent}\{item.stem}` — *per item*: `{item…}` tokens work here
 - **`file.readText`** — Read text / 讀取文字內容. The text of each file (up to 1 MiB).  
   Input: *files* → Output: *text*
 - **`file.writeText`** — Write text file / 寫入文字檔 *(changes files or the system; skipped in a dry run)*. Writes the values to a file.  
@@ -356,8 +488,25 @@ size={item.size}`
   - `mode` (choice: existing|missing|each|all) Result, default `existing`
 - **`file.detail`** — Get file detail / 取得檔案詳細資料. One detail of each item: name, extension, folder, size, dates, kind, attributes…  
   Input: *files* → Output: *depends on the arguments*
-  - `detail` (choice: name|stem|extension|parent|path|size|sizeText|modified|created|accessed|isFolder|readOnly|hidden|lines) Detail, default `name`
+  - `detail` (choice: name|stem|extension|parent|path|size|sizeText|modified|created|accessed|isFolder|readOnly|hidden|system|archive|lines|field) Detail, default `name`
   - `format` (text) Date format, default `yyyy-MM-dd HH:mm:ss`
+  - `field` (text) Custom field name (for detail "field")
+- **`meta.set`** — Set custom field / 設定自訂欄位 *(changes files or the system; skipped in a dry run)*. Sets a custom field (project, client, status…) on each item; an empty value clears it. A field that doesn't exist yet is created. The value may use {item…} tokens, e.g. {item.folder}.  
+  Input: *files* → Output: *same as input*
+  - `field` (text) Field, default `狀態`
+  - `value` (text) Value (empty = clear) — *per item*: `{item…}` tokens work here
+- **`file.setDates`** — Set file dates / 設定檔案日期 *(changes files or the system; skipped in a dry run)*. Changes each item's created, modified and accessed dates (yyyy-MM-dd HH:mm[:ss], {item…} tokens allowed; empty = unchanged), or sets them to the photo's date taken.  
+  Input: *files* → Output: *same as input*
+  - `created` (text) Created — *per item*: `{item…}` tokens work here
+  - `modified` (text) Modified — *per item*: `{item…}` tokens work here
+  - `accessed` (text) Accessed — *per item*: `{item…}` tokens work here
+  - `fromTaken` (bool) Created and modified from date taken, default `false`
+- **`file.setAttributes`** — Set file attributes / 設定檔案屬性 *(changes files or the system; skipped in a dry run)*. Turns read-only, hidden, archive and system on or off for each item (keep = unchanged).  
+  Input: *files* → Output: *same as input*
+  - `readOnly` (choice: keep|on|off) Read-only, default `keep`
+  - `hidden` (choice: keep|on|off) Hidden, default `keep`
+  - `archive` (choice: keep|on|off) Archive, default `keep`
+  - `system` (choice: keep|on|off) System, default `keep`
 
 ### 影像/Images
 
@@ -365,11 +514,46 @@ size={item.size}`
   Input: *files* → Output: *files*
   - `format` (choice: png|jpg|webp) Format, default `webp`
   - `quality` (number) Quality (1–100), default `85`
-  - `to` (folder) Destination, default `{item.parent}`
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
 - **`image.resize`** — Resize images / 縮小影像 *(changes files or the system; skipped in a dry run)*. Scales pictures down so the longest side fits.  
   Input: *files* → Output: *files*
   - `max` (number) Longest side (px), default `1920`
-  - `to` (folder) Destination, default `{item.parent}\resized`
+  - `to` (folder) Destination, default `{item.parent}\resized` — *per item*: `{item…}` tokens work here
+
+### 影片與音訊/Video & audio
+
+- **`video.convert`** — Convert video / 影片轉檔 *(changes files or the system; skipped in a dry run)*. Converts video or sound to mp4, mkv, mov, webm, avi or gif, or saves just the sound as mp3, m4a, wav, flac or opus. With codec "auto", streams that fit the new format are copied (ts → mp4 in seconds, no quality loss); others are re-encoded (webm → mp4 becomes H.264 + AAC). "Resolution" also scales the video down to that height in the same pass (1080/720/480…, or "720p" from a variable).  
+  Input: *files* → Output: *files*
+  - `format` (choice: mp4|mkv|mov|webm|avi|gif|mp3|m4a|wav|flac|opus) Format, default `mp4`
+  - `codec` (choice: auto|copy|h264|h265|vp9|av1) Video codec, default `auto`
+  - `quality` (choice: high|medium|small) Quality, default `medium`
+  - `height` (choice: keep|2160|1440|1080|720|480|360) Resolution (output height; only ever scaled down), default `keep`
+  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
+- **`video.compress`** — Compress video / 壓縮影片 *(changes files or the system; skipped in a dry run)*. Re-encodes a video into a smaller mp4: by quality (high / medium / small), or to a target size in MB (two-pass, to land close to it — e.g. under 25 MB for sending).  
+  Input: *files* → Output: *files*
+  - `method` (choice: quality|size) Method, default `quality`
+  - `quality` (choice: high|medium|small) Quality, default `medium`
+  - `sizeMB` (number) Target size (MB), default `25`
+  - `codec` (choice: h264|h265) Video codec, default `h264`
+  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}_compressed` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
+- **`video.scale`** — Scale video / 縮放影片 *(changes files or the system; skipped in a dry run)*. Changes a video's resolution: by percent, to a width or a height (the other side keeps the proportions), or to fit inside a width × height box. Sound is copied when possible.  
+  Input: *files* → Output: *files*
+  - `mode` (choice: percent|width|height|fit) Mode, default `percent`
+  - `percent` (number) Percent, default `50`
+  - `width` (number) Width (px), default `1280`
+  - `height` (number) Height (px), default `720`
+  - `quality` (choice: high|medium|small) Quality, default `high`
+  - `name` (text) File name (without extension; tokens allowed), default `{item.stem}_scaled` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
+- **`video.info`** — Video info / 影片資訊. Length, resolution, frame rate and codecs of each video or sound file (tab separated: name, length, width×height, fps, video codec, audio codec).  
+  Input: *files* → Output: *text*
+- **`ffmpeg.run`** — FFmpeg (custom) / FFmpeg 自訂轉換 *(changes files or the system; skipped in a dry run)*. Runs FFmpeg with your own arguments for each file: {in} is the source and {out} the output (from "Output name"; existing files are never overwritten); tokens like {item.stem} work too. Example: -i {in} -ss 00:00:10 -t 30 -c copy {out}  
+  Input: *files* → Output: *files*
+  - `args` (multiline) FFmpeg arguments, default `-i {in} -c:v libx264 -crf 23 -preset medium -c:a aac -b:a 160k {out}` — *per item*: `{item…}` tokens work here
+  - `output` (text) Output name (with extension), default `{item.stem}_out.mp4` — *per item*: `{item…}` tokens work here
+  - `to` (folder) Destination, default `{item.parent}` — *per item*: `{item…}` tokens work here
 
 ### 網路/Web
 
@@ -409,7 +593,7 @@ size={item.size}`
 - **`app.launch`** — Start app / 啟動應用程式 *(changes files or the system; skipped in a dry run)*. Starts a program (name, path or Store app) with arguments; can wait and capture its output (CLI tools), exit code or process id. {input} in the arguments stands for all values; Once per value runs it for each.  
   Input: *anything* → Output: *depends on the arguments*
   - `app` (app) App, default `notepad`
-  - `args` (text) Arguments, default `{input}`
+  - `args` (text) Arguments, default `{input}` — *per item*: `{item…}` tokens work here
   - `perItem` (bool) Once per value, default `false`
   - `wait` (bool) Wait until it ends, default `false`
   - `output` (choice: none|output|exitCode|pid) Result, default `none`

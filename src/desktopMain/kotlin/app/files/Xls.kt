@@ -23,7 +23,7 @@ object Xls {
 
     // ------------------------------------------------------------------ OLE compound file
 
-    private class Cfb(val d: ByteArray) {
+    internal class Cfb(val d: ByteArray) {
         private val b = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN)
         private val sec = 1 shl b.getShort(0x1E).toInt()
         private val mini = 1 shl b.getShort(0x20).toInt()

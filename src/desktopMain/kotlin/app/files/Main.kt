@@ -79,6 +79,21 @@ fun main(args: Array<String>) {
                         }
                     }
                 }
+            // --rclick x,y: a right click there, once the page has loaded (context menus).
+            args.indexOf("--rclick") >= 0 -> args.getOrNull(args.indexOf("--rclick") + 1)?.split(',')?.mapNotNull { it.toFloatOrNull() }
+                ?.takeIf { it.size == 2 }?.let { (x, y) ->
+                    { scene: ImageComposeScene, _: AppState ->
+                        delay(1500.milliseconds)
+                        @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+                        run {
+                            val at = androidx.compose.ui.geometry.Offset(x, y)
+                            val P = androidx.compose.ui.input.pointer.PointerEventType
+                            scene.sendPointerEvent(P.Move, at)
+                            scene.sendPointerEvent(P.Press, at, buttons = androidx.compose.ui.input.pointer.PointerButtons(isSecondaryPressed = true), button = androidx.compose.ui.input.pointer.PointerButton.Secondary)
+                            scene.sendPointerEvent(P.Release, at, button = androidx.compose.ui.input.pointer.PointerButton.Secondary)
+                        }
+                    }
+                }
             // --shift-wheel x,y: three notches of Shift + mouse wheel there (scrolls a wide table sideways).
             args.indexOf("--shift-wheel") >= 0 -> args.getOrNull(args.indexOf("--shift-wheel") + 1)?.split(',')?.mapNotNull { it.toFloatOrNull() }
                 ?.takeIf { it.size == 2 }?.let { (x, y) ->
@@ -116,6 +131,13 @@ fun main(args: Array<String>) {
             if ("--theme-dark" in args) s.theme = ThemeMode.Dark
             if ("--analyze-profile" in args) s.analyzeProfile()
             if ("--demo-custom-toolbar" in args) demoCustomToolbar(s)
+            // Home with only the recent files (for pictures of that list and its menu).
+            if ("--only-recent" in args) { s.showQuickAccessWidget = false; s.showDrivesWidget = false; s.showStorageWidget = false; s.showTagsWidget = false; s.showNetworkWidget = false }
+            // A minimized shortcut run: the task center's badge and card (--demo-flow-card also opens the task center).
+            if ("--demo-flow-badge" in args || "--demo-flow-card" in args) {
+                s.flowRun = FlowRunState(FlowStore.samples().first(), false).apply { minimized = true; log += "   clip.mp4: 40%" }
+                if ("--demo-flow-card" in args) s.statusCenterOpen = true
+            }
             // Preview only (read-only): opens the 預覽並清理 dialog for one clean-up target.
             args.indexOf("--plan-cleanup").takeIf { it >= 0 && it + 1 < args.size }?.let { i ->
                 Cleanup.targets().firstOrNull { it.id == args[i + 1] }?.let { s.planCleanup(it) }
@@ -723,6 +745,12 @@ fun main(args: Array<String>) {
     if ("--test-tokens" in args) { tokensTest(); exitProcess(0) }
     args.indexOf("--test-media").takeIf { it >= 0 && it + 1 < args.size }?.let { mediaTest(File(args[it + 1]), args.getOrNull(it + 2)?.takeIf { a -> !a.startsWith("--") }?.let { a -> File(a) }); exitProcess(0) }
     args.indexOf("--test-xls").takeIf { it >= 0 }?.let { i -> xlsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
+    if ("--test-maximize" in args) { maximizeTest(); exitProcess(0) }
+    if ("--test-menu" in args) { menuTest(); exitProcess(0) }
+    if ("--test-lnk" in args) { lnkTest(); exitProcess(0) }
+    args.indexOf("--test-meta-flow").takeIf { it >= 0 && it + 1 < args.size }?.let { metaFlowTest(File(args[it + 1])); exitProcess(0) }
+    args.indexOf("--test-docs").takeIf { it >= 0 }?.let { i -> docsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
+    args.indexOf("--test-video").takeIf { it >= 0 && it + 1 < args.size }?.let { videoTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-archives").takeIf { it >= 0 }?.let { i -> archivesTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
     args.indexOf("--test-shell-preview").takeIf { it >= 0 && it + 1 < args.size }?.let { i -> shellPreviewTest(File(args[i + 1]), args.drop(i + 2).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
     args.indexOf("--test-keymap").takeIf { it >= 0 && it + 1 < args.size }?.let { keymapTest(File(args[it + 1])); exitProcess(0) }
@@ -773,11 +801,22 @@ fun main(args: Array<String>) {
             LaunchedEffect(Unit) {
                 window.minimumSize = Dimension(M.WINDOW_MIN_W, M.WINDOW_MIN_H)
                 WindowCorners.round(window)
+                // Maximized stops at the taskbar, as with a normal window frame.
+                WindowWorkArea.install(window)
                 if (translucent) {
                     state.applyWindowBlur = { WindowBlur.set(window, state.blurBehind) }
                     state.applyWindowBlur?.invoke()
                 }
                 ShellMenu.ownerHwnd = WindowCorners.hwnd(window) ?: 0L
+                // Quick Look's native previews can keep the keyboard after they close (WindowFocus.kt).
+                WindowFocus.install(window)
+                launch {
+                    var wasOpen = false
+                    snapshotFlow { state.quickLook != null }.collect { open ->
+                        if (wasOpen && !open) { delay(50.milliseconds); WindowFocus.reclaim() }
+                        wasOpen = open
+                    }
+                }
                 // Back from the taskbar: the background may change (設定 › 外觀 › 視窗從最小化還原時).
                 launch {
                     var wasMinimized = windowState.isMinimized
@@ -926,7 +965,7 @@ fun Root(s: AppState, systemDark: Boolean, accent: androidx.compose.ui.graphics.
                 s.metadataFor?.let { MetadataDialog(s, it) }
                 s.deleteReport?.let { DeleteProblemDialog(s, it) }
                 if (s.flowsOpen) FlowsDialog(s)
-                s.flowRun?.let { FlowRunPanel(s, it) }
+                s.flowRun?.takeIf { !it.minimized }?.let { FlowRunPanel(s, it) }
                 s.flowPrompt?.let { FlowPromptDialog(s, it) }
                 if (s.shortcutsOpen) ShortcutsDialog(s)
                 s.toast?.let { msg ->

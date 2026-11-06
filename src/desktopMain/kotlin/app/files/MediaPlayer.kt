@@ -154,7 +154,8 @@ object MediaEngine {
 
 /** A heavyweight surface that leaves its pixels to the video renderer (no AWT painting over it). */
 internal class VideoCanvas : java.awt.Canvas() {
-    init { background = java.awt.Color.BLACK; ignoreRepaint = true }
+    // Never a keyboard target: Quick Look's keys (Space, Esc, arrows) belong to the window (WindowFocus.kt).
+    init { background = java.awt.Color.BLACK; ignoreRepaint = true; isFocusable = false }
     override fun paint(g: java.awt.Graphics?) {}
     override fun update(g: java.awt.Graphics?) {}
 }
