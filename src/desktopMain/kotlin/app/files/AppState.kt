@@ -527,6 +527,24 @@ class AppState(val scope: CoroutineScope) {
         if (currentTab.right == null) splitPane(defaultArrangement) else closeActivePane()
     }
 
+    /**
+     * "在分割窗格開啟" (sidebar menu): shows [path] beside the current folder. No split yet: a second pane opens
+     * there. Already split: the other pane goes to [path] and becomes the active one.
+     */
+    fun openInSplit(path: String, arrangement: PaneArrangement) {
+        val ct = currentTab
+        ct.arrangement = arrangement
+        val r = ct.right
+        if (r == null) {
+            val n = TabState(path)
+            ct.right = n; ct.rightActive = true; ct.split = 0.5f; load(n)
+        } else {
+            val other = if (ct.rightActive) ct.left else r
+            ct.rightActive = other === r
+            navigate(path, other)
+        }
+    }
+
     /** "Split pane vertically / horizontally": opens the second pane at the current folder (SplitPane*Action). */
     fun splitPane(arrangement: PaneArrangement) {
         val ct = currentTab

@@ -557,6 +557,26 @@ fun menuTest() {
     c.check("wider than the room on both sides: kept inside", at(400, 100, 700, 300).x.let { it >= 8 && it + 700 <= 792 }, at(400, 100, 700, 300))
     val tiny = menuPlacement(androidx.compose.ui.unit.IntOffset(10, 10), androidx.compose.ui.unit.IntSize(200, menuMaxHeight(40, m)), androidx.compose.ui.unit.IntSize(300, 40), m)
     c.check("tiny window: never negative", tiny.x >= 0 && tiny.y >= 0, tiny)
+    // 在分割窗格開啟 from the sidebar: opens a second pane, then reuses the other pane.
+    Prefs.readOnly = true
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    val home = System.getProperty("user.home"); val winDir = System.getenv("SystemRoot") ?: "C:\\Windows"; val tmp = System.getProperty("java.io.tmpdir").trimEnd('\\')
+    kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.Main) {
+        s.navigate(home)
+        s.openInSplit(winDir, PaneArrangement.Vertical)
+        val ct = s.currentTab
+        c.check("open in split: second pane at the folder, side by side, active", ct.right?.location.equals(winDir, true) && ct.arrangement == PaneArrangement.Vertical && ct.rightActive && ct.left.location.equals(home, true),
+            "${ct.left.location} | ${ct.right?.location} ${ct.arrangement} rightActive=${ct.rightActive}")
+        s.openInSplit(tmp, PaneArrangement.Horizontal)
+        c.check("open in split again: the other (left) pane goes there, top and bottom", ct.left.location.equals(tmp, true) && ct.right?.location.equals(winDir, true) && !ct.rightActive && ct.arrangement == PaneArrangement.Horizontal,
+            "${ct.left.location} | ${ct.right?.location} ${ct.arrangement} rightActive=${ct.rightActive}")
+        val entries = sidebarFolderMenu(s, winDir, tree = true).map { it.label }
+        c.check("sidebar folder menu has new tab and both splits", listOf(S.openInNewTab, S.openInSplitVertical, S.openInSplitHorizontal, S.expandTree).all { it in entries }, entries)
+        val homeEntries = homeMenu(s).map { it.label }
+        c.check("首頁 menu has new tab and both splits", listOf(S.openInNewTab, S.openInSplitVertical, S.openInSplitHorizontal).all { it in homeEntries }, homeEntries)
+        s.openInSplit(HOME, PaneArrangement.Vertical)
+        c.check("首頁 opens in a split pane", ct.right?.location == HOME || ct.left.location == HOME, "${ct.left.location} | ${ct.right?.location}")
+    }
     println("\nMENU TEST: ${c.pass} passed, ${c.fail} failed")
 }
 

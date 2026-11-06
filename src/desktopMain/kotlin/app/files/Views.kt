@@ -148,13 +148,7 @@ fun UniformGrid(minW: Int, itemH: Int, maxCols: Int, stretch: Boolean, count: In
 @Composable
 fun QuickAccessCard(s: AppState, f: PinnedFolder, width: Dp) {
     val p = LocalPalette.current
-    Box(Modifier.contextMenu {
-        listOf(
-            MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(f.path) },
-            MenuEntry(S.openInTerminal, Icons.Outlined.Terminal) { Fs.openInTerminal(f.path) },
-            MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(f.path) },
-        )
-    }) {
+    Box(Modifier.contextMenu { sidebarFolderMenu(s, f.path, tree = false) }) {
         HomeCard(Modifier.size(width, M.QA_H.dp), onClick = { s.navigate(f.path) }) {
             Column(Modifier.fillMaxSize().padding(top = 12.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceBetween) {
                 KnownFolderGlyph(knownKindOf(f), M.QA_ICON.dp)
@@ -189,12 +183,7 @@ fun Widget(title: String, open: Boolean, onToggle: () -> Unit, content: @Composa
 fun DriveTile(s: AppState, d: DriveInfo) {
     val p = LocalPalette.current
     val low = d.usedFraction * 100 >= M.LOW_SPACE_PERCENT
-    Box(Modifier.contextMenu {
-        listOf(
-            MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(d.root) },
-            MenuEntry(S.openInTerminal, Icons.Outlined.Terminal) { Fs.openInTerminal(d.root) },
-        )
-    }) {
+    Box(Modifier.contextMenu { sidebarFolderMenu(s, d.root, tree = false) }) {
         HomeCard(Modifier.width(M.DRIVE_TILE_MIN_W.dp).height(M.DRIVE_TILE_MIN_H.dp), onClick = { s.navigate(d.root) }) {
             Row(Modifier.fillMaxSize().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 DriveGlyph(driveKindOf(d), M.DRIVE_ICON.dp)

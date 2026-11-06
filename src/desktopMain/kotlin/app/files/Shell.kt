@@ -450,7 +450,7 @@ fun Sidebar(s: AppState, modifier: Modifier) {
     Column(modifier.fillMaxHeight()) {
         LazyColumn(Modifier.weight(1f).padding(horizontal = 4.dp)) {
             item {
-                SidebarRow(S.home, 0, loc == HOME, onClick = { s.navigate(HOME) }) {
+                SidebarRow(S.home, 0, loc == HOME, menu = { homeMenu(s) }, onClick = { s.navigate(HOME) }) {
                     Icon(Icons.Filled.Home, null, Modifier.size(M.SIDEBAR_ICON.dp), tint = Color(0xFFF7630C))
                 }
             }
@@ -470,11 +470,7 @@ fun Sidebar(s: AppState, modifier: Modifier) {
             item { SidebarSection(S.pinned, "pinned", pinnedOpen) { pinnedOpen = !pinnedOpen } }
             if (pinnedOpen) items(s.pinned) { f ->
                 SidebarRow(f.name, 1, loc == f.path,
-                    menu = { listOf(
-                        MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(f.path) },
-                        MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(f.path) },
-                        MenuEntry(S.unpinFromSidebar, Icons.Outlined.PushPin, separatorBefore = true) { s.unpin(f.path) },
-                    ) },
+                    menu = { sidebarFolderMenu(s, f.path, tree = false) },
                     onClick = { s.navigate(f.path) }) { KnownFolderGlyph(knownKindOf(f), M.SIDEBAR_ICON.dp) }
             }
             item { SidebarSection(S.drives, "drives", drivesOpen) { drivesOpen = !drivesOpen } }
@@ -500,7 +496,7 @@ fun Sidebar(s: AppState, modifier: Modifier) {
                 item { SidebarSection(S.wsl, "wsl", wslOpen) { wslOpen = !wslOpen } }
                 if (wslOpen) items(s.wsl) { d ->
                     val path = "\\\\wsl.localhost\\$d"
-                    SidebarRow(d, 1, loc == path, onClick = { s.navigate(path) }) {
+                    SidebarRow(d, 1, loc == path, menu = { sidebarFolderMenu(s, path, tree = false) }, onClick = { s.navigate(path) }) {
                         WslGlyph(d, s.wslIcons[d], M.SIDEBAR_ICON.dp)
                     }
                 }
@@ -520,6 +516,37 @@ fun Sidebar(s: AppState, modifier: Modifier) {
         }
     }
 }
+
+/**
+ * The right-click menu of a folder in the sidebar (tree rows, pinned folders): open here, in a new tab or in a
+ * split pane beside the current folder, in the terminal; expand / collapse (tree rows); pin; copy path; and
+ * Windows' own menu (drive properties, eject, …).
+ */
+fun sidebarFolderMenu(s: AppState, path: String, tree: Boolean): List<MenuEntry> {
+    val pinned = s.pinned.any { it.path.equals(path, true) }
+    val expanded = s.treeExpanded[path] == true
+    return listOfNotNull(
+        MenuEntry(S.open, Icons.Outlined.OpenInNew) { s.navigate(path) },
+        MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(path) },
+        MenuEntry(S.openInSplitVertical, Icons.Outlined.VerticalSplit, separatorBefore = true) { s.openInSplit(path, PaneArrangement.Vertical) },
+        MenuEntry(S.openInSplitHorizontal, Icons.Outlined.Splitscreen) { s.openInSplit(path, PaneArrangement.Horizontal) },
+        MenuEntry(S.openInTerminal, Icons.Outlined.Terminal, separatorBefore = true) { Fs.openInTerminal(path) },
+        if (tree) MenuEntry(if (expanded) S.collapseTree else S.expandTree, if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore) { s.toggleTree(path) } else null,
+        if (pinned) MenuEntry(S.unpinFromSidebar, Icons.Outlined.PushPin, separatorBefore = true) { s.unpin(path) }
+        else MenuEntry(S.pinToSidebar, Icons.Outlined.PushPin, separatorBefore = true) { s.pin(path) },
+        MenuEntry(S.copyPath, Icons.Outlined.Link) { copyText(path) },
+        systemMenuEntry(s, listOf(path)),
+    )
+}
+
+/** The sidebar's 首頁 row: open it here, in a new tab, or in a split pane beside the current folder; refresh it. */
+fun homeMenu(s: AppState): List<MenuEntry> = listOf(
+    MenuEntry(S.open, Icons.Outlined.OpenInNew) { s.navigate(HOME) },
+    MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(HOME) },
+    MenuEntry(S.openInSplitVertical, Icons.Outlined.VerticalSplit, separatorBefore = true) { s.openInSplit(HOME, PaneArrangement.Vertical) },
+    MenuEntry(S.openInSplitHorizontal, Icons.Outlined.Splitscreen) { s.openInSplit(HOME, PaneArrangement.Horizontal) },
+    MenuEntry(S.refresh, Icons.Outlined.Refresh, separatorBefore = true) { s.loadHome() },
+)
 
 fun driveKindOf(d: DriveInfo): DriveKind = when {
     d.isSystem -> DriveKind.System
