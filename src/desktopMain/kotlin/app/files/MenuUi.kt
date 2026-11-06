@@ -4,7 +4,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -26,12 +25,28 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Places the menu at the pointer, moved left / up when it would leave the window. */
-private class MenuPosition(val at: IntOffset) : PopupPositionProvider {
+/**
+ * Where a menu of [size] opened at the pointer [at] goes in a window of [window], keeping [margin] from the edges.
+ * Each axis, in order: after the pointer (down / right) when it fits there; else before it (up / left, the
+ * menu's far edge at the pointer) when it fits there; else as close to the pointer as the window allows. The
+ * menu is never taller than the window minus the margins (it scrolls instead), so the last case always fits.
+ */
+internal fun menuPlacement(at: IntOffset, size: IntSize, window: IntSize, margin: Int): IntOffset {
+    fun axis(p: Int, len: Int, room: Int): Int = when {
+        p + len <= room - margin -> p
+        p - len >= margin -> p - len
+        else -> (room - margin - len).coerceAtMost(p).coerceAtLeast(margin.coerceAtMost((room - len).coerceAtLeast(0)))
+    }
+    return IntOffset(axis(at.x, size.width, window.width), axis(at.y, size.height, window.height))
+}
+
+/** The space a menu may use in a window of [windowHeight] px: everything but the margins. */
+internal fun menuMaxHeight(windowHeight: Int, margin: Int): Int = (windowHeight - 2 * margin).coerceAtLeast(margin * 4)
+
+private class MenuPosition(val at: IntOffset, val margin: Int, val onWindow: (IntSize) -> Unit) : PopupPositionProvider {
     override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
-        val x = if (at.x + popupContentSize.width > windowSize.width) (at.x - popupContentSize.width).coerceAtLeast(0) else at.x
-        val y = if (at.y + popupContentSize.height > windowSize.height) (windowSize.height - popupContentSize.height).coerceAtLeast(0) else at.y
-        return IntOffset(x, y)
+        onWindow(windowSize)
+        return menuPlacement(at, popupContentSize, windowSize, margin)
     }
 }
 
@@ -57,22 +72,33 @@ fun ContextMenuPopup(req: MenuRequest, onDismiss: () -> Unit) {
             }
         }
     }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val margin = with(density) { 8.dp.roundToPx() }
+    // The window's height, as the popup reports it: the menu may use all of it (minus margins) and scrolls beyond.
+    var windowSize by remember { mutableStateOf<IntSize?>(null) }
+    val maxHeight = windowSize?.let { with(density) { menuMaxHeight(it.height, margin).toDp() } } ?: 620.dp
     Popup(
-        popupPositionProvider = remember(req) { MenuPosition(IntOffset(req.at.x.toInt(), req.at.y.toInt())) },
+        popupPositionProvider = remember(req) { MenuPosition(IntOffset(req.at.x.toInt(), req.at.y.toInt()), margin) { if (windowSize != it) windowSize = it } },
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true),
     ) {
-        Column(
-            Modifier.width(IntrinsicSize.Max).widthIn(min = 240.dp, max = 420.dp).shadow8()
+        // A submenu starts at its top.
+        val scroll = remember(stack.size) { androidx.compose.foundation.ScrollState(0) }
+        Box(
+            Modifier.width(IntrinsicSize.Max).widthIn(min = 240.dp, max = 420.dp).heightIn(max = maxHeight).shadow8()
                 .background(p.flyout, RoundedCornerShape(8.dp)).border(1.dp, p.controlStroke, RoundedCornerShape(8.dp))
-                .heightIn(max = 620.dp).verticalScroll(rememberScrollState()).padding(4.dp)
         ) {
-            val sub = stack.lastOrNull()
-            if (sub != null) {
-                FlyoutItem(sub.label, Icons.AutoMirrored.Outlined.ArrowBack, "") { stack.removeAt(stack.size - 1) }
-                FlyoutSeparator()
-                MenuList(sub.children, loaded, onDismiss) { stack.add(it) }
-            } else MenuList(req.entries, loaded, onDismiss) { stack.add(it) }
+            Column(Modifier.verticalScroll(scroll).padding(4.dp)) {
+                val sub = stack.lastOrNull()
+                if (sub != null) {
+                    FlyoutItem(sub.label, Icons.AutoMirrored.Outlined.ArrowBack, "") { stack.removeAt(stack.size - 1) }
+                    FlyoutSeparator()
+                    MenuList(sub.children, loaded, onDismiss) { stack.add(it) }
+                } else MenuList(req.entries, loaded, onDismiss) { stack.add(it) }
+            }
+            // Only when it doesn't all fit: a scrollbar shows there is more (the wheel scrolls too).
+            if (scroll.maxValue > 0) androidx.compose.foundation.VerticalScrollbar(androidx.compose.foundation.rememberScrollbarAdapter(scroll),
+                Modifier.align(Alignment.CenterEnd).matchParentSize().wrapContentWidth(Alignment.End).padding(vertical = 6.dp, horizontal = 1.dp))
         }
     }
 }

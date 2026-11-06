@@ -443,6 +443,24 @@ fun shellPreviewTest(dir: File, extra: List<File>) {
     println("\nSHELL PREVIEW TEST: ${c.pass} passed, ${c.fail} failed")
 }
 
+/** --test-menu: where the right-click menu goes in a short window (down, up, shifted, scrolling). */
+fun menuTest() {
+    val c = Checks()
+    val win = androidx.compose.ui.unit.IntSize(800, 600); val m = 8
+    fun at(x: Int, y: Int, w: Int, h: Int) = menuPlacement(androidx.compose.ui.unit.IntOffset(x, y), androidx.compose.ui.unit.IntSize(w, h), win, m)
+    c.check("fits below: opens down at the pointer", at(100, 100, 200, 300) == androidx.compose.ui.unit.IntOffset(100, 100), at(100, 100, 200, 300))
+    c.check("near the bottom: opens up, bottom edge at the pointer", at(100, 500, 200, 300).y == 200, at(100, 500, 200, 300))
+    c.check("fits neither way: as close to the pointer as fits", at(100, 300, 200, 500).y == 92, at(100, 300, 200, 500))
+    val cap = menuMaxHeight(600, m)
+    c.check("taller than the window: capped to the window minus margins (scrolls)", cap == 584, cap)
+    c.check("capped menu sits inside the margins", at(100, 300, 200, cap).y == 8, at(100, 300, 200, cap))
+    c.check("near the right edge: opens to the left", at(700, 100, 200, 300).x == 500, at(700, 100, 200, 300))
+    c.check("wider than the room on both sides: kept inside", at(400, 100, 700, 300).x.let { it >= 8 && it + 700 <= 792 }, at(400, 100, 700, 300))
+    val tiny = menuPlacement(androidx.compose.ui.unit.IntOffset(10, 10), androidx.compose.ui.unit.IntSize(200, menuMaxHeight(40, m)), androidx.compose.ui.unit.IntSize(300, 40), m)
+    c.check("tiny window: never negative", tiny.x >= 0 && tiny.y >= 0, tiny)
+    println("\nMENU TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
 /**
  * --test-maximize: an undecorated window (opaque and see-through, like the app's) maximized with
  * WindowWorkArea must fill the monitor's work area and leave the taskbar visible.
