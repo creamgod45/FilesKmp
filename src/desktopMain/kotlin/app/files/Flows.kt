@@ -631,6 +631,7 @@ object FlowActions {
         "base64.decode" to setOf("path"), "app.launch" to setOf("args"),
         "video.convert" to setOf("name", "to"), "video.compress" to setOf("name", "to"), "video.scale" to setOf("name", "to"),
         "ffmpeg.run" to setOf("args", "output", "to"),
+        "meta.set" to setOf("value"), "file.setDates" to setOf("created", "modified", "accessed"),
     )
 
     class StepType(val incoming: VType, val outgoing: VType, val warning: String?)

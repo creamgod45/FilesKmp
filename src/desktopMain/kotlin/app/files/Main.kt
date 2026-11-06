@@ -730,6 +730,7 @@ fun main(args: Array<String>) {
     args.indexOf("--test-xls").takeIf { it >= 0 }?.let { i -> xlsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
     if ("--test-maximize" in args) { maximizeTest(); exitProcess(0) }
     if ("--test-menu" in args) { menuTest(); exitProcess(0) }
+    args.indexOf("--test-meta-flow").takeIf { it >= 0 && it + 1 < args.size }?.let { metaFlowTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-docs").takeIf { it >= 0 }?.let { i -> docsTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }
     args.indexOf("--test-video").takeIf { it >= 0 && it + 1 < args.size }?.let { videoTest(File(args[it + 1])); exitProcess(0) }
     args.indexOf("--test-archives").takeIf { it >= 0 }?.let { i -> archivesTest(args.drop(i + 1).takeWhile { !it.startsWith("--") }.map { File(it) }); exitProcess(0) }

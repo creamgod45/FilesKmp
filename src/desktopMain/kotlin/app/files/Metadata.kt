@@ -91,7 +91,7 @@ object MetaStore {
 }
 
 /** Tri-state for attribute switches over several files: unchanged, on, off. */
-private enum class Tri { Keep, On, Off }
+internal enum class Tri { Keep, On, Off }
 
 /**
  * 編輯屬性 for one or many items: dates (created / modified / accessed, or from the photo's date
@@ -217,11 +217,11 @@ internal fun applyMetadataForTest(items: List<FileItem>, created: String, modifi
     applyMetadata(items, created, modified, "", false, Tri.Keep, if (hidden) Tri.On else Tri.Keep, Tri.Keep, single = false)
 
 /** Writes dates and attributes; returns a message for the files that couldn't be changed. */
-private fun applyMetadata(items: List<FileItem>, created: String, modified: String, accessed: String, fromTaken: Boolean,
-                          readOnly: Tri, hidden: Tri, archive: Tri, single: Boolean): String? {
+internal fun applyMetadata(items: List<FileItem>, created: String, modified: String, accessed: String, fromTaken: Boolean,
+                          readOnly: Tri, hidden: Tri, archive: Tri, single: Boolean, system: Tri = Tri.Keep): String? {
     val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm[:ss]")
     fun parse(v: String): FileTime? = v.trim().takeIf { it.isNotEmpty() }?.let {
-        runCatching { FileTime.from(LocalDateTime.parse(it.replace('/', '-').replace('T', ' '), fmt).atZone(ZoneId.systemDefault()).toInstant()) }.getOrNull()
+        runCatching { FileTime.from(LocalDateTime.parse(it.replace('/', '-').replace('T', ' ').replace('_', ':'), fmt).atZone(ZoneId.systemDefault()).toInstant()) }.getOrNull()
             ?: throw IllegalArgumentException((if (S.zh) "日期格式不正確：" else "Not a date: ") + it)
     }
     val c: FileTime?; val m: FileTime?; val a: FileTime?
@@ -245,6 +245,7 @@ private fun applyMetadata(items: List<FileItem>, created: String, modified: Stri
             when (readOnly) { Tri.On -> view.setReadOnly(true); Tri.Off -> {}; Tri.Keep -> if (wasReadOnly) view.setReadOnly(true) }
             when (hidden) { Tri.On -> view.setHidden(true); Tri.Off -> view.setHidden(false); Tri.Keep -> {} }
             when (archive) { Tri.On -> view.setArchive(true); Tri.Off -> view.setArchive(false); Tri.Keep -> {} }
+            when (system) { Tri.On -> view.setSystem(true); Tri.Off -> view.setSystem(false); Tri.Keep -> {} }
         } catch (e: Exception) { failed += f.name }
     }
     return if (failed.isEmpty()) null else (if (S.zh) "無法變更：" else "Couldn't change: ") + failed.take(5).joinToString(", ") + if (failed.size > 5) " …" else ""

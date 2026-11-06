@@ -135,7 +135,7 @@ Inside `each` the current value is `{var.item}` (and `{first}`, since the inner 
 
 ### `{item…}` tokens: only in *per item* arguments
 
-These are filled in for each value in turn, and **only** in the arguments marked *per item* in the action list: `file.copy` (`to`), `file.move` (`to`), `file.rename` (`name`), `file.unzip` (`to`), `image.convert` (`to`), `image.resize` (`to`), `text.template` (`template`), `json.make` (`entries`), `json.set` (`value`), `number.calc` (`formula`), `base64.decode` (`path`), `app.launch` (`args`), `video.convert` (`name`/`to`), `video.compress` (`name`/`to`), `video.scale` (`name`/`to`), `ffmpeg.run` (`args`/`output`/`to`). Anywhere else (`notify` text, `if` subject, `text.set` …) they stay as typed: use `{first}` or `{var.item}` inside `each` instead.
+These are filled in for each value in turn, and **only** in the arguments marked *per item* in the action list: `file.copy` (`to`), `file.move` (`to`), `file.rename` (`name`), `file.unzip` (`to`), `image.convert` (`to`), `image.resize` (`to`), `text.template` (`template`), `json.make` (`entries`), `json.set` (`value`), `number.calc` (`formula`), `base64.decode` (`path`), `app.launch` (`args`), `video.convert` (`name`/`to`), `video.compress` (`name`/`to`), `video.scale` (`name`/`to`), `ffmpeg.run` (`args`/`output`/`to`), `meta.set` (`value`), `file.setDates` (`created`/`modified`/`accessed`). Anywhere else (`notify` text, `if` subject, `text.set` …) they stay as typed: use `{first}` or `{var.item}` inside `each` instead.
 
 | Token | Value |
 |---|---|
@@ -192,6 +192,7 @@ Arguments of type `query` (`files.filter`, `files.list`) use the file search syn
 - `dc:thisweek` — Date created (same forms as dm:)
 - `path:` — Matches the full path instead of the name, e.g. path:\Photos\
 - `regex:` — Regular expression on the name, e.g. regex:^IMG_\d+
+- `field:狀態=待審` — A custom field equals a value (ignoring case; * ? allowed); field:Status = has a value, !field:Status = has none; quote names with spaces: field:"Project name=A"
 - `file:` and `folder:` take no value: `file: ext:pdf`, not `file:pdf`
 
 ## Permissions
@@ -486,8 +487,25 @@ size={item.size}` — *per item*: `{item…}` tokens work here
   - `mode` (choice: existing|missing|each|all) Result, default `existing`
 - **`file.detail`** — Get file detail / 取得檔案詳細資料. One detail of each item: name, extension, folder, size, dates, kind, attributes…  
   Input: *files* → Output: *depends on the arguments*
-  - `detail` (choice: name|stem|extension|parent|path|size|sizeText|modified|created|accessed|isFolder|readOnly|hidden|lines) Detail, default `name`
+  - `detail` (choice: name|stem|extension|parent|path|size|sizeText|modified|created|accessed|isFolder|readOnly|hidden|system|archive|lines|field) Detail, default `name`
   - `format` (text) Date format, default `yyyy-MM-dd HH:mm:ss`
+  - `field` (text) Custom field name (for detail "field")
+- **`meta.set`** — Set custom field / 設定自訂欄位 *(changes files or the system; skipped in a dry run)*. Sets a custom field (project, client, status…) on each item; an empty value clears it. A field that doesn't exist yet is created. The value may use {item…} tokens, e.g. {item.folder}.  
+  Input: *files* → Output: *same as input*
+  - `field` (text) Field, default `狀態`
+  - `value` (text) Value (empty = clear) — *per item*: `{item…}` tokens work here
+- **`file.setDates`** — Set file dates / 設定檔案日期 *(changes files or the system; skipped in a dry run)*. Changes each item's created, modified and accessed dates (yyyy-MM-dd HH:mm[:ss], {item…} tokens allowed; empty = unchanged), or sets them to the photo's date taken.  
+  Input: *files* → Output: *same as input*
+  - `created` (text) Created — *per item*: `{item…}` tokens work here
+  - `modified` (text) Modified — *per item*: `{item…}` tokens work here
+  - `accessed` (text) Accessed — *per item*: `{item…}` tokens work here
+  - `fromTaken` (bool) Created and modified from date taken, default `false`
+- **`file.setAttributes`** — Set file attributes / 設定檔案屬性 *(changes files or the system; skipped in a dry run)*. Turns read-only, hidden, archive and system on or off for each item (keep = unchanged).  
+  Input: *files* → Output: *same as input*
+  - `readOnly` (choice: keep|on|off) Read-only, default `keep`
+  - `hidden` (choice: keep|on|off) Hidden, default `keep`
+  - `archive` (choice: keep|on|off) Archive, default `keep`
+  - `system` (choice: keep|on|off) System, default `keep`
 
 ### 影像/Images
 

@@ -229,8 +229,8 @@ fun tokensTest() {
 
     // Search syntax in query fields: suggestions while typing, and mistakes that would make a filter match nothing.
     c.check("typing a search term", SearchQuery.typingTerm("a.txt fi", 8) == "fi" && SearchQuery.typingTerm("!ext", 4) == "ext" && SearchQuery.typingTerm("x ", 2) == null)
-    c.check("fi offers file: and folder:", FlowTokens.searchMatches("fi").map { it.text } == listOf("file:"))
-    c.check("f offers file: and folder:", FlowTokens.searchMatches("f").map { it.text } == listOf("file:", "folder:"))
+    c.check("fi offers file: and field:", FlowTokens.searchMatches("fi").map { it.text } == listOf("file:", "field:狀態=待審"), FlowTokens.searchMatches("fi").map { it.text })
+    c.check("f offers file:, folder: and field:", FlowTokens.searchMatches("f").map { it.text } == listOf("file:", "folder:", "field:狀態=待審"), FlowTokens.searchMatches("f").map { it.text })
     c.check("dm: offers its examples", FlowTokens.searchMatches("dm:").size >= 3 && FlowTokens.searchMatches("file:").isEmpty())
     c.check("valid queries have no problems", listOf("file:", "folder: !ext:tmp", "ext:jpg;png size:>10mb dm:<30d", "file: dm:{param.D}", "regex:^a|b$", "C:\\x *.log", "\"a b\" | c").all { SearchQuery.problems(it).isEmpty() })
     c.check("kind:file is flagged", SearchQuery.problems("kind:file").single().contains("kind:"))
@@ -441,6 +441,75 @@ fun shellPreviewTest(dir: File, extra: List<File>) {
         host.dispose()
     }
     println("\nSHELL PREVIEW TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/**
+ * --test-meta-flow <empty dir>: the custom-field, date and attribute actions and the field: filter, run for
+ * real on files made here. Settings are read-only, so the real metadata.tsv is never written.
+ */
+fun metaFlowTest(dir: File) {
+    Prefs.readOnly = true
+    val c = Checks()
+    dir.mkdirs()
+    val a = File(dir, "a.jpg").apply { writeText("a") }; val b = File(dir, "b.jpg").apply { writeText("b") }; val t = File(dir, "c.txt").apply { writeText("c") }
+    val all = listOf(a, b, t).map { it.path }
+    val s = AppState(CoroutineScope(SupervisorJob()))
+    fun run(input: List<String>, dry: Boolean = false, vararg steps: FlowStep): List<String> {
+        val flow = Flow("t", "t", steps = steps.toList())
+        val r = FlowRun(s, flow, input, emptyMap(), dry, { null }, { println("      $it") })
+        val e = runCatching { kotlinx.coroutines.runBlocking { r.runSteps(flow.steps) } }.exceptionOrNull()
+        e?.let { println("      ERROR: ${it.message}") }
+        return r.items
+    }
+    fun names(l: List<String>) = l.map { File(it).name }.sorted()
+
+    run(listOf(a.path, b.path), false, FlowStep("meta.set", mapOf("field" to "狀態", "value" to "待審")))
+    run(all, false, FlowStep("meta.set", mapOf("field" to "類型", "value" to "{item.ext}")))
+    c.check("meta.set: fixed value on two files", MetaStore.get(a.path, "狀態") == "待審" && MetaStore.get(b.path, "狀態") == "待審" && MetaStore.get(t.path, "狀態") == "")
+    c.check("meta.set: per-item value from a token", MetaStore.get(t.path, "類型") == "txt" && MetaStore.get(a.path, "類型") == "jpg")
+    c.check("meta.set: creates the field", "狀態" in MetaStore.fields && "類型" in MetaStore.fields)
+    fun filter(q: String) = names(run(all, false, FlowStep("files.filter", mapOf("query" to q))))
+    c.check("field:狀態=待審", filter("field:狀態=待審") == listOf("a.jpg", "b.jpg"), filter("field:狀態=待審"))
+    c.check("!field:狀態 (no value)", filter("!field:狀態") == listOf("c.txt"), filter("!field:狀態"))
+    c.check("field:狀態=待* (wildcard), field:類型=TXT (ignores case)", filter("field:狀態=待*") == listOf("a.jpg", "b.jpg") && filter("field:類型=TXT") == listOf("c.txt"))
+    c.check("field: combined with ext:", filter("ext:jpg !field:狀態") == emptyList<String>())
+    val detail = run(all, false, FlowStep("file.detail", mapOf("detail" to "field", "field" to "狀態")))
+    c.check("file.detail field", detail == listOf("待審", "待審", ""), detail)
+
+    run(listOf(a.path), false, FlowStep("file.setDates", mapOf("modified" to "2020-01-02 03:04:05", "created" to "2019-12-31 23:59")))
+    val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+    fun at(ms: Long) = java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(ms), java.time.ZoneId.systemDefault()).format(fmt)
+    val attrsA = java.nio.file.Files.readAttributes(a.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java)
+    c.check("file.setDates: modified and created written", at(attrsA.lastModifiedTime().toMillis()) == "2020-01-02 03:04:05" && at(attrsA.creationTime().toMillis()) == "2019-12-31 23:59:00",
+        "${at(attrsA.lastModifiedTime().toMillis())} / ${at(attrsA.creationTime().toMillis())}")
+    // A date token: item tokens turn ':' into '_' (12_30), which the date parser takes back.
+    run(listOf(b.path), false, FlowStep("file.setDates", mapOf("modified" to "{item.created:yyyy-MM-dd HH:mm:ss}")))
+    val attrsB = java.nio.file.Files.readAttributes(b.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java)
+    c.check("file.setDates: modified := created via a token", at(attrsB.lastModifiedTime().toMillis()) == at(attrsB.creationTime().toMillis()), "${at(attrsB.lastModifiedTime().toMillis())} vs ${at(attrsB.creationTime().toMillis())}")
+    val before = t.lastModified()
+    run(listOf(t.path), true, FlowStep("file.setDates", mapOf("modified" to "2001-01-01 00:00")))
+    c.check("file.setDates: dry run changes nothing", t.lastModified() == before)
+    run(listOf(t.path), false, FlowStep("file.setDates", mapOf("modified" to "not a date")))
+    c.check("file.setDates: a bad date stops, file unchanged", t.lastModified() == before)
+
+    fun dos(f: File) = java.nio.file.Files.readAttributes(f.toPath(), java.nio.file.attribute.DosFileAttributes::class.java)
+    run(listOf(t.path), true, FlowStep("file.setAttributes", mapOf("hidden" to "on")))
+    c.check("file.setAttributes: dry run changes nothing", !dos(t).isHidden)
+    run(listOf(t.path), false, FlowStep("file.setAttributes", mapOf("hidden" to "on", "readOnly" to "on", "system" to "on")))
+    c.check("file.setAttributes: hidden, read-only, system on", dos(t).let { it.isHidden && it.isReadOnly && it.isSystem })
+    val flags = run(listOf(t.path), false, FlowStep("file.detail", mapOf("detail" to "system")))
+    c.check("file.detail system", flags == listOf("true"), flags)
+    run(listOf(t.path), false, FlowStep("file.setAttributes", mapOf("hidden" to "off", "readOnly" to "off", "system" to "off", "archive" to "off")))
+    c.check("file.setAttributes: all off again", dos(t).let { !it.isHidden && !it.isReadOnly && !it.isSystem && !it.isArchive })
+    run(listOf(a.path), false, FlowStep("meta.set", mapOf("field" to "狀態", "value" to "")))
+    c.check("meta.set: empty value clears", MetaStore.get(a.path, "狀態") == "" && MetaStore.get(b.path, "狀態") == "待審")
+
+    fun aiCheck(steps: String) = AiTools.check("""{"schema":"fileskmp.shortcut/v1","name":"t","accepts":["files"],"steps":[$steps]}""").filter { !it.startsWith("Note") }
+    val ok = aiCheck("""{"action":"files.filter","args":{"query":"field:狀態=待審"}},{"action":"meta.set","args":{"field":"狀態","value":"{item.folder}"}},{"action":"file.setDates","args":{"modified":"{item.taken:yyyy-MM-dd HH:mm:ss}"}},{"action":"file.setAttributes","args":{"hidden":"on"}}""")
+    c.check("validator: the new actions and field: pass", ok.isEmpty(), ok.joinToString("\n"))
+    c.check("validator: an unknown field is pointed out", aiCheck("""{"action":"files.filter","args":{"query":"field:不存在=1"}}""").any { "不存在" in it })
+    c.check("spec documents field: and the new actions", FlowActions.specMarkdown().let { sp -> listOf("field:", "`meta.set`", "`file.setDates`", "`file.setAttributes`").all { it in sp } })
+    println("\nMETA FLOW TEST: ${c.pass} passed, ${c.fail} failed")
 }
 
 /** --test-menu: where the right-click menu goes in a short window (down, up, shifted, scrolling). */

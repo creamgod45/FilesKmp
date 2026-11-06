@@ -10,6 +10,7 @@ Released entries are based on local Git tags and commit history. Dates are the c
 
 - "Video & audio" shortcut actions (FFmpeg): convert video (webm → mp4, ts → mp4 and more; streams that fit the new format are copied, not re-encoded; optionally scaled down to 1080p, 720p, 480p and so on in the same pass), compress (by quality or to a target size), scale, video info, and custom FFmpeg arguments. The installer and the portable build include FFmpeg (BtbN's static GPL build).
 - Quick Look shows the text, tables and slides of Word (.docx, .doc), OpenDocument (.odt, .ods, .odp) and PowerPoint (.pptx) files itself; Excel files use the installed Office preview first and the built-in table otherwise.
+- Shortcuts can set custom fields (`meta.set`), file dates (`file.setDates`) and the read-only / hidden / archive / system attributes (`file.setAttributes`); the search syntax gains `field:Status=Pending` to filter by a custom field, and `file.detail` reads custom fields and the system and archive attributes.
 - A running shortcut can be minimized to the task center, which shows its progress and latest log line and can bring it back or stop it.
 - MSI installer artwork and product information, and local packaging scripts (`package.ps1`, `package.sh`).
 - Chinese and English READMEs, user guides, and changelogs, with existing UI screenshots and a bilingual release template.

@@ -10,6 +10,7 @@
 
 - 捷徑「影片與音訊」動作（FFmpeg）：影片轉檔（webm → mp4、ts → mp4 等；串流合乎新格式時直接複製、不重新編碼；可同時縮小到 1080p／720p／480p 等解析度）、壓縮影片（依畫質或目標大小）、縮放影片、影片資訊，以及自訂 FFmpeg 參數。安裝程式與免安裝版內附 FFmpeg（BtbN 靜態 GPL 版）。
 - 快速預覽可直接顯示 Word（.docx、.doc）、OpenDocument（.odt、.ods、.odp）與 PowerPoint（.pptx）的文字、表格與投影片；Excel 檔優先使用已安裝的 Office 預覽，沒有時才用內建表格。
+- 捷徑可設定自訂欄位（`meta.set`）、檔案日期（`file.setDates`）與唯讀／隱藏／封存／系統屬性（`file.setAttributes`）；搜尋語法新增 `field:狀態=待審` 依自訂欄位篩選，`file.detail` 可讀取自訂欄位與系統、封存屬性。
 - 執行中的捷徑可縮小到任務中心，顯示進度與最新記錄，可隨時展開或停止。
 - MSI 安裝程式的品牌圖片與產品資訊，以及本機打包腳本（`package.ps1`、`package.sh`）。
 - 中英文 README、使用者手冊與更新紀錄，並附既有介面截圖及雙語 Release 範本。
