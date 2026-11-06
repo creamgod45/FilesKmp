@@ -12,6 +12,7 @@ Released entries are based on local Git tags and commit history. Dates are the c
 - AI-assisted workflow editing, provider configuration, tool permissions, and workflow checks.
 - Custom keyboard bindings, conflict inspection, and settings/key migration reports with backups.
 - Chinese and English READMEs, user guides, and changelogs, with existing UI screenshots and a bilingual release template.
+- Quick Look shows the text, tables and slides of Word (.docx, .doc), OpenDocument (.odt, .ods, .odp) and PowerPoint (.pptx) files itself; Excel files use the installed Office preview first and the built-in table otherwise.
 
 ### Changed
 

@@ -56,7 +56,7 @@ object ShellPreview {
     private const val IID_IShellItem = "43826D1E-E718-42EE-BC55-A1E261C37BFE"
 
     /** Types this app previews itself (better, or without a separate process): never handed to Windows. */
-    private val ownTypes = setOf("txt", "md", "csv", "tsv", "json", "xml", "log", "ini", "xlsx", "xlsm", "xls")
+    private val ownTypes = setOf("txt", "md", "csv", "tsv", "json", "xml", "log", "ini")
 
     private fun guid(a: Arena, s: String): MemorySegment {
         val h = s.trim('{', '}').replace("-", "")

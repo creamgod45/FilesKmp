@@ -407,7 +407,7 @@ fun shellPreviewTest(dir: File, extra: List<File>) {
     val findChild = java.lang.foreign.Linker.nativeLinker().downcallHandle(
         java.lang.foreign.SymbolLookup.libraryLookup("user32", java.lang.foreign.Arena.global()).find("FindWindowExW").orElseThrow(),
         java.lang.foreign.FunctionDescriptor.of(java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS))
-    listOf("txt", "csv", "xlsx").forEach { e -> c.check("own previewer kept for .$e", ShellPreview.handlerFor(e) == null) }
+    listOf("txt", "csv").forEach { e -> c.check("own previewer kept for .$e", ShellPreview.handlerFor(e) == null) }
     (listOf(pdf, docx) + extra).forEach { f ->
         val ext = f.name.substringAfterLast('.').lowercase()
         val clsid = ShellPreview.handlerFor(ext)
@@ -429,4 +429,25 @@ fun shellPreviewTest(dir: File, extra: List<File>) {
         host.dispose()
     }
     println("\nSHELL PREVIEW TEST: ${c.pass} passed, ${c.fail} failed")
+}
+
+/** --test-docs <file>...: reads Word / OpenDocument / PowerPoint files the way 快速預覽 does without a preview handler. */
+fun docsTest(files: List<File>) {
+    val c = Checks()
+    files.forEach { f ->
+        val ext = f.name.substringAfterLast('.').lowercase()
+        val r = runCatching { OfficeDocs.read(f, ext, 2000, 12) }
+        c.check("${f.name}: read", r.isSuccess, r.exceptionOrNull())
+        when (val q = r.getOrNull()) {
+            is QlContent.Document -> q.blocks.take(12).forEach { b -> println("   " + when (b) {
+                is MdBlock.Heading -> "H${b.level} ${b.text}"; is MdBlock.Paragraph -> "P  ${b.text}"
+                is MdBlock.ListItem -> "LI${b.depth} ${b.text}"; is MdBlock.Table -> "T  ${b.header.joinToString(" | ")} (+${b.rows.size} rows)"
+                else -> b.toString() }.take(160)) }
+            is QlContent.Table -> q.sheets.forEach { sh -> println("   [${sh.name}] ${sh.total} rows"); sh.rows.take(4).forEach { println("      " + it.joinToString(" | ").take(160)) } }
+            is QlContent.Message -> println("   message: ${q.text}")
+            else -> {}
+        }
+        c.check("${f.name}: shows content", r.getOrNull() is QlContent.Document || r.getOrNull() is QlContent.Table)
+    }
+    println("\nDOCS TEST: ${c.pass} passed, ${c.fail} failed")
 }
