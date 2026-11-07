@@ -523,9 +523,10 @@ internal fun moreActions(): List<FlowAction> = listOf(
         }
     },
     FlowAction("file.detail", "取得檔案詳細資料", "Get file detail", CAT_FILES, "每個項目的一項資料：名稱、副檔名、資料夾、大小、日期、類型、屬性…", "One detail of each item: name, extension, folder, size, dates, kind, attributes…",
-        listOf(ArgSpec("detail", "資料", "Detail", "choice", "name", listOf("name", "stem", "extension", "parent", "path", "size", "sizeText", "modified", "created", "accessed", "isFolder", "readOnly", "hidden", "lines")),
-            ArgSpec("format", "日期格式", "Date format", "text", FlowTime.DEFAULT)), input = VType.Files,
-        outputFor = { st -> when (st.args["detail"] ?: "name") { "size", "lines" -> VType.Number; "modified", "created", "accessed" -> VType.Date; "isFolder", "readOnly", "hidden" -> VType.Bool; "parent", "path" -> VType.Files; else -> VType.Text } }) { st ->
+        listOf(ArgSpec("detail", "資料", "Detail", "choice", "name", listOf("name", "stem", "extension", "parent", "path", "size", "sizeText", "modified", "created", "accessed", "isFolder", "readOnly", "hidden", "system", "archive", "lines", "field")),
+            ArgSpec("format", "日期格式", "Date format", "text", FlowTime.DEFAULT),
+            ArgSpec("field", "自訂欄位名稱（資料選 field 時）", "Custom field name (for detail \"field\")", "text", "")), input = VType.Files,
+        outputFor = { st -> when (st.args["detail"] ?: "name") { "size", "lines" -> VType.Number; "modified", "created", "accessed" -> VType.Date; "isFolder", "readOnly", "hidden", "system", "archive" -> VType.Bool; "parent", "path" -> VType.Files; else -> VType.Text } }) { st ->
         val d = arg(st, "detail"); val fmt = arg(st, "format")
         items = files().map { p ->
             val f = File(p)
@@ -537,10 +538,76 @@ internal fun moreActions(): List<FlowAction> = listOf(
                 "sizeText" -> Fs.sizeText(if (f.isDirectory) FsExtra.folderSize(p) else f.length())
                 "modified" -> date(a?.lastModifiedTime()); "created" -> date(a?.creationTime()); "accessed" -> date(a?.lastAccessTime())
                 "isFolder" -> f.isDirectory.toString(); "readOnly" -> (a?.isReadOnly == true).toString(); "hidden" -> (a?.isHidden == true).toString()
+                "system" -> (a?.isSystem == true).toString(); "archive" -> (a?.isArchive == true).toString()
                 "lines" -> if (f.isFile) f.bufferedReader().useLines { it.count() }.toString() else "0"
+                "field" -> MetaStore.get(p, arg(st, "field").trim())
                 else -> f.name
             }
         }
+    },
+    FlowAction("meta.set", "設定自訂欄位", "Set custom field", CAT_FILES,
+        "為每個項目設定自訂欄位（專案、客戶、狀態…）的值；值留空會清除。欄位不存在時會自動建立。值可用 {item…} 標記，例如 {item.folder}。",
+        "Sets a custom field (project, client, status…) on each item; an empty value clears it. A field that doesn't exist yet is created. The value may use {item…} tokens, e.g. {item.folder}.",
+        listOf(ArgSpec("field", "欄位", "Field", "text", "狀態"), ArgSpec("value", "值（留空＝清除）", "Value (empty = clear)", "text", "")),
+        changes = true, input = VType.Files, output = VType.Same) { st ->
+        val field = arg(st, "field").trim()
+        if (field.isEmpty()) throw FlowStopped(if (S.zh) "請填寫欄位名稱。" else "The field needs a name.")
+        val paths = files().filter { File(it).exists() }
+        val values = paths.mapIndexed { i, p -> p to expand(rawArg(st, "value"), p, i).trim() }
+        values.take(3).forEach { (p, v) -> log("   ${File(p).name}: $field = " + v.ifEmpty { if (S.zh) "（清除）" else "(cleared)" }) }
+        if (values.size > 3) log("   … ${values.size}")
+        if (!dryRun) withContext(Dispatchers.Main) {
+            MetaStore.addField(field)
+            values.groupBy({ it.second }, { it.first }).forEach { (v, ps) -> MetaStore.set(ps, field, v) }
+            s.afterMetadataChange(paths)
+        }
+        items = paths
+    },
+    FlowAction("file.setDates", "設定檔案日期", "Set file dates", CAT_FILES,
+        "變更每個項目的建立、修改、存取日期（yyyy-MM-dd HH:mm[:ss]，可用 {item…} 標記；留空＝不變），或改成相片的拍攝日期。",
+        "Changes each item's created, modified and accessed dates (yyyy-MM-dd HH:mm[:ss], {item…} tokens allowed; empty = unchanged), or sets them to the photo's date taken.",
+        listOf(ArgSpec("created", "建立日期", "Created", "text", ""), ArgSpec("modified", "修改日期", "Modified", "text", ""),
+            ArgSpec("accessed", "存取日期", "Accessed", "text", ""), ArgSpec("fromTaken", "建立與修改日期改成拍攝日期", "Created and modified from date taken", "bool", false)),
+        changes = true, input = VType.Files, output = VType.Same) { st ->
+        val paths = files().filter { File(it).exists() }
+        val fromTaken = bool(st, "fromTaken")
+        val failed = ArrayList<String>()
+        paths.forEachIndexed { i, p ->
+            val c = expand(rawArg(st, "created"), p, i); val m = expand(rawArg(st, "modified"), p, i); val a = expand(rawArg(st, "accessed"), p, i)
+            if (i < 3) log("   ${File(p).name}: " + listOfNotNull(c.takeIf { it.isNotBlank() }?.let { "created $it" }, m.takeIf { it.isNotBlank() }?.let { "modified $it" },
+                a.takeIf { it.isNotBlank() }?.let { "accessed $it" }, if (fromTaken) "← taken" else null).joinToString(", "))
+            if (dryRun) return@forEachIndexed
+            val item = FsExtra.item(p) ?: return@forEachIndexed
+            applyMetadata(listOf(item), c, m, a, fromTaken, Tri.Keep, Tri.Keep, Tri.Keep, single = false)?.let { failed += "${File(p).name}: $it" }
+        }
+        if (!dryRun) withContext(Dispatchers.Main) { s.afterMetadataChange(paths) }
+        if (failed.isNotEmpty()) {
+            failed.take(5).forEach { log("   ! $it") }
+            if (failed.size == paths.size) throw FlowStopped(failed.first())
+        }
+        items = paths
+    },
+    FlowAction("file.setAttributes", "設定檔案屬性", "Set file attributes", CAT_FILES,
+        "開啟或關閉每個項目的唯讀、隱藏、封存、系統屬性（keep＝不變）。",
+        "Turns read-only, hidden, archive and system on or off for each item (keep = unchanged).",
+        listOf(ArgSpec("readOnly", "唯讀", "Read-only", "choice", "keep", listOf("keep", "on", "off")),
+            ArgSpec("hidden", "隱藏", "Hidden", "choice", "keep", listOf("keep", "on", "off")),
+            ArgSpec("archive", "封存", "Archive", "choice", "keep", listOf("keep", "on", "off")),
+            ArgSpec("system", "系統", "System", "choice", "keep", listOf("keep", "on", "off"))),
+        changes = true, input = VType.Files, output = VType.Same) { st ->
+        fun tri(id: String) = when (arg(st, id).trim().lowercase()) { "on", "true", "1" -> Tri.On; "off", "false", "0" -> Tri.Off; else -> Tri.Keep }
+        val set = listOf("readOnly", "hidden", "archive", "system").associateWith { tri(it) }
+        val paths = files().filter { File(it).exists() }
+        log("   " + set.filterValues { it != Tri.Keep }.entries.joinToString(", ") { "${it.key} ${if (it.value == Tri.On) "on" else "off"}" }.ifEmpty { if (S.zh) "（全部不變）" else "(nothing to change)" })
+        if (!dryRun && set.values.any { it != Tri.Keep }) {
+            val list = paths.mapNotNull { FsExtra.item(it) }
+            applyMetadata(list, "", "", "", false, set.getValue("readOnly"), set.getValue("hidden"), set.getValue("archive"), single = false, system = set.getValue("system"))?.let { msg ->
+                log("   ! $msg")
+                if (list.size == 1) throw FlowStopped(msg)
+            }
+            withContext(Dispatchers.Main) { s.afterMetadataChange(paths) }
+        }
+        items = paths
     },
 
     // ================================================================ control

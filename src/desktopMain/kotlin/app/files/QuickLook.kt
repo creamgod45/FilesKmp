@@ -50,6 +50,8 @@ sealed class QlContent {
     class Archive(val listing: ArchListing) : QlContent()
     /** A format Windows has a preview handler for (PDF, Word, PowerPoint…): drawn by that handler (ShellPreview.kt). */
     class Shell(val path: String, val clsid: String) : QlContent()
+    /** A document's text (Word, OpenDocument, PowerPoint) read by the app itself (OfficeDocs.kt). */
+    class Document(val blocks: List<MdBlock>) : QlContent()
     class Sheet(val name: String, val rows: List<List<String>>, val total: Int)
 }
 
@@ -85,12 +87,14 @@ object QuickLook {
             }
             Archives.handles(f.name) -> QlContent.Archive(Archives.list(f))
             ext == "csv" || ext == "tsv" -> csv(f, if (ext == "tsv") '\t' else null)
-            ext == "xlsx" || ext == "xlsm" -> xlsx(f)
-            ext == "xls" -> QlContent.Table(Xls.read(f, TABLE_MAX_ROWS, SHEET_MAX).map { QlContent.Sheet(it.name, it.rows, it.total) }.ifEmpty { return QlContent.Message(S.qlNoPreview) })
             ext in Thumbnails.videoExt || ext in audioExt -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), ext in Thumbnails.videoExt, playable = true)
             ext in FsExtra.textExt || ext in moreText -> text(f)
-            // PDF, Word, PowerPoint…: Windows' own preview handler, when this PC has one for the type.
+            // PDF, Excel, Word, PowerPoint…: Windows' own preview handler (Office's, when installed) comes first…
             ShellPreview.handlerFor(ext) != null -> QlContent.Shell(item.path, ShellPreview.handlerFor(ext)!!)
+            // …and without one, the app reads workbooks and documents itself.
+            ext == "xlsx" || ext == "xlsm" -> xlsx(f)
+            ext == "xls" -> QlContent.Table(Xls.read(f, TABLE_MAX_ROWS, SHEET_MAX).map { QlContent.Sheet(it.name, it.rows, it.total) }.ifEmpty { return QlContent.Message(S.qlNoPreview) })
+            ext in OfficeDocs.exts -> OfficeDocs.read(f, ext, TABLE_MAX_ROWS, SHEET_MAX)
             ext.isEmpty() || looksLikeText(f) -> text(f)
             Thumbnails.supports(item) -> QlContent.Media(Thumbnails.get(item, M.THUMB_LARGE), false)
             else -> QlContent.Message(S.qlNoPreview)
@@ -301,6 +305,7 @@ fun QuickLookDialog(s: AppState, path: String) {
                         }
                     }
                     is QlContent.Table -> TablePreview(c)
+                    is QlContent.Document -> MarkdownView(c.blocks, null)
                     is QlContent.Archive -> ArchivePreview(c.listing)
                     is QlContent.Shell -> ShellPreviewView(c.path, c.clsid, s.translucentActive) { s.quickLook = null; Fs.open(path) }
                     is QlContent.Media -> if (c.playable) MediaPlayerView(path, c.video, c.poster, item, s.translucentActive) { s.quickLook = null; Fs.open(path) }

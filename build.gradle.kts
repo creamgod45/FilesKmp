@@ -1,6 +1,7 @@
 import java.net.URI
 import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.util.zip.ZipFile
 
 plugins {
     kotlin("multiplatform") version "2.4.21"
@@ -9,12 +10,24 @@ plugins {
 }
 
 group = "app.files"
-version = providers.gradleProperty("appVersion").getOrElse("1.2.0")
+version = providers.gradleProperty("appVersion").getOrElse("1.3.0")
 val windowsArch = when (System.getProperty("os.arch").lowercase()) {
     "amd64", "x86_64" -> "x64"
     "aarch64", "arm64" -> "arm64"
     else -> error("Only Windows x64 and ARM64 are supported")
 }
+
+// Product information for FilesKmp.exe's version resource, the MSI and Windows' installed-apps list.
+// English only: jpackage reads its arguments in the system code page.
+object Product {
+    const val vendor = "creamgod45"
+    const val description = "FilesKmp - file manager for Windows with tabs, split panes, Quick Look and shortcuts"
+    const val copyright = "Copyright (c) 2025-2026 creamgod45"
+    const val aboutUrl = "https://github.com/creamgod45/FilesKmp"
+    const val helpUrl = "https://github.com/creamgod45/FilesKmp/blob/master/docs/USER-GUIDE.en.md"
+    const val updateUrl = "https://github.com/creamgod45/FilesKmp/releases"
+}
+val productArgs = listOf("--vendor", Product.vendor, "--copyright", Product.copyright)
 
 // Lets WindowCorners.kt reach the window handle and call DWM (Windows 11 rounded corners).
 val windowJvmOptions = listOf(
@@ -95,10 +108,58 @@ fun findWix(): File? {
 /** Runs jpackage with WiX on PATH; fails with its output. */
 fun runJpackage(args: List<String>, what: String) {
     val pb = ProcessBuilder(listOf(findJpackage().absolutePath) + args).redirectErrorStream(true)
-    findWix()?.let { pb.environment()["PATH"] = it.absolutePath + File.pathSeparator + (pb.environment()["PATH"] ?: "") }
+    findWix()?.let { wix ->
+        // Windows usually names it "Path", and Java's map is case-sensitive: adding "PATH" next to it
+        // would leave two variables, and jpackage would read the one without WiX.
+        val env = pb.environment()
+        val key = env.keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "Path"
+        env[key] = wix.absolutePath + File.pathSeparator + (env[key] ?: "")
+    }
     val p = pb.start()
     val log = p.inputStream.bufferedReader().readText()
     if (p.waitFor() != 0) throw GradleException("$what failed:\n$log")
+}
+
+// ---------------------------------------------------------------------------
+// FFmpeg for the shortcut video actions (FlowActionsVideo.kt), shipped as ffmpeg\ffmpeg.exe next to
+// FilesKmp.exe: BtbN's static GPL build for this architecture, downloaded once into
+// %LOCALAPPDATA%\fileskmp-build\ffmpeg. -PffmpegExe=<ffmpeg.exe> uses a copy of your own,
+// -PnoFfmpeg leaves it out (the app then looks for an installed FFmpeg), -PffmpegRelease picks the branch.
+// ---------------------------------------------------------------------------
+val ffmpegRelease = providers.gradleProperty("ffmpegRelease").getOrElse("n8.1")
+
+/** The folder holding ffmpeg.exe and its licence for the app image, or null when left out. */
+fun ffmpegBundle(): File? {
+    if (providers.gradleProperty("noFfmpeg").isPresent) return null
+    providers.gradleProperty("ffmpegExe").orNull?.let { exe ->
+        val f = File(exe); if (!f.isFile) throw GradleException("-PffmpegExe: no such file: $exe")
+        return File(System.getenv("TEMP") ?: "C:\\Temp", "fileskmp-ffmpeg-own").apply { deleteRecursively(); mkdirs(); f.copyTo(File(this, "ffmpeg.exe")) }
+    }
+    val dir = File(System.getenv("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir"), "fileskmp-build/ffmpeg/$ffmpegRelease-$windowsArch")
+    if (File(dir, "ffmpeg.exe").isFile) return dir
+    val v = ffmpegRelease.removePrefix("n")
+    val name = "ffmpeg-$ffmpegRelease-latest-win${if (windowsArch == "arm64") "arm64" else "64"}-gpl-$v"
+    val url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$name.zip"
+    println("Downloading FFmpeg: $url")
+    val zip = File.createTempFile("ffmpeg-", ".zip")
+    try {
+        URI(url).toURL().openStream().use { inp -> zip.outputStream().use { inp.copyTo(it) } }
+        val tmp = File(dir.parentFile, dir.name + ".part").apply { deleteRecursively(); mkdirs() }
+        ZipFile(zip).use { z ->
+            fun take(entry: String, to: String) {
+                val e = z.getEntry("$name/$entry") ?: throw GradleException("$url has no $entry")
+                z.getInputStream(e).use { inp -> File(tmp, to).outputStream().use { inp.copyTo(it) } }
+            }
+            take("bin/ffmpeg.exe", "ffmpeg.exe")
+            take("LICENSE.txt", "LICENSE.txt")
+        }
+        File(tmp, "README.txt").writeText(
+            "ffmpeg.exe is FFmpeg ($ffmpegRelease, static GPL build for Windows $windowsArch by BtbN),\r\n" +
+            "used by FilesKmp's shortcut video actions. It is a separate program under the GNU GPL\r\n" +
+            "(LICENSE.txt). Build and source: https://github.com/BtbN/FFmpeg-Builds - https://ffmpeg.org\r\n")
+        dir.deleteRecursively(); tmp.renameTo(dir)
+    } finally { zip.delete() }
+    return dir
 }
 
 // ---------------------------------------------------------------------------
@@ -132,12 +193,18 @@ val windowsApp by tasks.registering {
             "--add-modules", "java.base,java.desktop,java.logging,jdk.unsupported,jdk.zipfs,java.management,jdk.localedata,java.net.http,jdk.charsets",
             "--java-options", "-Dfile.encoding=UTF-8",
             "--java-options", "-Dsun.stdout.encoding=UTF-8",
-        ) + windowJvmOptions.flatMap { listOf("--java-options", it) }
+            // The exe's description is what Task Manager lists the process as: keep it the name.
+            "--description", "FilesKmp",
+        ) + productArgs + windowJvmOptions.flatMap { listOf("--java-options", it) }
         runJpackage(cmd, "jpackage")
         val dest = layout.buildDirectory.dir("FilesKmp").get().asFile
         dest.deleteRecursively()
         File(out, "FilesKmp").copyRecursively(dest, overwrite = true)
         work.deleteRecursively()
+        ffmpegBundle()?.let { ff ->
+            ff.copyRecursively(File(dest, "ffmpeg"), overwrite = true)
+            println("FFmpeg bundled: ${File(dest, "ffmpeg\\ffmpeg.exe")}")
+        } ?: println("FFmpeg not bundled (-PnoFfmpeg)")
         println("Windows app: ${File(dest, "FilesKmp.exe")}")
     }
 }
@@ -169,6 +236,13 @@ val windowsMsi by tasks.registering {
         }
         patch("Id=\"\$(var.JpProductCode)\"", "Id=\"*\"")
         patch("IncludeMaximum=\"\$(var.JpUpgradeVersionOnlyDetectUpgrade)\"", "IncludeMaximum=\"yes\"")
+        // (4) the wizard's pictures (packaging/make-msi-art.ps1 draws them from icon.ico).
+        val banner = file("packaging/msi-banner.bmp").copyTo(File(work, "msi-banner.bmp"))
+        val dialog = file("packaging/msi-dialog.bmp").copyTo(File(work, "msi-dialog.bmp"))
+        patch("<UIRef Id=\"JpUI\"/>", """
+            <WixVariable Id="WixUIBannerBmp" Value="${banner.absolutePath}" />
+            <WixVariable Id="WixUIDialogBmp" Value="${dialog.absolutePath}" />
+            <UIRef Id="JpUI"/>""".trimIndent())
         patch("<UIRef Id=\"JpUI\"/>", """
             <SetDirectory Id="INSTALLDIR" Value="[LocalAppDataFolder]Programs\FilesKmp\" Sequence="both">NOT Installed</SetDirectory>
             <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch FilesKmp" After="CostFinalize" Sequence="ui">NOT Installed</SetProperty>
@@ -186,7 +260,11 @@ val windowsMsi by tasks.registering {
             "--resource-dir", resources.absolutePath,
             "--win-menu", "--win-shortcut", "--win-shortcut-prompt", "--win-dir-chooser", "--win-per-user-install",
             "--win-upgrade-uuid", if (windowsArch == "arm64") "a816d2b1-9605-43ab-b441-70ae0e83e548" else "1ab430d5-5393-48a5-9bbb-5f98bf171a14",
-        )
+            // Installed-apps entry: icon, publisher, support links.
+            "--icon", file("packaging/icon.ico").copyTo(File(work, "icon.ico")).absolutePath,
+            "--about-url", Product.aboutUrl, "--win-help-url", Product.helpUrl, "--win-update-url", Product.updateUrl,
+            "--description", Product.description,
+        ) + productArgs
         runJpackage(cmd, "MSI packaging")
         val msi = out.listFiles()?.singleOrNull { it.extension == "msi" }
             ?: throw GradleException("jpackage did not produce one MSI in $out")

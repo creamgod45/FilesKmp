@@ -61,12 +61,12 @@
 # 建置含 runtime 的應用程式：build/FilesKmp/FilesKmp.exe
 .\gradlew.bat windowsApp
 # 建置 MSI：build/installers/
-.\gradlew.bat windowsMsi -PappVersion=1.2.0
+.\gradlew.bat windowsMsi -PappVersion=1.3.0
 # 指定封裝工具位置（請換成實際路徑）
 .\gradlew.bat windowsMsi "-PjdkHome=C:\Java\jdk-25" "-PwixHome=C:\Tools\wix314"
 ```
 
-版本以 `build.gradle.kts` 的 `appVersion` 為準，預設 `1.2.0`。`package.json` 僅供建置整合使用，其版本不是應用程式版本來源。
+版本以 `build.gradle.kts` 的 `appVersion` 為準，預設 `1.3.0`。`package.json` 僅供建置整合使用，其版本不是應用程式版本來源。
 
 ## 設定與回報問題
 

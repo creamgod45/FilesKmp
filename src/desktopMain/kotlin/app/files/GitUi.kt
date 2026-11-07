@@ -282,7 +282,7 @@ fun SidebarTree(s: AppState, path: String, label: String, depth: Int = 1, icon: 
     val expanded = s.treeExpanded[path] == true
     SidebarRow(label, depth, s.tab.location.equals(path, true), chevron = true, expanded = expanded,
         onToggle = { s.toggleTree(path) },
-        menu = { listOf(MenuEntry(S.openInNewTab, Icons.Outlined.Tab) { s.newTab(path) }) },
+        menu = { sidebarFolderMenu(s, path, tree = true) },
         onClick = { s.navigate(path) }, icon = icon)
     if (expanded) {
         val children = s.treeChildren[path]

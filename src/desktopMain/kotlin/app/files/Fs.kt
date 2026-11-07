@@ -67,7 +67,48 @@ val DefaultTags = listOf(
 
 class PinnedFolder(val name: String, val path: String)
 
-class RecentFile(val name: String, val path: String, val modified: Long)
+/**
+ * One entry of Windows' Recent list: [path] is the shortcut in %APPDATA%\Microsoft\Windows\Recent, [target]
+ * the file or folder it points to (null when the shortcut can't be read), [exists] whether that is still there.
+ */
+class RecentFile(val name: String, val path: String, val modified: Long, val target: String? = null, val exists: Boolean = true, val isDir: Boolean = false)
+
+/**
+ * Reads a shortcut's target straight from the .lnk file (MS-SHLLINK: header, optional ID list, then LinkInfo
+ * with the local base path or the network share plus the common path suffix). Fast enough to run for every
+ * Recent entry; null when the link has no LinkInfo path (e.g. a shell-namespace item).
+ */
+object LnkFile {
+    fun target(lnk: File): String? = runCatching { parse(lnk.readBytes()) }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    internal fun parse(b: ByteArray): String? {
+        val buf = java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        if (b.size < 0x4C || buf.getInt(0) != 0x4C) return null
+        val flags = buf.getInt(0x14)
+        var at = 0x4C
+        if (flags and 0x1 != 0) at += 2 + (buf.getShort(at).toInt() and 0xFFFF)          // HasLinkTargetIDList
+        if (flags and 0x2 == 0) return null                                               // HasLinkInfo
+        val li = at
+        val headerSize = buf.getInt(li + 4)
+        val liFlags = buf.getInt(li + 8)
+        val ansi = java.nio.charset.Charset.forName(System.getProperty("sun.jnu.encoding") ?: "windows-1252")
+        fun cstr(off: Int): String { var e = off; while (e < b.size && b[e] != 0.toByte()) e++; return String(b, off, e - off, ansi) }
+        fun wstr(off: Int): String { var e = off; while (e + 1 < b.size && (b[e] != 0.toByte() || b[e + 1] != 0.toByte())) e += 2; return String(b, off, e - off, Charsets.UTF_16LE) }
+        val suffix = if (headerSize >= 0x24 && buf.getInt(li + 0x20) != 0) wstr(li + buf.getInt(li + 0x20)) else buf.getInt(li + 0x18).takeIf { it != 0 }?.let { cstr(li + it) } ?: ""
+        fun join(base: String) = if (suffix.isEmpty()) base else base.trimEnd('\\') + "\\" + suffix
+        if (liFlags and 0x1 != 0) {                                                       // VolumeIDAndLocalBasePath
+            val base = if (headerSize >= 0x24 && buf.getInt(li + 0x1C) != 0) wstr(li + buf.getInt(li + 0x1C)) else cstr(li + buf.getInt(li + 0x10))
+            if (base.isNotEmpty()) return join(base)
+        }
+        if (liFlags and 0x2 != 0) {                                                       // CommonNetworkRelativeLink
+            val net = li + buf.getInt(li + 0x14)
+            val netNameOff = buf.getInt(net + 8)
+            val name = if (netNameOff > 0x14) wstr(net + buf.getInt(net + 0x14)) else cstr(net + netNameOff)
+            if (name.isNotEmpty()) return join(name)
+        }
+        return null
+    }
+}
 
 object Fs {
     /** Dates follow the app language (zh-TW gives 2026年7月6日 星期一, as the original shows). */
@@ -339,8 +380,21 @@ object Fs {
         val links = dir.listFiles { f -> f.isFile && f.name.endsWith(".lnk", true) } ?: return emptyList()
         return links.sortedByDescending { it.lastModified() }
             .take(M.RECENT_FILES_LIMIT)
-            .map { RecentFile(it.name.removeSuffix(".lnk").removeSuffix(".LNK"), it.path, it.lastModified()) }
+            .map { l ->
+                val target = LnkFile.target(l)
+                // Only local paths are checked: a share that doesn't answer would stall the list (and isn't "missing").
+                val local = target != null && !target.startsWith("\\\\")
+                val exists = !local || File(target!!).exists()
+                RecentFile(l.name.removeSuffix(".lnk").removeSuffix(".LNK"), l.path, l.lastModified(), target, exists, local && File(target!!).isDirectory)
+            }
     }
+
+    /**
+     * Windows environment variables in a typed path, the way cmd and Explorer read them: `%NAME%` (any case)
+     * becomes its value; an unknown name, a lone `%` and `%%` stay as typed. [env] is for tests.
+     */
+    fun expandEnv(text: String, env: (String) -> String? = { System.getenv(it) }): String =
+        Regex("%([^%\\\\/:*?\"<>|\\r\\n]+)%").replace(text) { m -> env(m.groupValues[1]) ?: m.value }
 
     fun open(path: String) {
         try {

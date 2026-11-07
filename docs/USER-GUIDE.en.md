@@ -2,7 +2,7 @@
 
 [繁體中文](USER-GUIDE.zh-TW.md) | English · [README](../README.en.md) · [Changelog](../CHANGELOG.en.md)
 
-This guide describes the current source (default build version `1.2.0`). Older published versions may lack some features. Images are existing repository screenshots for identifying controls; appearance varies by version and settings.
+This guide describes the current source (default build version `1.3.0`). Older published versions may lack some features. Images are existing repository screenshots for identifying controls; appearance varies by version and settings.
 
 ## 1. Install and start
 
